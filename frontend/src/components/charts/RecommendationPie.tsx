@@ -73,7 +73,7 @@ const renderCustomLabel = ({
       dominantBaseline="central"
       className="text-xs font-semibold"
     >
-      {`${(percent * 100).toFixed(0)}%`}
+      {`${percent.toFixed(0)}%`}
     </text>
   );
 };

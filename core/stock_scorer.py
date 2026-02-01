@@ -55,14 +55,15 @@ class StockScorer:
     }
 
     # Recommendation thresholds
+    # More conservative thresholds to avoid too many buy signals
     RECOMMENDATION_THRESHOLDS = {
-        'STRONG BUY': 80,
-        'BUY': 60,
-        'WEAK BUY': 52,
-        'HOLD_HIGH': 51,
-        'HOLD_LOW': 48,
-        'WEAK SELL': 42,
-        'SELL': 0
+        'STRONG BUY': 80,  # Top tier stocks (>= 80)
+        'BUY': 68,         # Strong stocks (68-79)
+        'WEAK BUY': 58,    # Above average (58-67)
+        'HOLD_HIGH': 57,   # Neutral zone (45-57)
+        'HOLD_LOW': 45,    # Neutral zone (45-57)
+        'WEAK SELL': 35,   # Below average (35-44)
+        'SELL': 0          # Avoid (< 35)
     }
 
     def __init__(
