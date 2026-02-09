@@ -25,6 +25,9 @@ except ImportError:
     logging.warning("TA-Lib not available. Technical indicators will be limited.")
 
 from data.base_provider import BaseDataProvider
+from core.exceptions import DataFetchException, DataValidationException
+from utils.math_helpers import safe_divide, safe_percentage_change
+from core.cache_manager import TechnicalIndicatorCache, get_cache_manager
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +56,12 @@ class NSEProvider(BaseDataProvider):
         self.rate_limit_delay = rate_limit_delay
         self.last_request_time = 0
 
+        # Initialize technical indicator cache for incremental updates
+        self.indicator_cache = TechnicalIndicatorCache(
+            cache_manager=get_cache_manager(),
+            max_incremental_bars=5
+        )
+
         if not NSEPY_AVAILABLE:
             raise ImportError("NSEpy is required. Install with: pip install nsepy")
 
@@ -74,30 +83,53 @@ class NSEProvider(BaseDataProvider):
 
             df = get_history(symbol=symbol, start=start_date, end=end_date, index=False)
 
-            if df.empty:
+            # Validate data availability
+            if df is None or df.empty:
                 logger.warning(f"No data found for {symbol}")
-                return {}
+                raise DataValidationException(f"No NSE data available for {symbol}")
+
+            # Bounds checking before index access
+            if len(df) < 1:
+                logger.warning(f"Insufficient data for {symbol}")
+                raise DataValidationException(f"Insufficient NSE data for {symbol}")
 
             latest = df.iloc[-1]
             prev = df.iloc[-2] if len(df) > 1 else latest
 
+            # Validate required values
+            try:
+                current_price = float(latest['Close'])
+                if pd.isna(current_price) or current_price <= 0:
+                    raise DataValidationException(f"Invalid price for {symbol}")
+            except (KeyError, ValueError, TypeError) as e:
+                logger.error(f"Price validation error for {symbol}: {e}", exc_info=True)
+                raise DataValidationException(f"Invalid NSE data format for {symbol}") from e
+
+            # Safe percentage calculation
+            price_change_pct = safe_percentage_change(
+                float(latest['Close']),
+                float(prev['Close']),
+                default=0.0
+            )
+
             return {
                 'symbol': symbol,
-                'current_price': float(latest['Close']),
+                'current_price': current_price,
                 'open': float(latest['Open']),
                 'high': float(latest['High']),
                 'low': float(latest['Low']),
                 'volume': int(latest['Volume']),
                 'price_change': float(latest['Close'] - prev['Close']),
-                'price_change_percent': float(
-                    ((latest['Close'] - prev['Close']) / prev['Close']) * 100
-                ),
+                'price_change_percent': price_change_pct,
                 'date': latest.name.strftime('%Y-%m-%d') if hasattr(latest.name, 'strftime') else str(latest.name)
             }
 
+        except (DataFetchException, DataValidationException):
+            # Re-raise our custom exceptions
+            raise
         except Exception as e:
-            logger.error(f"Failed to fetch stock data for {symbol}: {e}")
-            return {}
+            logger.error(f"Failed to fetch stock data for {symbol}: {e}", exc_info=True)
+            raise DataFetchException(f"NSE data fetch failed for {symbol}") from e
 
     def get_historical_data(
         self,
@@ -124,17 +156,25 @@ class NSEProvider(BaseDataProvider):
 
             logger.info(f"Fetching historical data for {symbol} from {start_date.date()} to {end_date.date()}")
 
+            # Detect if symbol is an index
+            is_index = symbol.startswith('^') or 'NIFTY' in symbol.upper() or 'SENSEX' in symbol.upper() or 'CNX' in symbol.upper()
+
+            # NSEpy doesn't use ^ prefix for symbols
+            clean_symbol = symbol.replace('^', '')
+
+            logger.info(f"Fetching {'index' if is_index else 'stock'} data for {clean_symbol}")
+
             # Fetch from NSEpy
             df = get_history(
-                symbol=symbol,
+                symbol=clean_symbol,
                 start=start_date,
                 end=end_date,
-                index=False  # False for stocks, True for indices
+                index=is_index  # Use correct parameter based on symbol type
             )
 
-            if df.empty:
+            if df is None or df.empty:
                 logger.warning(f"No historical data found for {symbol}")
-                return pd.DataFrame()
+                raise DataValidationException(f"No historical NSE data for {symbol}")
 
             # Standardize column names
             df = df.rename(columns={
@@ -157,12 +197,30 @@ class NSEProvider(BaseDataProvider):
             logger.info(f"Fetched {len(df)} days of data for {symbol}")
             return df
 
+        except (DataFetchException, DataValidationException):
+            # Re-raise our custom exceptions
+            raise
         except Exception as e:
-            logger.error(f"Failed to fetch historical data for {symbol}: {e}")
-            return pd.DataFrame()
+            logger.error(f"Failed to fetch historical data for {symbol}: {e}", exc_info=True)
+            raise DataFetchException(f"NSE historical data fetch failed for {symbol}") from e
 
-    def get_technical_indicators(self, historical_data: pd.DataFrame) -> Dict:
-        """Calculate 40+ technical indicators using TA-Lib"""
+    def get_technical_indicators(
+        self,
+        historical_data: pd.DataFrame,
+        symbol: Optional[str] = None,
+        use_cache: bool = True
+    ) -> Dict:
+        """
+        Calculate 40+ technical indicators using TA-Lib with optional caching.
+
+        Args:
+            historical_data: Historical OHLCV DataFrame
+            symbol: Stock symbol (optional, enables caching if provided)
+            use_cache: Whether to use incremental caching (default: True)
+
+        Returns:
+            Dictionary of technical indicators
+        """
         if historical_data.empty or len(historical_data) < 14:
             logger.warning("Insufficient data for technical indicators")
             return {}
@@ -171,6 +229,27 @@ class NSEProvider(BaseDataProvider):
             logger.warning("TA-Lib not available, returning limited indicators")
             return self._get_basic_indicators(historical_data)
 
+        # Use cache if symbol provided and caching enabled
+        if symbol and use_cache:
+            return self.indicator_cache.get_indicators(
+                symbol=symbol,
+                price_data=historical_data,
+                calculator_func=lambda data: self._calculate_indicators(data)
+            )
+
+        # Direct calculation without cache
+        return self._calculate_indicators(historical_data)
+
+    def _calculate_indicators(self, historical_data: pd.DataFrame) -> Dict:
+        """
+        Internal method to calculate all technical indicators.
+
+        Args:
+            historical_data: Historical OHLCV DataFrame
+
+        Returns:
+            Dictionary of technical indicators
+        """
         try:
             # Convert to numpy arrays
             close = historical_data['Close'].values.astype(np.float64)
@@ -242,12 +321,26 @@ class NSEProvider(BaseDataProvider):
             logger.error(f"Failed to calculate technical indicators: {e}")
             return {}
 
-    def _calculate_vwap(self, high, low, close, volume) -> np.ndarray:
-        """Calculate Volume Weighted Average Price"""
+    def _calculate_vwap(self, high, low, close, volume, window: int = 50) -> np.ndarray:
+        """Calculate Volume Weighted Average Price using rolling window"""
         try:
-            typical_price = (high + low + close) / 3
-            vwap = np.cumsum(typical_price * volume) / np.cumsum(volume)
-            return vwap
+            # Convert to pandas Series for rolling operations
+            high_series = pd.Series(high)
+            low_series = pd.Series(low)
+            close_series = pd.Series(close)
+            volume_series = pd.Series(volume)
+
+            # Calculate typical price
+            typical_price = (high_series + low_series + close_series) / 3
+
+            # Use rolling window instead of cumsum to prevent overflow
+            tp_volume = typical_price * volume_series
+            vwap = tp_volume.rolling(window=window).sum() / volume_series.rolling(window=window).sum()
+
+            # Fill initial NaN values with typical price
+            vwap = vwap.fillna(typical_price)
+
+            return vwap.values
         except Exception as e:
             logger.error(f"Failed to calculate VWAP: {e}")
             return np.array([])
@@ -309,8 +402,8 @@ class NSEProvider(BaseDataProvider):
             # Get latest stock data
             stock_data = self.get_stock_data(symbol)
 
-            # Calculate technical indicators
-            technical_data = self.get_technical_indicators(historical_data)
+            # Calculate technical indicators with caching
+            technical_data = self.get_technical_indicators(historical_data, symbol=symbol, use_cache=True)
 
             # Assemble comprehensive data
             comprehensive_data = {

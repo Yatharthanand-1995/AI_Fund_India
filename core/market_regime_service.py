@@ -172,11 +172,28 @@ class MarketRegimeService:
                     raise ValueError("Must provide either nifty_data or data_provider")
 
                 logger.info("Fetching NIFTY50 data...")
-                nifty_cached = data_provider.get_comprehensive_data('^NSEI')
-                nifty_data = nifty_cached.get('historical_data', pd.DataFrame())
+                from utils.validation import get_nifty_data
+                from core.exceptions import DataValidationException
 
-                if nifty_data.empty:
-                    raise ValueError("No NIFTY50 data available")
+                try:
+                    nifty_data = get_nifty_data(data_provider, min_rows=20)
+                except DataValidationException as e:
+                    logger.warning(f"Could not fetch NIFTY data, using default regime: {e}")
+                    # Return default regime instead of failing
+                    default_weights = self.ADAPTIVE_WEIGHTS['SIDEWAYS_NORMAL']
+                    return {
+                        'regime': 'SIDEWAYS_NORMAL',
+                        'trend': 'SIDEWAYS',
+                        'volatility': 'NORMAL',
+                        'weights': default_weights,
+                        'trend_strength': 0.5,
+                        'volatility_regime': 'NORMAL',
+                        'regime_confidence': 0.3,  # Low confidence when using default
+                        'timestamp': datetime.now().isoformat(),
+                        'description': 'Default regime (NIFTY data unavailable)',
+                        'indicators': {},
+                        'adaptive_weights_enabled': self.enable_adaptive_weights
+                    }
 
             # Detect regime
             trend, trend_metrics = self._detect_trend(nifty_data)

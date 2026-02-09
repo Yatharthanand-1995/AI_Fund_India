@@ -14,7 +14,7 @@
  * - Legend toggle
  */
 
-import React, { useMemo } from 'react';
+import React, { useMemo, memo } from 'react';
 import {
   RadarChart,
   PolarGrid,
@@ -120,18 +120,6 @@ export const AgentScoresRadar: React.FC<AgentScoresRadarProps> = ({
 
   return (
     <div className={className}>
-      {/* Header */}
-      <div className="mb-4">
-        <h3 className="text-lg font-semibold text-gray-900">
-          Agent Scores Breakdown
-        </h3>
-        <p className="text-sm text-gray-500 mt-1">
-          {hasHistorical
-            ? 'Current scores (blue) vs Historical average (green)'
-            : 'Current agent scores'}
-        </p>
-      </div>
-
       {/* Chart */}
       <ResponsiveContainer width="100%" height={height}>
         <RadarChart data={chartData}>
@@ -155,13 +143,6 @@ export const AgentScoresRadar: React.FC<AgentScoresRadarProps> = ({
           />
 
           <Tooltip content={<CustomTooltip />} />
-
-          <Legend
-            wrapperStyle={{
-              fontSize: CHART_DEFAULTS.fontSize,
-              paddingTop: '20px'
-            }}
-          />
 
           {/* Current scores */}
           <Radar
@@ -252,4 +233,5 @@ export const AgentScoresRadar: React.FC<AgentScoresRadarProps> = ({
   );
 };
 
-export default AgentScoresRadar;
+// Export memoized component for better performance
+export default memo(AgentScoresRadar);
