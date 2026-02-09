@@ -184,7 +184,7 @@ function InvestmentIdeaCard({ analysis, rank }: InvestmentIdeaCardProps) {
         {/* Agent Breakdown */}
         <div className="mb-6">
           <h3 className="text-sm font-semibold text-gray-900 mb-3">AGENT BREAKDOWN</h3>
-          <div className="h-52">
+          <div>
             <AgentScoresRadar agentScores={agent_scores} height={200} />
           </div>
         </div>
