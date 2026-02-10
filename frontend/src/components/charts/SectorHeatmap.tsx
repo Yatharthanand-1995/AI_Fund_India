@@ -51,7 +51,9 @@ const CustomContent = (props: any) => {
   // Don't render if too small
   if (width < 40 || height < 30) return null;
 
-  const color = getScoreColor(avgScore);
+  // Safely handle avgScore
+  const safeAvgScore = typeof avgScore === 'number' && !isNaN(avgScore) ? avgScore : 0;
+  const color = getScoreColor(safeAvgScore);
 
   return (
     <g>
@@ -86,7 +88,7 @@ const CustomContent = (props: any) => {
             fill="#fff"
             fontSize={12}
           >
-            Score: {avgScore.toFixed(1)}
+            Score: {safeAvgScore.toFixed(1)}
           </text>
           <text
             x={x + width / 2}
@@ -154,13 +156,20 @@ export const SectorHeatmap: React.FC<SectorHeatmapProps> = ({
 
     return data
       .filter(sector => sector.stockCount > 0)
-      .map(sector => ({
-        name: sector.sector,
-        value: sector.stockCount,
-        avgScore: sector.avgScore,
-        topPick: sector.topPick,
-        color: getScoreColor(sector.avgScore)
-      }))
+      .map(sector => {
+        // Ensure avgScore is a valid number
+        const avgScore = typeof sector.avgScore === 'number' && !isNaN(sector.avgScore)
+          ? sector.avgScore
+          : 0;
+
+        return {
+          name: sector.sector,
+          value: sector.stockCount,
+          avgScore: avgScore,
+          topPick: sector.topPick,
+          color: getScoreColor(avgScore)
+        };
+      })
       .sort((a, b) => b.avgScore - a.avgScore);
   }, [data]);
 

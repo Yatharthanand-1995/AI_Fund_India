@@ -278,7 +278,7 @@ export const PortfolioPerformance: React.FC<PortfolioPerformanceProps> = ({
           )}
 
           {/* Individual Stock Lines */}
-          {stockStats.map((stock, index) => (
+          {stockStats.map((stock, _index) => (
             <Line
               key={stock.symbol}
               type="monotone"

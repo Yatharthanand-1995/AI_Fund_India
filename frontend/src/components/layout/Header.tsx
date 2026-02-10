@@ -6,7 +6,11 @@ import {
   Activity,
   PieChart,
   Star,
-  GitCompare
+  GitCompare,
+  FlaskConical,
+  Settings,
+  Filter,
+  Lightbulb
 } from 'lucide-react';
 import { useStore } from '@/store/useStore';
 import { cn } from '@/lib/utils';
@@ -18,11 +22,15 @@ export default function Header() {
 
   const navItems = [
     { path: '/', label: 'Dashboard', icon: BarChart3 },
-    { path: '/top-picks', label: 'Top Picks', icon: TrendingUp },
+    { path: '/ideas', label: 'Ideas', icon: TrendingUp },
+    { path: '/suggestions', label: 'Suggestions', icon: Lightbulb },
+    { path: '/screener', label: 'Screener', icon: Filter },
     { path: '/sectors', label: 'Sectors', icon: PieChart },
+    { path: '/backtest', label: 'Backtest', icon: FlaskConical },
     { path: '/watchlist', label: 'Watchlist', icon: Star, badge: watchlistCount },
     { path: '/compare', label: 'Compare', icon: GitCompare },
     { path: '/analytics', label: 'Analytics', icon: Activity },
+    { path: '/system', label: 'System', icon: Settings },
     { path: '/about', label: 'About', icon: Info },
   ];
 

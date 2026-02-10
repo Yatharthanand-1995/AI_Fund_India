@@ -87,7 +87,7 @@ export const useStockHistory = (
   const [isStale, setIsStale] = useState<boolean>(false);
 
   const abortControllerRef = useRef<AbortController | null>(null);
-  const refreshTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Fetch function
   const fetchHistory = useCallback(async () => {

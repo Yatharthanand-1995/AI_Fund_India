@@ -1,11 +1,6 @@
 import { memo } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  TrendingUp,
-  Activity,
-  Shield,
-  Users,
-  MessageSquare,
   AlertTriangle,
   Star,
   ExternalLink,
@@ -13,7 +8,7 @@ import {
   Lightbulb
 } from 'lucide-react';
 import type { StockAnalysis } from '@/types';
-import { getRecommendationColor, getScoreColor, cn } from '@/lib/utils';
+import { getRecommendationColor, cn } from '@/lib/utils';
 import { AgentScoresRadar } from '@/components/charts/AgentScoresRadar';
 import { useWatchlist } from '@/hooks/useWatchlist';
 
@@ -27,13 +22,6 @@ function InvestmentIdeaCard({ analysis, rank }: InvestmentIdeaCardProps) {
   const { watchlist, add, remove } = useWatchlist();
   const isInWatchlist = watchlist.some(item => item.symbol === symbol);
 
-  const agents = [
-    { key: 'fundamentals', label: 'Fundamentals', icon: TrendingUp },
-    { key: 'momentum', label: 'Momentum', icon: Activity },
-    { key: 'quality', label: 'Quality', icon: Shield },
-    { key: 'sentiment', label: 'Sentiment', icon: MessageSquare },
-    { key: 'institutional_flow', label: 'Institutional Flow', icon: Users },
-  ];
 
   // Extract key metrics for "Why This Stock?"
   const getKeyInsights = () => {
@@ -44,7 +32,7 @@ function InvestmentIdeaCard({ analysis, rank }: InvestmentIdeaCardProps) {
     if (fundamentals && fundamentals.score > 70) {
       const metrics = fundamentals.metrics;
       if (metrics?.roe) {
-        insights.push(`Strong fundamentals (ROE ${parseFloat(metrics.roe).toFixed(1)}%)`);
+        insights.push(`Strong fundamentals (ROE ${(metrics.roe as number).toFixed(1)}%)`);
       } else {
         insights.push(`Strong fundamentals (score ${fundamentals.score.toFixed(0)}/100)`);
       }

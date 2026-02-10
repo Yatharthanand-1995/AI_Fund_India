@@ -13,7 +13,6 @@
 
 import React, { useMemo } from 'react';
 import {
-  LineChart,
   Line,
   XAxis,
   YAxis,
@@ -111,7 +110,7 @@ export const CompositeScoreTrend: React.FC<CompositeScoreTrendProps> = ({
   className = ''
 }) => {
   // Transform and prepare data
-  const { chartData, trendData, trendInfo } = useMemo(() => {
+  const { chartData, trendData: _trendData, trendInfo } = useMemo(() => {
     if (!data || !Array.isArray(data) || data.length === 0) {
       return { chartData: [], trendData: [], trendInfo: { direction: 'stable', slope: 0 } };
     }

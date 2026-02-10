@@ -9,9 +9,7 @@
 
 import { lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
-import { useStore } from './store/useStore';
 import Header from './components/layout/Header';
-import Footer from './components/layout/Footer';
 import Toast from './components/ui/Toast';
 import Loading from './components/ui/Loading';
 
@@ -33,7 +31,6 @@ const PageLoader = () => (
 );
 
 function App() {
-  const { toasts, removeToast } = useStore();
 
   return (
     <BrowserRouter>
@@ -55,18 +52,9 @@ function App() {
           </Suspense>
         </main>
 
-        <Footer />
 
         {/* Toast Notifications */}
-        <div className="fixed bottom-4 right-4 z-50 space-y-2">
-          {toasts.map((toast) => (
-            <Toast
-              key={toast.id}
-              {...toast}
-              onClose={() => removeToast(toast.id)}
-            />
-          ))}
-        </div>
+        <Toast />
       </div>
     </BrowserRouter>
   );

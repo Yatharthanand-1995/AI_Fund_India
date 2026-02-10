@@ -10,8 +10,6 @@
 import { memo, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  TrendingUp,
-  TrendingDown,
   ChevronDown,
   ChevronUp,
   ExternalLink,
@@ -41,7 +39,7 @@ const StockCard = memo(function StockCard({
 
   const sortedAgentScores = useMemo(() => {
     return Object.entries(analysis.agent_scores).sort(
-      ([, a], [, b]) => b.score - a.score
+      ([, a], [, b]) => (b?.score ?? 0) - (a?.score ?? 0)
     );
   }, [analysis.agent_scores]);
 
@@ -128,11 +126,11 @@ const StockCard = memo(function StockCard({
                     <div className="flex-1 bg-gray-200 rounded-full h-2">
                       <div
                         className="h-2 rounded-full bg-primary-600"
-                        style={{ width: `${agentData.score}%` }}
+                        style={{ width: `${agentData?.score ?? 0}%` }}
                       />
                     </div>
                     <span className="text-sm font-semibold text-gray-900 w-12 text-right">
-                      {agentData.score.toFixed(1)}
+                      {(agentData?.score ?? 0).toFixed(1)}
                     </span>
                   </div>
                   {detailed && (
@@ -147,9 +145,9 @@ const StockCard = memo(function StockCard({
                 </div>
 
                 {/* Expanded Agent Details (lazy loaded) */}
-                {detailed && expandedAgents.has(agentKey) && agentData.reasoning && (
+                {detailed && expandedAgents.has(agentKey) && agentData?.reasoning && (
                   <div className="ml-8 p-3 bg-gray-50 rounded text-sm text-gray-600">
-                    {agentData.reasoning}
+                    {agentData?.reasoning}
                   </div>
                 )}
               </div>

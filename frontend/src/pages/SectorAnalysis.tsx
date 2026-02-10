@@ -218,7 +218,7 @@ const SectorAnalysis: React.FC = () => {
           <SectorHeatmap
             data={heatmapData}
             height={400}
-            onSectorClick={(sector) => {
+            onSectorClick={(_sector) => {
               // Sector clicked - could navigate or show details
             }}
           />

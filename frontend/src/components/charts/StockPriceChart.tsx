@@ -113,7 +113,7 @@ export const StockPriceChart: React.FC<StockPriceChartProps> = ({
   }, [data, timeRange]);
 
   // Calculate min/max for better axis scaling
-  const { minPrice, maxPrice, minScore, maxScore } = useMemo(() => {
+  const { minPrice, maxPrice, minScore: _minScore, maxScore: _maxScore } = useMemo(() => {
     if (!chartData.length) {
       return { minPrice: 0, maxPrice: 1000, minScore: 0, maxScore: 100 };
     }

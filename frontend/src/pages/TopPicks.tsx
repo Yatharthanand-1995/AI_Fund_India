@@ -8,19 +8,88 @@
  * - Enhanced stock cards with mini charts
  */
 
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useRef } from 'react';
 import { TrendingUp, Download, Filter, RefreshCw } from 'lucide-react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { useStore } from '@/store/useStore';
 import api from '@/lib/api';
-import Loading from '@/components/ui/Loading';
+import { StockCardSkeleton, ChartSkeleton, SkeletonLoader } from '@/components/ui/SkeletonLoader';
 import StockCard from '@/components/StockCard';
 import MarketRegimeCard from '@/components/MarketRegimeCard';
 import { RecommendationPie } from '@/components/charts/RecommendationPie';
-import type { TopPicksResponse } from '@/types';
+import type { TopPicksResponse, StockAnalysis } from '@/types';
+
+/**
+ * Virtual scrolling component for stock lists
+ * Renders only visible items for better performance with large lists
+ */
+function VirtualStockList({ stocks }: { stocks: StockAnalysis[] }) {
+  const parentRef = useRef<HTMLDivElement>(null);
+
+  const virtualizer = useVirtualizer({
+    count: stocks.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 280, // Estimated height of each StockCard + margin
+    overscan: 3, // Render 3 extra items above/below viewport
+  });
+
+  return (
+    <div
+      ref={parentRef}
+      className="max-w-6xl mx-auto h-[calc(100vh-300px)] overflow-auto"
+      style={{ contain: 'strict' }}
+    >
+      <div
+        style={{
+          height: `${virtualizer.getTotalSize()}px`,
+          width: '100%',
+          position: 'relative',
+        }}
+      >
+        {virtualizer.getVirtualItems().map((virtualRow) => {
+          const pick = stocks[virtualRow.index];
+          return (
+            <div
+              key={virtualRow.key}
+              data-index={virtualRow.index}
+              ref={virtualizer.measureElement}
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                width: '100%',
+                transform: `translateY(${virtualRow.start}px)`,
+              }}
+            >
+              <div className="relative mb-6">
+                <div className="absolute -left-12 top-6 flex flex-col items-center">
+                  <span className="text-3xl font-bold text-gray-300">
+                    #{virtualRow.index + 1}
+                  </span>
+                  <span className="text-xs text-gray-400 mt-1">
+                    {pick.composite_score.toFixed(1)}
+                  </span>
+                </div>
+                <StockCard analysis={pick} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 export default function TopPicks() {
-  const { addToast, setLoading, loading } = useStore();
+  const {
+    addToast,
+    setLoading,
+    loading,
+    cacheTopPicks,
+    getCachedTopPicks,
+  } = useStore();
   const [data, setData] = useState<TopPicksResponse | null>(null);
+  const [cacheAge, setCacheAge] = useState<number | null>(null);
 
   // Filters
   const [topCount, setTopCount] = useState(10);
@@ -33,13 +102,41 @@ export default function TopPicks() {
     loadTopPicks();
   }, []);
 
-  const loadTopPicks = async () => {
+  const loadTopPicks = async (forceRefresh = false) => {
+    // Generate cache key based on parameters
+    const cacheKey = `50:false`; // limit=50, include_narrative=false
+
+    // Check cache first (unless force refresh)
+    if (!forceRefresh) {
+      const cachedData = getCachedTopPicks(cacheKey);
+      if (cachedData) {
+        setData(cachedData);
+        const age = Date.now() - (cachedData as any).cachedTimestamp || 0;
+        setCacheAge(age);
+        console.log('[TopPicks] Using cached data from', Math.floor(age / 60000), 'minutes ago');
+        return;
+      }
+    }
+
     setLoading('topPicks', true);
+    setCacheAge(null);
 
     try {
       // Get all stocks (we'll filter client-side)
       const result = await api.getTopPicks(50, false);
-      setData(result);
+
+      // Add timestamp to cached data for age calculation
+      const dataWithTimestamp = {
+        ...result,
+        cachedTimestamp: Date.now(),
+      };
+
+      // Cache the result
+      cacheTopPicks(cacheKey, dataWithTimestamp as TopPicksResponse);
+
+      setData(dataWithTimestamp as TopPicksResponse);
+      setCacheAge(0);
+
       addToast({
         type: 'success',
         message: `Loaded ${result.top_picks.length} stocks from NIFTY 50`,
@@ -298,12 +395,13 @@ export default function TopPicks() {
             </div>
 
             <button
-              onClick={loadTopPicks}
+              onClick={() => loadTopPicks(true)}
               disabled={loading.topPicks}
               className="flex items-center gap-2 px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-lg transition-colors disabled:bg-gray-300"
+              title={cacheAge !== null ? 'Force refresh from server' : 'Refresh data'}
             >
               <RefreshCw className={`w-4 h-4 ${loading.topPicks ? 'animate-spin' : ''}`} />
-              Refresh
+              {cacheAge !== null ? 'Force Refresh' : 'Refresh'}
             </button>
           </div>
         </div>
@@ -384,9 +482,16 @@ export default function TopPicks() {
         {/* Metadata Row */}
         {data && (
           <div className="px-4 py-2 bg-gray-50 text-sm text-gray-600 flex items-center justify-between">
-            <span>
-              Analyzed {data.total_analyzed} stocks in {data.duration_seconds.toFixed(1)}s
-            </span>
+            <div className="flex items-center gap-4">
+              <span>
+                Analyzed {data.total_analyzed} stocks in {data.duration_seconds.toFixed(1)}s
+              </span>
+              {cacheAge !== null && cacheAge > 0 && (
+                <span className="text-blue-600 text-xs font-medium">
+                  📦 Cached from {Math.floor(cacheAge / 60000)} {Math.floor(cacheAge / 60000) === 1 ? 'minute' : 'minutes'} ago
+                </span>
+              )}
+            </div>
             <span className="text-xs text-gray-500">
               Last updated: {new Date(data.timestamp).toLocaleString('en-IN')}
             </span>
@@ -394,30 +499,22 @@ export default function TopPicks() {
         )}
       </div>
 
-      {/* Loading */}
+      {/* Loading with Skeletons */}
       {loading.topPicks && (
-        <div className="py-20">
-          <Loading size="lg" text="Analyzing NIFTY 50 stocks..." />
+        <div className="max-w-6xl mx-auto space-y-6 animate-fade-in">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+            <ChartSkeleton />
+            <SkeletonLoader type="text" count={3} />
+          </div>
+          {[...Array(5)].map((_, i) => (
+            <StockCardSkeleton key={i} />
+          ))}
         </div>
       )}
 
-      {/* Results */}
+      {/* Results with Virtual Scrolling */}
       {!loading.topPicks && filteredPicks.length > 0 && (
-        <div className="max-w-6xl mx-auto space-y-6 animate-fade-in">
-          {filteredPicks.map((pick, index) => (
-            <div key={pick.symbol} className="relative">
-              <div className="absolute -left-12 top-6 flex flex-col items-center">
-                <span className="text-3xl font-bold text-gray-300">
-                  #{index + 1}
-                </span>
-                <span className="text-xs text-gray-400 mt-1">
-                  {pick.composite_score.toFixed(1)}
-                </span>
-              </div>
-              <StockCard analysis={pick} />
-            </div>
-          ))}
-        </div>
+        <VirtualStockList stocks={filteredPicks} />
       )}
 
       {/* No Results */}
@@ -443,7 +540,7 @@ export default function TopPicks() {
           <TrendingUp className="h-16 w-16 text-gray-300 mx-auto mb-4" />
           <p className="text-gray-600 mb-4">No data available</p>
           <button
-            onClick={loadTopPicks}
+            onClick={() => loadTopPicks()}
             className="px-6 py-3 bg-primary-600 hover:bg-primary-700 text-white rounded-lg transition-colors"
           >
             Load Top Picks

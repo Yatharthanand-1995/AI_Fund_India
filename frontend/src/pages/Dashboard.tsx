@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Search, TrendingUp, BarChart3, Star, Activity, PieChart, ArrowRight } from 'lucide-react';
+import { TrendingUp, BarChart3, Star, Activity, PieChart, ArrowRight } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useStore } from '@/store/useStore';
 import api from '@/lib/api';
@@ -13,13 +13,14 @@ import { MarketRegimeTimeline } from '@/components/charts/MarketRegimeTimeline';
 import { useWatchlist } from '@/hooks/useWatchlist';
 import { useStockHistory } from '@/hooks/useStockHistory';
 import { useSectorAnalysis } from '@/hooks/useSectorAnalysis';
+import { SymbolInput } from '@/components/ui/SymbolInput';
 import type { StockAnalysis } from '@/types';
 
 export default function Dashboard() {
   const navigate = useNavigate();
   const { addToast, setLoading, loading, marketRegime, recentSearches, addRecentSearch } = useStore();
   const { watchlist } = useWatchlist();
-  const { sectors, getTopSectors } = useSectorAnalysis({ days: 7 });
+  const { getTopSectors } = useSectorAnalysis({ days: 7 });
 
   const [symbol, setSymbol] = useState('');
   const [analysis, setAnalysis] = useState<StockAnalysis | null>(null);
@@ -286,17 +287,15 @@ export default function Dashboard() {
       {/* Search Form */}
       <div className="max-w-2xl mx-auto">
         <form onSubmit={handleAnalyze} className="space-y-4">
-          <div className="relative">
-            <Search className="absolute left-4 top-1/2 transform -translate-y-1/2 h-5 w-5 text-gray-400" />
-            <input
-              type="text"
-              value={symbol}
-              onChange={(e) => setSymbol(e.target.value)}
-              placeholder="Enter stock symbol (e.g., TCS, INFY, RELIANCE)"
-              className="w-full pl-12 pr-4 py-4 text-lg border-2 border-gray-300 rounded-lg focus:border-primary-500 focus:ring-2 focus:ring-primary-200 outline-none transition-all"
-              disabled={loading.analyze}
-            />
-          </div>
+          <SymbolInput
+            value={symbol}
+            onChange={setSymbol}
+            onSubmit={analyzeSymbol}
+            placeholder="Enter stock symbol (e.g., TCS, INFY, RELIANCE)"
+            className="w-full pr-4 py-4 text-lg border-2 border-gray-300 rounded-lg focus:border-primary-500 focus:ring-2 focus:ring-primary-200 outline-none transition-all"
+            disabled={loading.analyze}
+            showIcon={true}
+          />
 
           <button
             type="submit"

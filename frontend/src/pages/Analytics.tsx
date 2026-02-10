@@ -1,166 +1,93 @@
 /**
- * Analytics Page - System Dashboard
+ * Enhanced Analytics Dashboard
  *
- * Displays system performance metrics and analytics
+ * Comprehensive investment analytics and insights
+ * Features:
+ * - Portfolio performance tracking
+ * - Agent prediction accuracy analysis
+ * - Sector performance and rotation
+ * - System health metrics
  */
 
-import React from 'react';
-import { useSystemMetrics } from '../hooks/useSystemMetrics';
-import { Activity, TrendingUp, AlertCircle, Database, Zap } from 'lucide-react';
+import { useState } from 'react';
+import { BarChart3, Activity, PieChart, Settings, TrendingUp } from 'lucide-react';
+import Card from '@/components/ui/Card';
+import PortfolioAnalytics from '@/components/analytics/PortfolioAnalytics';
+import AgentPerformanceAnalytics from '@/components/analytics/AgentPerformanceAnalytics';
+import SectorPerformanceAnalytics from '@/components/analytics/SectorPerformanceAnalytics';
+import PerformanceMetrics from '@/components/system/PerformanceMetrics';
 
-const Analytics: React.FC = () => {
-  const { metrics, loading, error, refetch, lastUpdated } = useSystemMetrics({
-    autoRefresh: true,
-    refreshInterval: 30000 // 30 seconds
-  });
+type TabView = 'portfolio' | 'agents' | 'sectors' | 'system';
 
-  if (loading && !metrics) {
-    return (
-      <div className="flex items-center justify-center min-h-96">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
-          <p className="text-gray-600">Loading analytics...</p>
-        </div>
-      </div>
-    );
-  }
+export default function Analytics() {
+  const [activeTab, setActiveTab] = useState<TabView>('portfolio');
 
-  if (error) {
-    return (
-      <div className="flex items-center justify-center min-h-96">
-        <div className="text-center">
-          <AlertCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
-          <p className="text-gray-600">Failed to load analytics</p>
-          <button
-            onClick={() => refetch()}
-            className="mt-4 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-          >
-            Retry
-          </button>
-        </div>
-      </div>
-    );
-  }
+  const tabs = [
+    { id: 'portfolio' as TabView, label: 'Portfolio Analytics', icon: TrendingUp },
+    { id: 'agents' as TabView, label: 'Agent Performance', icon: Activity },
+    { id: 'sectors' as TabView, label: 'Sector Analysis', icon: PieChart },
+    { id: 'system' as TabView, label: 'System Metrics', icon: Settings },
+  ];
 
   return (
     <div className="space-y-6">
       {/* Page Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-gray-900">System Analytics</h1>
-          <p className="text-gray-600 mt-1">
-            Monitor system performance and health metrics
-          </p>
-        </div>
-        {lastUpdated && (
-          <p className="text-sm text-gray-500">
-            Last updated: {lastUpdated.toLocaleTimeString()}
-          </p>
-        )}
-      </div>
-
-      {/* KPI Cards */}
-      {metrics && (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
-          {/* Uptime */}
-          <div className="bg-white rounded-lg shadow p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-600">Uptime</p>
-                <p className="text-2xl font-bold text-gray-900 mt-1">
-                  {metrics.uptime_formatted}
-                </p>
-              </div>
-              <Activity className="w-8 h-8 text-blue-500" />
-            </div>
-          </div>
-
-          {/* Total Requests */}
-          <div className="bg-white rounded-lg shadow p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-600">Total Requests</p>
-                <p className="text-2xl font-bold text-gray-900 mt-1">
-                  {metrics.total_requests.toLocaleString()}
-                </p>
-              </div>
-              <TrendingUp className="w-8 h-8 text-green-500" />
-            </div>
-          </div>
-
-          {/* Avg Response Time */}
-          <div className="bg-white rounded-lg shadow p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-600">Avg Response</p>
-                <p className="text-2xl font-bold text-gray-900 mt-1">
-                  {metrics.avg_response_time_ms.toFixed(0)}ms
-                </p>
-              </div>
-              <Zap className="w-8 h-8 text-yellow-500" />
-            </div>
-          </div>
-
-          {/* Error Rate */}
-          <div className="bg-white rounded-lg shadow p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-600">Error Rate</p>
-                <p className="text-2xl font-bold text-gray-900 mt-1">
-                  {metrics.error_rate_formatted}
-                </p>
-              </div>
-              <AlertCircle className="w-8 h-8 text-red-500" />
-            </div>
-          </div>
-
-          {/* Cache Hit Rate */}
-          <div className="bg-white rounded-lg shadow p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-600">Cache Hit</p>
-                <p className="text-2xl font-bold text-gray-900 mt-1">
-                  {metrics.cache_hit_rate_formatted}
-                </p>
-              </div>
-              <Database className="w-8 h-8 text-purple-500" />
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Agent Performance Section */}
-      {metrics && metrics.agent_performance && (
-        <div className="bg-white rounded-lg shadow p-6">
-          <h2 className="text-xl font-semibold text-gray-900 mb-4">
-            Agent Performance
-          </h2>
-          <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-            {Object.entries(metrics.agent_performance).map(([agent, time]) => (
-              <div key={agent} className="p-4 bg-gray-50 rounded-lg">
-                <p className="text-sm text-gray-600 capitalize mb-1">
-                  {agent.replace('_', ' ')}
-                </p>
-                <p className="text-lg font-semibold text-gray-900">
-                  {(time * 1000).toFixed(0)}ms
-                </p>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Placeholder for Charts */}
-      <div className="bg-white rounded-lg shadow p-6">
-        <h2 className="text-xl font-semibold text-gray-900 mb-4">
-          Performance Charts
-        </h2>
-        <p className="text-gray-500 text-center py-12">
-          Charts will be added in the next phase
+      <div>
+        <h1 className="text-3xl font-bold text-gray-900 flex items-center gap-3">
+          <BarChart3 className="h-8 w-8 text-blue-600" />
+          Advanced Analytics
+        </h1>
+        <p className="text-gray-600 mt-2">
+          Deep insights into portfolio performance, agent accuracy, and market trends
         </p>
       </div>
+
+      {/* Tab Navigation */}
+      <Card>
+        <div className="border-b border-gray-200">
+          <nav className="flex space-x-8 px-6">
+            {tabs.map(({ id, label, icon: Icon }) => (
+              <button
+                key={id}
+                onClick={() => setActiveTab(id)}
+                className={`
+                  py-4 px-1 border-b-2 font-medium text-sm flex items-center gap-2
+                  ${activeTab === id
+                    ? 'border-blue-500 text-blue-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                  }
+                `}
+              >
+                <Icon className="h-4 w-4" />
+                {label}
+              </button>
+            ))}
+          </nav>
+        </div>
+      </Card>
+
+      {/* Tab Content */}
+      <div>
+        {activeTab === 'portfolio' && <PortfolioAnalytics />}
+        {activeTab === 'agents' && <AgentPerformanceAnalytics />}
+        {activeTab === 'sectors' && <SectorPerformanceAnalytics />}
+        {activeTab === 'system' && <PerformanceMetrics />}
+      </div>
+
+      {/* Info Panel */}
+      <Card className="bg-blue-50 border-blue-200">
+        <div className="p-4">
+          <h3 className="font-medium text-blue-900 mb-2">
+            💡 Analytics Tips
+          </h3>
+          <ul className="text-sm text-blue-800 space-y-1">
+            <li>• <strong>Portfolio Analytics</strong> - Track your watchlist performance and identify top performers</li>
+            <li>• <strong>Agent Performance</strong> - See which agents are most accurate in predicting positive returns</li>
+            <li>• <strong>Sector Analysis</strong> - Identify sector rotation and best performing industries</li>
+            <li>• <strong>System Metrics</strong> - Monitor system health, uptime, and API performance</li>
+          </ul>
+        </div>
+      </Card>
     </div>
   );
-};
-
-export default Analytics;
+}

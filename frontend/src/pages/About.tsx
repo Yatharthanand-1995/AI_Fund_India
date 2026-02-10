@@ -1,4 +1,4 @@
-import { Brain, TrendingUp, BarChart3, Shield, Users, MessageSquare, Activity } from 'lucide-react';
+import { Brain, TrendingUp, Shield, Users, MessageSquare, Activity } from 'lucide-react';
 
 export default function About() {
   const agents = [

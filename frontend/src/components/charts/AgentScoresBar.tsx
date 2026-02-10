@@ -29,8 +29,7 @@ import {
   CHART_COLORS,
   CHART_DEFAULTS,
   formatTooltipValue,
-  getScoreColor,
-  transformAgentScores
+  getScoreColor
 } from '../../lib/chartUtils';
 
 // ============================================================================
@@ -44,7 +43,7 @@ export interface AgentScore {
 }
 
 export interface AgentScoresBarProps {
-  agentScores: Record<string, AgentScore>;
+  agentScores: Record<string, AgentScore | undefined>;
   weights?: Record<string, number>;
   height?: number;
   showWeights?: boolean;
@@ -125,11 +124,11 @@ export const AgentScoresBar: React.FC<AgentScoresBarProps> = ({
     let data = Object.entries(agentScores).map(([key, scoreData]) => ({
       agent: agentNames[key] || key,
       agentKey: key,
-      score: scoreData.score,
-      confidence: scoreData.confidence,
+      score: scoreData?.score ?? 0,
+      confidence: scoreData?.confidence,
       weight: weights?.[key] || 0,
-      color: getScoreColor(scoreData.score),
-      reasoning: scoreData.reasoning
+      color: getScoreColor(scoreData?.score ?? 0),
+      reasoning: scoreData?.reasoning
     }));
 
     // Sort data

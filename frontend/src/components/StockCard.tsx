@@ -1,8 +1,8 @@
+import { memo } from 'react';
 import { TrendingUp, TrendingDown, Activity, Shield, Users, MessageSquare } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import type { StockAnalysis } from '@/types';
 import {
-  formatNumber,
   formatPercent,
   getRecommendationColor,
   getScoreColor,
@@ -15,7 +15,7 @@ interface StockCardProps {
   detailed?: boolean;
 }
 
-export default function StockCard({ analysis, detailed = false }: StockCardProps) {
+function StockCard({ analysis, detailed = false }: StockCardProps) {
   const { symbol, composite_score, recommendation, confidence, agent_scores, narrative } = analysis;
 
   const agents = [
@@ -169,3 +169,6 @@ export default function StockCard({ analysis, detailed = false }: StockCardProps
     </div>
   );
 }
+
+// Export memoized component for better performance
+export default memo(StockCard);

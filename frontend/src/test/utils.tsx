@@ -47,7 +47,7 @@ export const mockStockAnalysis = {
       score: 70.0,
       confidence: 75.0,
       reasoning: 'High quality',
-      metrics: { debt_to_equity: 0.5 },
+      metrics: { volatility: 0.18, max_drawdown: -0.12 },
       breakdown: {}
     },
     sentiment: {

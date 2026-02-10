@@ -21,7 +21,6 @@ import {
   PolarAngleAxis,
   PolarRadiusAxis,
   Radar,
-  Legend,
   Tooltip,
   ResponsiveContainer
 } from 'recharts';
@@ -43,8 +42,8 @@ export interface AgentScore {
 }
 
 export interface AgentScoresRadarProps {
-  agentScores: Record<string, AgentScore>;
-  historicalAvg?: Record<string, AgentScore>;
+  agentScores: Record<string, AgentScore | undefined>;
+  historicalAvg?: Record<string, AgentScore | undefined>;
   height?: number;
   showHistorical?: boolean;
   className?: string;
@@ -198,7 +197,7 @@ export const AgentScoresRadar: React.FC<AgentScoresRadarProps> = ({
       {/* Agent Details (if reasoning available) */}
       <div className="mt-6 space-y-2">
         {Object.entries(agentScores).map(([agentKey, agentData]) => {
-          if (!agentData.reasoning) return null;
+          if (!agentData || !agentData.reasoning) return null;
 
           const agentInfo = chartData.find(a =>
             a.agent.toLowerCase().includes(agentKey.split('_')[0].toLowerCase())

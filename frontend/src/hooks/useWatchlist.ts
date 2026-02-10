@@ -101,7 +101,6 @@ export const useWatchlist = (): UseWatchlistReturn => {
 
     try {
       // Optimistic update
-      const previousWatchlist = watchlist;
       setWatchlist(prev => prev.filter(item => item.symbol !== symbolUpper));
 
       // API call

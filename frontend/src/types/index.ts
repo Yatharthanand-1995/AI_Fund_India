@@ -142,6 +142,8 @@ export interface AgentScores {
   quality?: QualityScore;
   sentiment?: SentimentScore;
   institutional_flow?: InstitutionalFlowScore;
+  // Index signature for dynamic access (e.g., agent_scores[key])
+  [key: string]: AgentScore<any> | undefined;
 }
 
 export interface StockAnalysis {
