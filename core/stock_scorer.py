@@ -535,11 +535,13 @@ class StockScorer:
             # Fallback: 15% upside target
             levels['target_price'] = round(current_price * 1.15, 2)
 
-        # Risk/reward ratio
+        # Risk/reward ratio (guard against zero risk to avoid division by zero)
         risk = current_price - levels['stop_loss']
         reward = levels['target_price'] - current_price
         if risk > 0:
             levels['risk_reward_ratio'] = round(reward / risk, 2)
+        else:
+            levels['risk_reward_ratio'] = None
 
         return levels
 

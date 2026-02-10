@@ -27,10 +27,10 @@ class SentimentAgent:
     Indian stocks often have limited analyst coverage compared to US stocks.
 
     Scoring breakdown (0-100):
-    - Analyst Recommendation: 50 points
-    - Target Price Upside: 30 points
-    - Analyst Coverage: 10 points
-    - News Sentiment (optional): 10 points
+    - Analyst Recommendation: 55 points
+    - Target Price Upside: 33 points
+    - Analyst Coverage: 12 points
+    Total: 100 points
 
     Base score: 50 (neutral)
     """
@@ -227,53 +227,53 @@ class SentimentAgent:
 
     def _score_recommendation(self, metrics: Dict) -> float:
         """
-        Score analyst recommendations (0-50 points)
+        Score analyst recommendations (0-55 points)
 
         Lower recommendation mean = more bullish
         """
         rec_mean = metrics.get('recommendation_mean')
 
         if rec_mean is None:
-            return 25  # Neutral if no data
+            return 28  # Neutral if no data (50% of 55)
 
         if rec_mean < self.RECOMMENDATION_THRESHOLDS['strong_buy']:
-            return 50  # Strong Buy consensus
+            return 55  # Strong Buy consensus
         elif rec_mean < self.RECOMMENDATION_THRESHOLDS['buy']:
-            return 40  # Buy consensus
+            return 44  # Buy consensus
         elif rec_mean < self.RECOMMENDATION_THRESHOLDS['hold']:
-            return 25  # Hold consensus
+            return 28  # Hold consensus
         elif rec_mean < self.RECOMMENDATION_THRESHOLDS['sell']:
-            return 10  # Sell leaning
+            return 11  # Sell leaning
         else:
             return 0   # Sell consensus
 
     def _score_target_price(self, metrics: Dict) -> float:
         """
-        Score target price upside (0-30 points)
+        Score target price upside (0-33 points)
 
         Higher upside = more bullish
         """
         upside = metrics.get('upside_percent')
 
         if upside is None:
-            return 15  # Neutral if no data
+            return 17  # Neutral if no data (50% of 33, rounded)
 
         if upside >= self.UPSIDE_THRESHOLDS['high']:
-            return 30  # High upside potential
+            return 33  # High upside potential
         elif upside >= self.UPSIDE_THRESHOLDS['medium']:
-            return 23  # Medium upside
+            return 25  # Medium upside
         elif upside >= self.UPSIDE_THRESHOLDS['low']:
-            return 18  # Low upside
+            return 20  # Low upside
         elif upside > 0:
-            return 15  # Slight upside
+            return 17  # Slight upside
         elif upside > -10:
-            return 10  # Slight downside
+            return 11  # Slight downside
         else:
             return 0   # Significant downside
 
     def _score_analyst_coverage(self, metrics: Dict) -> float:
         """
-        Score analyst coverage (0-10 points)
+        Score analyst coverage (0-12 points)
 
         More coverage = more institutional interest = better
         Note: Indian stocks typically have less coverage than US stocks
@@ -281,19 +281,19 @@ class SentimentAgent:
         num_analysts = metrics.get('number_of_analyst_opinions')
 
         if num_analysts is None:
-            return 3  # Low score if no data
+            return 5  # Neutral-ish score if no data (50% of 12, rounded)
 
         # Adjusted for Indian market (lower coverage)
         if num_analysts >= 20:
-            return 10  # Excellent coverage
+            return 12  # Excellent coverage
         elif num_analysts >= 10:
-            return 8   # Good coverage
+            return 10  # Good coverage
         elif num_analysts >= 5:
-            return 6   # Moderate coverage
+            return 7   # Moderate coverage
         elif num_analysts >= 3:
-            return 4   # Limited coverage
+            return 5   # Limited coverage
         elif num_analysts >= 1:
-            return 2   # Very limited
+            return 3   # Very limited
         else:
             return 0   # No coverage
 
@@ -318,7 +318,7 @@ class SentimentAgent:
             confidence += 0.2
 
         # Has analyst coverage
-        num_analysts = metrics.get('number_of_analyst_opinions', 0)
+        num_analysts = metrics.get('number_of_analyst_opinions') or 0
         if num_analysts >= 5:
             confidence += 0.2
         elif num_analysts >= 3:
@@ -375,9 +375,9 @@ class SentimentAgent:
             'reasoning': reason,
             'metrics': {},
             'breakdown': {
-                'recommendation_score': 25.0,
-                'target_price_score': 15.0,
-                'coverage_score': 3.0
+                'recommendation_score': 28.0,
+                'target_price_score': 17.0,
+                'coverage_score': 5.0
             },
             'agent': self.agent_name
         }

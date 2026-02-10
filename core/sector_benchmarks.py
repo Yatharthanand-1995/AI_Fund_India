@@ -66,6 +66,10 @@ class SectorBenchmarks:
         'dividend_high': 3.0,
         'dividend_medium': 2.0,
         'dividend_low': 1.0,
+
+        # Promoter holding (%) — Indian-specific
+        'promoter_high': 50.0,
+        'promoter_medium': 30.0,
     }
 
     # Sector-specific benchmarks
@@ -103,6 +107,9 @@ class SectorBenchmarks:
             'dividend_high': 2.5,    # Lower dividends, growth focus
             'dividend_medium': 1.5,
             'dividend_low': 0.8,
+
+            'promoter_high': 50.0,
+            'promoter_medium': 30.0,
         },
 
         # FINANCIAL SERVICES - BANKS
@@ -137,6 +144,9 @@ class SectorBenchmarks:
             'dividend_high': 3.5,    # Good dividend payers
             'dividend_medium': 2.5,
             'dividend_low': 1.5,
+
+            'promoter_high': 50.0,
+            'promoter_medium': 30.0,
         },
 
         # PHARMACEUTICALS
@@ -171,6 +181,9 @@ class SectorBenchmarks:
             'dividend_high': 2.0,
             'dividend_medium': 1.2,
             'dividend_low': 0.5,
+
+            'promoter_high': 50.0,
+            'promoter_medium': 30.0,
         },
 
         # AUTOMOBILE
@@ -205,6 +218,9 @@ class SectorBenchmarks:
             'dividend_high': 3.0,    # Mature companies pay dividends
             'dividend_medium': 2.0,
             'dividend_low': 1.0,
+
+            'promoter_high': 50.0,
+            'promoter_medium': 30.0,
         },
 
         # FMCG (Fast Moving Consumer Goods)
@@ -239,6 +255,9 @@ class SectorBenchmarks:
             'dividend_high': 2.5,    # Stable dividend payers
             'dividend_medium': 1.8,
             'dividend_low': 1.0,
+
+            'promoter_high': 50.0,
+            'promoter_medium': 30.0,
         },
 
         # ENERGY (Oil & Gas)
@@ -273,6 +292,9 @@ class SectorBenchmarks:
             'dividend_high': 4.0,    # Good dividend payers
             'dividend_medium': 3.0,
             'dividend_low': 2.0,
+
+            'promoter_high': 50.0,
+            'promoter_medium': 30.0,
         },
 
         # TELECOMMUNICATIONS
@@ -307,6 +329,9 @@ class SectorBenchmarks:
             'dividend_high': 3.0,
             'dividend_medium': 2.0,
             'dividend_low': 1.0,
+
+            'promoter_high': 50.0,
+            'promoter_medium': 30.0,
         },
 
         # REAL ESTATE
@@ -341,6 +366,9 @@ class SectorBenchmarks:
             'dividend_high': 2.0,
             'dividend_medium': 1.0,
             'dividend_low': 0.5,
+
+            'promoter_high': 50.0,
+            'promoter_medium': 30.0,
         },
 
         # METALS & MINING
@@ -375,6 +403,9 @@ class SectorBenchmarks:
             'dividend_high': 4.0,    # High dividends in good times
             'dividend_medium': 2.5,
             'dividend_low': 1.0,
+
+            'promoter_high': 50.0,
+            'promoter_medium': 30.0,
         },
     }
 

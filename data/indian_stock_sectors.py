@@ -109,7 +109,6 @@ INDIAN_STOCK_SECTORS = {
     'LT': 'Infrastructure',
     'ADANIENT': 'Infrastructure',
     'ADANIPORTS': 'Infrastructure',
-    'GRASIM': 'Infrastructure',
 
     # Chemicals
     'PIDILITIND': 'Chemicals',

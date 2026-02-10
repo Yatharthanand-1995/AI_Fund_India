@@ -298,20 +298,22 @@ class FundamentalsAgent:
         metrics['current_ratio'] = MetricExtractor.get_safe_value(info, 'currentRatio')
         metrics['quick_ratio'] = MetricExtractor.get_safe_value(info, 'quickRatio')
 
-        # Cash flow metrics (CRITICAL ADDITIONS)
-        metrics['free_cash_flow'] = MetricExtractor.get_safe_value(info, 'freeCashflow')
-        metrics['operating_cash_flow'] = MetricExtractor.get_safe_value(info, 'operatingCashflow')
+        # Cash flow metrics — use large max_value; Indian large-caps have FCF in tens of billions ₹
+        metrics['free_cash_flow'] = MetricExtractor.get_safe_value(info, 'freeCashflow', max_value=1e15)
+        metrics['operating_cash_flow'] = MetricExtractor.get_safe_value(info, 'operatingCashflow', max_value=1e15)
 
         # Calculate Free Cash Flow Yield (FCF / Market Cap)
-        if metrics['free_cash_flow'] and metrics.get('market_cap'):
-            metrics['fcf_yield'] = (metrics['free_cash_flow'] / MetricExtractor.get_safe_value(info, 'marketCap')) * 100
-        else:
-            metrics['fcf_yield'] = None
+        # Use already-extracted market_cap (set below) — NOTE: market_cap is extracted after
+        # this block, so we defer FCF yield calculation until after market_cap is available.
+        metrics['fcf_yield'] = None  # computed below after market_cap extraction
 
-        # Dividend metrics (CRITICAL ADDITIONS)
-        metrics['dividend_yield'] = MetricExtractor.get_safe_value(info, 'dividendYield', multiply=100)
+        # Dividend metrics
+        # NOTE: yfinance returns dividendYield and fiveYearAvgDividendYield already as
+        # percentage values (e.g. 0.97 = 0.97%), unlike ratio fields (returnOnEquity etc.)
+        # which are decimals and need multiply=100. Do NOT multiply these by 100.
+        metrics['dividend_yield'] = MetricExtractor.get_safe_value(info, 'dividendYield')
         metrics['payout_ratio'] = MetricExtractor.get_safe_value(info, 'payoutRatio', multiply=100)
-        metrics['five_year_avg_dividend_yield'] = MetricExtractor.get_safe_value(info, 'fiveYearAvgDividendYield', multiply=100)
+        metrics['five_year_avg_dividend_yield'] = MetricExtractor.get_safe_value(info, 'fiveYearAvgDividendYield')
 
         # Indian-specific metrics
         metrics['promoter_holding'] = MetricExtractor.get_safe_value(info, 'heldPercentInsiders', multiply=100)
@@ -319,10 +321,14 @@ class FundamentalsAgent:
         if metrics['promoter_holding'] is None:
             metrics['promoter_holding'] = MetricExtractor.get_safe_value(info, 'insiderOwnership', multiply=100)
 
-        # Market metrics
-        metrics['market_cap'] = MetricExtractor.get_safe_value(info, 'marketCap')
+        # Market metrics — use large max_value for absolute rupee amounts
+        metrics['market_cap'] = MetricExtractor.get_safe_value(info, 'marketCap', max_value=1e15)
         metrics['book_value'] = MetricExtractor.get_safe_value(info, 'bookValue')
-        metrics['enterprise_value'] = MetricExtractor.get_safe_value(info, 'enterpriseValue')
+        metrics['enterprise_value'] = MetricExtractor.get_safe_value(info, 'enterpriseValue', max_value=1e15)
+
+        # FCF yield deferred until market_cap is available
+        if metrics['free_cash_flow'] and metrics['market_cap']:
+            metrics['fcf_yield'] = (metrics['free_cash_flow'] / metrics['market_cap']) * 100
 
         # Additional context
         # Use Yahoo Finance sector if available, otherwise use Indian stock sector mapping
