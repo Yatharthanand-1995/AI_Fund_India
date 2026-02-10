@@ -3,11 +3,13 @@
  */
 
 import { create } from 'zustand';
+import { persist, createJSONStorage } from 'zustand/middleware';
 import type {
   StockAnalysis,
   MarketRegime,
   ToastMessage,
   StockUniverseResponse,
+  TopPicksResponse,
 } from '@/types';
 import { generateId } from '@/lib/utils';
 
@@ -36,6 +38,14 @@ export interface TopPicksFilters {
   sortBy: 'score' | 'confidence' | 'symbol';
   sector: string;
   recommendation: string;
+}
+
+export interface WatchlistItem {
+  symbol: string;
+  added_at: number;
+  latest_score?: number;
+  latest_recommendation?: string;
+  latest_sector?: string;
 }
 
 interface AppState {
@@ -80,17 +90,24 @@ interface AppState {
   // ========================================================================
 
   // Watchlist management
-  watchlist: string[];
-  addToWatchlist: (symbol: string) => void;
+  watchlist: WatchlistItem[];
+  addToWatchlist: (symbol: string, stockData?: Partial<WatchlistItem>) => void;
   removeFromWatchlist: (symbol: string) => void;
   isInWatchlist: (symbol: string) => boolean;
-  setWatchlist: (symbols: string[]) => void;
+  updateWatchlistItem: (symbol: string, updates: Partial<WatchlistItem>) => void;
+  setWatchlist: (items: WatchlistItem[]) => void;
 
   // Historical data cache (with TTL)
   historicalCache: Map<string, { data: HistoricalData; timestamp: number }>;
   cacheHistoricalData: (symbol: string, data: HistoricalData) => void;
   getHistoricalData: (symbol: string, maxAge?: number) => HistoricalData | undefined;
   clearHistoricalCache: () => void;
+
+  // Top picks cache (with TTL)
+  topPicksCache: Map<string, { data: TopPicksResponse; timestamp: number }>;
+  cacheTopPicks: (key: string, data: TopPicksResponse) => void;
+  getCachedTopPicks: (key: string, maxAge?: number) => TopPicksResponse | undefined;
+  clearTopPicksCache: () => void;
 
   // Comparison state (2-4 stocks)
   comparisonStocks: string[];
@@ -110,7 +127,9 @@ interface AppState {
   clearRecentSearches: () => void;
 }
 
-export const useStore = create<AppState>((set, get) => ({
+export const useStore = create<AppState>()(
+  persist(
+    (set, get) => ({
   // Market regime
   marketRegime: null,
   setMarketRegime: (regime) => set({ marketRegime: regime }),
@@ -175,11 +194,17 @@ export const useStore = create<AppState>((set, get) => ({
 
   watchlist: [],
 
-  addToWatchlist: (symbol) => {
+  addToWatchlist: (symbol, stockData) => {
     const normalized = symbol.toUpperCase();
     set((state) => {
-      if (!state.watchlist.includes(normalized)) {
-        return { watchlist: [...state.watchlist, normalized] };
+      const exists = state.watchlist.find(item => item.symbol === normalized);
+      if (!exists) {
+        const newItem: WatchlistItem = {
+          symbol: normalized,
+          added_at: Date.now(),
+          ...stockData
+        };
+        return { watchlist: [...state.watchlist, newItem] };
       }
       return state;
     });
@@ -188,17 +213,28 @@ export const useStore = create<AppState>((set, get) => ({
   removeFromWatchlist: (symbol) => {
     const normalized = symbol.toUpperCase();
     set((state) => ({
-      watchlist: state.watchlist.filter((s) => s !== normalized),
+      watchlist: state.watchlist.filter((item) => item.symbol !== normalized),
     }));
   },
 
   isInWatchlist: (symbol) => {
     const normalized = symbol.toUpperCase();
-    return get().watchlist.includes(normalized);
+    return get().watchlist.some(item => item.symbol === normalized);
   },
 
-  setWatchlist: (symbols) => {
-    set({ watchlist: symbols.map((s) => s.toUpperCase()) });
+  updateWatchlistItem: (symbol, updates) => {
+    const normalized = symbol.toUpperCase();
+    set((state) => ({
+      watchlist: state.watchlist.map(item =>
+        item.symbol === normalized
+          ? { ...item, ...updates }
+          : item
+      ),
+    }));
+  },
+
+  setWatchlist: (items) => {
+    set({ watchlist: items });
   },
 
   // ========================================================================
@@ -234,6 +270,40 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   clearHistoricalCache: () => set({ historicalCache: new Map() }),
+
+  // ========================================================================
+  // Top Picks Cache (with TTL)
+  // ========================================================================
+
+  topPicksCache: new Map(),
+
+  cacheTopPicks: (key, data) => {
+    const cache = new Map(get().topPicksCache);
+    cache.set(key, {
+      data,
+      timestamp: Date.now(),
+    });
+    set({ topPicksCache: cache });
+  },
+
+  getCachedTopPicks: (key, maxAge = 900000) => {
+    // Default maxAge: 15 minutes (900000ms)
+    const cached = get().topPicksCache.get(key);
+    if (!cached) return undefined;
+
+    const age = Date.now() - cached.timestamp;
+    if (age > maxAge) {
+      // Cache expired, remove it
+      const cache = new Map(get().topPicksCache);
+      cache.delete(key);
+      set({ topPicksCache: cache });
+      return undefined;
+    }
+
+    return cached.data;
+  },
+
+  clearTopPicksCache: () => set({ topPicksCache: new Map() }),
 
   // ========================================================================
   // Comparison State (2-4 stocks)
@@ -314,4 +384,33 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   clearRecentSearches: () => set({ recentSearches: [] }),
-}));
+    }),
+    {
+      name: 'indian-stock-fund-storage',
+      storage: createJSONStorage(() => localStorage),
+      version: 2, // Increment version for watchlist migration
+      // Migration function to handle version upgrades
+      migrate: (persistedState: any, version: number) => {
+        if (version < 2) {
+          // Migrate watchlist from string[] to WatchlistItem[]
+          if (Array.isArray(persistedState.watchlist)) {
+            persistedState.watchlist = persistedState.watchlist.map(
+              (symbol: string) => ({
+                symbol: typeof symbol === 'string' ? symbol : String(symbol),
+                added_at: Date.now(),
+              })
+            );
+          }
+        }
+        return persistedState;
+      },
+      // Only persist specific slices to avoid bloat and handle Maps gracefully
+      partialize: (state) => ({
+        watchlist: state.watchlist,
+        recentSearches: state.recentSearches,
+        topPicksFilters: state.topPicksFilters,
+        comparisonStocks: state.comparisonStocks,
+      }),
+    }
+  )
+);

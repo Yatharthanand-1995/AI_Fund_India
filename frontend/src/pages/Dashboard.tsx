@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { useStore } from '@/store/useStore';
 import api from '@/lib/api';
 import Loading from '@/components/ui/Loading';
+import { StockCardSkeleton, ChartSkeleton } from '@/components/ui/SkeletonLoader';
 import StockCard from '@/components/StockCard';
 import MarketRegimeCard from '@/components/MarketRegimeCard';
 import { StockPriceChart } from '@/components/charts/StockPriceChart';
@@ -33,21 +34,19 @@ export default function Dashboard() {
   const loadDashboardData = async () => {
     try {
       // Load regime history
-      const regimeRes = await api.get('/history/regime?days=30');
-      setRegimeHistory(regimeRes.data.history || []);
+      const regimeData = await api.getRegimeHistory(30);
+      setRegimeHistory(regimeData.history || []);
 
       // Load system stats
-      const statsRes = await api.get('/analytics/system');
-      setSystemStats(statsRes.data);
+      const statsData = await api.getSystemAnalytics();
+      setSystemStats(statsData);
     } catch (err) {
-      console.warn('Failed to load dashboard data:', err);
+      // Failed to load dashboard data, but page can still function
     }
   };
 
-  const handleAnalyze = async (e: React.FormEvent) => {
-    e.preventDefault();
-
-    if (!symbol.trim()) {
+  const analyzeSymbol = async (symbolToAnalyze: string) => {
+    if (!symbolToAnalyze.trim()) {
       addToast({ type: 'warning', message: 'Please enter a stock symbol' });
       return;
     }
@@ -56,12 +55,12 @@ export default function Dashboard() {
 
     try {
       const result = await api.analyzeStock({
-        symbol: symbol.toUpperCase(),
+        symbol: symbolToAnalyze.toUpperCase(),
         include_narrative: true,
       });
 
       setAnalysis(result);
-      addRecentSearch(symbol.toUpperCase());
+      addRecentSearch(symbolToAnalyze.toUpperCase());
       addToast({
         type: 'success',
         message: `Analysis complete for ${result.symbol}`,
@@ -75,6 +74,11 @@ export default function Dashboard() {
     } finally {
       setLoading('analyze', false);
     }
+  };
+
+  const handleAnalyze = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await analyzeSymbol(symbol);
   };
 
   const quickSymbols = recentSearches.length > 0
@@ -177,25 +181,27 @@ export default function Dashboard() {
               </button>
             </div>
 
-            {watchlist.length > 0 ? (
+            {watchlist?.length > 0 ? (
               <div className="space-y-2">
                 {watchlist.slice(0, 5).map((item) => (
                   <button
-                    key={item.symbol}
+                    key={item?.symbol || Math.random()}
                     onClick={() => {
-                      setSymbol(item.symbol);
-                      handleAnalyze({ preventDefault: () => {} } as any);
+                      if (item?.symbol) {
+                        setSymbol(item.symbol);
+                        analyzeSymbol(item.symbol);
+                      }
                     }}
                     className="w-full flex items-center justify-between p-3 bg-gray-50 hover:bg-gray-100 rounded-lg transition-colors"
                   >
-                    <span className="font-medium text-gray-900">{item.symbol}</span>
+                    <span className="font-medium text-gray-900">{item?.symbol || 'Unknown'}</span>
                     <div className="flex items-center gap-3">
-                      {item.latest_score && (
+                      {item?.latest_score != null && (
                         <span className="text-sm font-semibold text-gray-900">
                           {item.latest_score.toFixed(1)}
                         </span>
                       )}
-                      {item.latest_recommendation && (
+                      {item?.latest_recommendation && (
                         <span className="text-xs px-2 py-1 bg-blue-100 text-blue-800 rounded">
                           {item.latest_recommendation}
                         </span>
@@ -242,7 +248,7 @@ export default function Dashboard() {
                     </div>
                     <div className="text-right">
                       <p className="text-lg font-bold text-gray-900">
-                        {sector.avg_score.toFixed(1)}
+                        {sector.avg_score != null ? sector.avg_score.toFixed(1) : 'N/A'}
                       </p>
                       <p className="text-xs text-gray-500">{sector.top_pick}</p>
                     </div>
@@ -330,8 +336,24 @@ export default function Dashboard() {
         </div>
       </div>
 
+      {/* Loading State */}
+      {loading.analyze && (
+        <div className="space-y-6 animate-fade-in">
+          {/* Stock Card Skeleton */}
+          <div className="max-w-6xl mx-auto">
+            <StockCardSkeleton />
+          </div>
+
+          {/* Charts Skeletons */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <ChartSkeleton />
+            <ChartSkeleton />
+          </div>
+        </div>
+      )}
+
       {/* Analysis Result with Charts */}
-      {analysis && (
+      {analysis && !loading.analyze && (
         <div className="space-y-6 animate-fade-in">
           {/* Stock Card */}
           <div className="max-w-6xl mx-auto">
