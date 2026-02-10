@@ -147,20 +147,20 @@ export default function Ideas() {
     return filtered.slice(0, topCount);
   }, [data, sectorFilter, recommendationFilter, sortBy, topCount]);
 
-  // Recommendation distribution
+  // Recommendation distribution — based on filtered + limited picks so chart matches what's shown
   const recommendationDistribution = useMemo(() => {
-    if (!data?.top_picks) return [];
+    if (!filteredPicks.length) return [];
     const counts: Record<string, number> = {};
-    data.top_picks.forEach(pick => {
+    filteredPicks.forEach(pick => {
       const rec = pick.recommendation || 'UNKNOWN';
       counts[rec] = (counts[rec] || 0) + 1;
     });
     return Object.entries(counts).map(([recommendation, count]) => ({
       recommendation,
       count,
-      percentage: (count / data.top_picks.length) * 100
+      percentage: (count / filteredPicks.length) * 100
     }));
-  }, [data]);
+  }, [filteredPicks]);
 
   // Export functions
   const exportToCSV = () => {
