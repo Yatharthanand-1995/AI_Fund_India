@@ -21,8 +21,8 @@ export function useScreener(_initialFilters: ScreenerFilters = {}) {
     setError(null);
 
     try {
-      // Fetch a large batch of stocks for screening
-      const response = await api.getTopPicks(100, false);
+      // Fetch a large batch of stocks for screening (backend max is 50)
+      const response = await api.getTopPicks(50, false);
       const stocks = response.top_picks || [];
 
       setAllStocks(stocks);

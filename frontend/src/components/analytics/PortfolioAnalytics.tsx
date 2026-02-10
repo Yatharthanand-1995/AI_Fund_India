@@ -42,6 +42,12 @@ export default function PortfolioAnalytics() {
 
       const validAnalyses = analyses.filter(a => a !== null);
 
+      if (validAnalyses.length === 0) {
+        setAnalytics({ error: 'Could not load analysis for watchlist stocks. Check your connection.' });
+        setLoading(false);
+        return;
+      }
+
       // Calculate portfolio metrics
       const avgScore = validAnalyses.reduce((sum, a) => sum + a.composite_score, 0) / validAnalyses.length;
       const recommendations = validAnalyses.reduce((acc, a) => {
@@ -51,7 +57,8 @@ export default function PortfolioAnalytics() {
 
       // Sector distribution
       const sectors = validAnalyses.reduce((acc, a) => {
-        const sector = a.agent_scores.quality?.metrics?.sector || 'Unknown';
+        const sector = a.agent_scores.fundamentals?.metrics?.sector ||
+                       a.agent_scores.quality?.metrics?.sector || 'Unknown';
         acc[sector] = (acc[sector] || 0) + 1;
         return acc;
       }, {} as Record<string, number>);
@@ -65,15 +72,18 @@ export default function PortfolioAnalytics() {
       }));
 
       // Portfolio returns
+      const returnCount = returns.length || 1; // avoid division by zero
       const avgReturns = {
-        '1m': returns.reduce((sum, r) => sum + r['1m'], 0) / returns.length,
-        '3m': returns.reduce((sum, r) => sum + r['3m'], 0) / returns.length,
-        '6m': returns.reduce((sum, r) => sum + r['6m'], 0) / returns.length,
+        '1m': returns.reduce((sum, r) => sum + r['1m'], 0) / returnCount,
+        '3m': returns.reduce((sum, r) => sum + r['3m'], 0) / returnCount,
+        '6m': returns.reduce((sum, r) => sum + r['6m'], 0) / returnCount,
       };
 
       // Risk metrics
       const volatilities = validAnalyses.map(a => a.agent_scores.quality?.metrics?.volatility || 0);
-      const avgVolatility = volatilities.reduce((sum, v) => sum + v, 0) / volatilities.length;
+      const avgVolatility = volatilities.length > 0
+        ? volatilities.reduce((sum, v) => sum + v, 0) / volatilities.length
+        : 0;
 
       setAnalytics({
         totalStocks: validAnalyses.length,

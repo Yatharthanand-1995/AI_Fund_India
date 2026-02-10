@@ -63,7 +63,7 @@ export default function PerformanceMetrics() {
                 <p className="text-xs font-medium text-gray-600">Uptime</p>
               </div>
               <p className="text-2xl font-bold text-green-700">
-                {analytics.uptime_hours ? `${analytics.uptime_hours.toFixed(1)}h` : 'N/A'}
+                {analytics.uptime_seconds != null ? `${(analytics.uptime_seconds / 3600).toFixed(1)}h` : 'N/A'}
               </p>
             </div>
 
@@ -85,7 +85,7 @@ export default function PerformanceMetrics() {
                 <p className="text-xs font-medium text-gray-600">Avg Response</p>
               </div>
               <p className="text-2xl font-bold text-purple-700">
-                {analytics.avg_response_time ? `${analytics.avg_response_time.toFixed(0)}ms` : 'N/A'}
+                {analytics.avg_response_time_ms != null ? `${analytics.avg_response_time_ms.toFixed(0)}ms` : 'N/A'}
               </p>
             </div>
 
@@ -104,31 +104,19 @@ export default function PerformanceMetrics() {
       </Card>
 
       {/* Agent Performance */}
-      {analytics.agent_performance && (
+      {analytics.agent_performance && Object.keys(analytics.agent_performance).length > 0 && (
         <Card>
           <div className="p-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">Agent Response Times</h3>
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">Agent Avg Response Times</h3>
             <div className="space-y-3">
-              {Object.entries(analytics.agent_performance as Record<string, any>).map(([agent, perf]: [string, any]) => (
+              {Object.entries(analytics.agent_performance as Record<string, number>).map(([agent, avgMs]) => (
                 <div key={agent} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                  <div>
-                    <p className="font-medium text-gray-900 capitalize">
-                      {agent.replace('_', ' ')}
-                    </p>
-                    <p className="text-xs text-gray-600">
-                      {perf.calls || 0} calls
-                    </p>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-lg font-bold text-gray-900">
-                      {perf.avg_time ? `${perf.avg_time.toFixed(0)}ms` : 'N/A'}
-                    </p>
-                    {perf.success_rate !== undefined && (
-                      <p className="text-xs text-gray-600">
-                        {(perf.success_rate * 100).toFixed(1)}% success
-                      </p>
-                    )}
-                  </div>
+                  <p className="font-medium text-gray-900 capitalize">
+                    {agent.replace(/_/g, ' ')}
+                  </p>
+                  <p className="text-lg font-bold text-gray-900">
+                    {typeof avgMs === 'number' ? `${avgMs.toFixed(0)}ms` : 'N/A'}
+                  </p>
                 </div>
               ))}
             </div>

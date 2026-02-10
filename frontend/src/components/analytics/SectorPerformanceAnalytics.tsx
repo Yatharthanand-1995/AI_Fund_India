@@ -23,17 +23,15 @@ export default function SectorPerformanceAnalytics() {
   const loadSectorAnalytics = async () => {
     setLoading(true);
     try {
-      // Get sector analysis from API
-      await api.getSectorAnalysis(7);
-
       // Get top picks to analyze by sector
       const response = await api.getTopPicks(50, false);
       const stocks = response.top_picks || [];
 
-      // Group stocks by sector
+      // Group stocks by sector (fundamentals first, quality as fallback)
       const sectorGroups: Record<string, any[]> = {};
       stocks.forEach((stock: any) => {
-        const sector = stock.agent_scores.quality?.metrics?.sector || 'Unknown';
+        const sector = stock.agent_scores.fundamentals?.metrics?.sector ||
+                       stock.agent_scores.quality?.metrics?.sector || 'Unknown';
         if (!sectorGroups[sector]) {
           sectorGroups[sector] = [];
         }
@@ -67,9 +65,15 @@ export default function SectorPerformanceAnalytics() {
       // Sort by average score
       sectorMetrics.sort((a, b) => b.avgScore - a.avgScore);
 
-      // Best and worst sectors
+      if (sectorMetrics.length === 0) {
+        setAnalytics({ error: 'No sector data available yet. Run some stock analyses first.' });
+        setLoading(false);
+        return;
+      }
+
+      // Best and worst sectors (may be the same if only 1 sector)
       const bestSector = sectorMetrics[0];
-      const worstSector = sectorMetrics[sectorMetrics.length - 1];
+      const worstSector = sectorMetrics.length > 1 ? sectorMetrics[sectorMetrics.length - 1] : sectorMetrics[0];
 
       // Prepare chart data
       const sectorScoreData = sectorMetrics.map(s => ({

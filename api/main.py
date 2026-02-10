@@ -708,7 +708,7 @@ async def analyze_batch(body: BatchAnalyzeRequest, request: Request):
 
 @app.get("/portfolio/top-picks", response_model=TopPicksResponse, tags=["Portfolio"])
 async def get_top_picks(
-    limit: int = Query(default=10, ge=1, le=50, description="Number of top picks"),
+    limit: int = Query(default=10, ge=1, le=100, description="Number of top picks"),
     include_narrative: bool = Query(default=False, description="Include narratives (slower)")
 ):
     """
@@ -1436,7 +1436,7 @@ async def compare_stocks(request: CompareRequest):
         results = []
 
         # Analyze each stock
-        for symbol in body.symbols:
+        for symbol in request.symbols:
             # Try to get from cache first
             cache_key = get_cache_key('analyze', symbol)
             cached = get_from_cache(cache_key)
@@ -1726,7 +1726,7 @@ class BacktestRequest(BaseModel):
 
 @app.post("/backtest/run", tags=["Backtest"])
 @limiter.limit("5/hour")
-async def run_backtest(request: BacktestRequest, background_tasks: BackgroundTasks, http_request: Request):
+async def run_backtest(backtest_request: BacktestRequest, background_tasks: BackgroundTasks, request: Request):
     """
     Run a backtest on specified symbols and date range
 
@@ -1734,29 +1734,29 @@ async def run_backtest(request: BacktestRequest, background_tasks: BackgroundTas
     """
     try:
         # Parse dates
-        start_date = datetime.fromisoformat(request.start_date)
-        end_date = datetime.fromisoformat(request.end_date)
+        start_date = datetime.fromisoformat(backtest_request.start_date)
+        end_date = datetime.fromisoformat(backtest_request.end_date)
 
         # Validate date range
         if end_date <= start_date:
             raise HTTPException(status_code=400, detail="End date must be after start date")
 
         # Get symbols (default to NIFTY 50 if not provided)
-        symbols = request.symbols
+        symbols = backtest_request.symbols
         if symbols is None:
             symbols = stock_universe.get_symbols('NIFTY_50')
             logger.info(f"Using default NIFTY 50 universe: {len(symbols)} stocks")
 
         # Generate name if not provided
-        name = request.name or f"Backtest {start_date.date()} to {end_date.date()}"
+        name = backtest_request.name or f"Backtest {start_date.date()} to {end_date.date()}"
 
         # Create configuration for saving
         config = BacktestConfig(
             name=name,
-            symbols=request.symbols,  # Store original (None if NIFTY 50)
+            symbols=backtest_request.symbols,  # Store original (None if NIFTY 50)
             start_date=start_date,
             end_date=end_date,
-            frequency=request.frequency,
+            frequency=backtest_request.frequency,
             benchmark='^NSEI'
         )
 
@@ -1771,7 +1771,7 @@ async def run_backtest(request: BacktestRequest, background_tasks: BackgroundTas
             symbols=symbols,
             start_date=start_date,
             end_date=end_date,
-            rebalance_frequency=request.frequency,
+            rebalance_frequency=backtest_request.frequency,
             parallel=True
         )
 
@@ -1821,7 +1821,7 @@ async def run_backtest(request: BacktestRequest, background_tasks: BackgroundTas
             start_date=start_date,
             end_date=end_date,
             symbols=symbols,  # Use actual symbols (not None)
-            frequency=request.frequency,
+            frequency=backtest_request.frequency,
             metadata={
                 'config': config.to_dict(),  # Save configuration for re-running
                 'analysis': serializable_analysis,
@@ -1858,7 +1858,7 @@ async def run_backtest(request: BacktestRequest, background_tasks: BackgroundTas
 
 @app.post("/backtest/rerun/{run_id}", tags=["Backtest"])
 @limiter.limit("5/hour")
-async def rerun_backtest(run_id: str, update_dates: bool = Query(default=True), http_request: Request = None):
+async def rerun_backtest(run_id: str, update_dates: bool = Query(default=True), request: Request = None):
     """
     Re-run a previous backtest with saved configuration
 
