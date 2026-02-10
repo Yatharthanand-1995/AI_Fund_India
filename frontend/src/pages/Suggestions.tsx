@@ -8,7 +8,7 @@
  * - Similar stocks discovery
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Lightbulb, RefreshCw, TrendingUp, Target, Grid3x3, Sparkles } from 'lucide-react';
 import Card from '@/components/ui/Card';
 import Loading from '@/components/ui/Loading';
@@ -103,7 +103,7 @@ export default function Suggestions() {
     }
   };
 
-  const getDisplayedSuggestions = (): StockSuggestion[] => {
+  const displayedSuggestions = useMemo((): StockSuggestion[] => {
     switch (activeCategory) {
       case 'personalized':
         return suggestions.personalized;
@@ -111,7 +111,7 @@ export default function Suggestions() {
         return suggestions.diversification;
       case 'trending':
         return suggestions.trending;
-      case 'all':
+      case 'all': {
         // Combine all, dedupe, and sort by relevance
         const allSugs = [
           ...suggestions.personalized,
@@ -125,12 +125,11 @@ export default function Suggestions() {
           return acc;
         }, [] as StockSuggestion[]);
         return uniqueSugs.sort((a, b) => b.relevanceScore - a.relevanceScore).slice(0, 20);
+      }
       default:
         return [];
     }
-  };
-
-  const displayedSuggestions = getDisplayedSuggestions();
+  }, [activeCategory, suggestions]);
 
   if (loading) {
     return (

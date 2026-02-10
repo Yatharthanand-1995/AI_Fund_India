@@ -8,7 +8,7 @@
  * - Enhanced stock cards with mini charts
  */
 
-import { useEffect, useState, useMemo, useRef } from 'react';
+import { useEffect, useState, useMemo, useRef, memo } from 'react';
 import { TrendingUp, Download, Filter, RefreshCw } from 'lucide-react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useStore } from '@/store/useStore';
@@ -23,7 +23,7 @@ import type { TopPicksResponse, StockAnalysis } from '@/types';
  * Virtual scrolling component for stock lists
  * Renders only visible items for better performance with large lists
  */
-function VirtualStockList({ stocks }: { stocks: StockAnalysis[] }) {
+const VirtualStockList = memo(function VirtualStockList({ stocks }: { stocks: StockAnalysis[] }) {
   const parentRef = useRef<HTMLDivElement>(null);
 
   const virtualizer = useVirtualizer({
@@ -78,7 +78,7 @@ function VirtualStockList({ stocks }: { stocks: StockAnalysis[] }) {
       </div>
     </div>
   );
-}
+});
 
 export default function TopPicks() {
   const {

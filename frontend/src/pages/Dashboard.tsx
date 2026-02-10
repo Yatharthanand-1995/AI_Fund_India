@@ -14,6 +14,7 @@ import { useWatchlist } from '@/hooks/useWatchlist';
 import { useStockHistory } from '@/hooks/useStockHistory';
 import { useSectorAnalysis } from '@/hooks/useSectorAnalysis';
 import { SymbolInput } from '@/components/ui/SymbolInput';
+import { DEFAULT_STOCK_SYMBOLS } from '@/lib/constants';
 import type { StockAnalysis } from '@/types';
 
 export default function Dashboard() {
@@ -84,7 +85,7 @@ export default function Dashboard() {
 
   const quickSymbols = recentSearches.length > 0
     ? recentSearches.slice(0, 5)
-    : ['TCS', 'INFY', 'RELIANCE', 'HDFCBANK', 'ICICIBANK'];
+    : [...DEFAULT_STOCK_SYMBOLS];
 
   const topSectors = getTopSectors(3);
 
