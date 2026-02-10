@@ -132,14 +132,21 @@ class FundamentalsAgent:
             info = cached_data.get('info', {}) if cached_data else {}
             financials = cached_data.get('financials', pd.DataFrame()) if cached_data else pd.DataFrame()
 
-            # Check if we have fundamental data
-            # In backtest mode, we only have price data, so return neutral score
-            if not info or len(info) == 0:
-                logger.info(f"No fundamental data available for {symbol} (backtest mode) - returning neutral score")
+            # Check if we have actual fundamental (financial) data.
+            # info from NSE provider only contains price fields and is non-empty, so we must
+            # check for actual financial keys rather than just len(info) == 0.
+            FINANCIAL_KEYS = [
+                'returnOnEquity', 'trailingPE', 'priceToBook',
+                'revenueGrowth', 'debtToEquity', 'profitMargins',
+                'earningsGrowth', 'returnOnAssets'
+            ]
+            has_fundamental_data = any(info.get(k) is not None for k in FINANCIAL_KEYS)
+            if not has_fundamental_data:
+                logger.info(f"No fundamental financial data available for {symbol} - returning neutral score")
                 return {
                     'score': 50.0,
                     'confidence': 0.3,
-                    'reasoning': 'No fundamental data available in backtest mode - using neutral score',
+                    'reasoning': 'No fundamental financial data available - using neutral score',
                     'metrics': {},
                     'breakdown': {
                         'profitability_score': 0.0,
@@ -150,7 +157,7 @@ class FundamentalsAgent:
                         'promoter_bonus': 0.0
                     },
                     'agent': self.agent_name,
-                    'note': 'backtest_mode_no_fundamentals'
+                    'note': 'no_fundamental_data'
                 }
 
             # Extract key metrics

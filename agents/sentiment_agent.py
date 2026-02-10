@@ -96,11 +96,18 @@ class SentimentAgent:
             # Extract info
             info = cached_data.get('info', {}) if cached_data else {}
 
-            if not info:
-                logger.warning(f"No info data available for {symbol}")
-                return self._neutral_result("No analyst data available")
+            # Check for actual sentiment keys rather than just empty info.
+            # NSE provider info dict has price fields but no analyst data, so
+            # we proceed with _extract_metrics which handles None gracefully.
+            SENTIMENT_KEYS = [
+                'recommendationMean', 'recommendationKey',
+                'targetMeanPrice', 'numberOfAnalystOpinions'
+            ]
+            has_sentiment_data = any(info.get(k) is not None for k in SENTIMENT_KEYS)
+            if not has_sentiment_data:
+                logger.info(f"No analyst/sentiment data available for {symbol} - using neutral defaults")
 
-            # Extract metrics
+            # Extract metrics (handles None fields gracefully)
             metrics = self._extract_metrics(symbol, info)
 
             # Calculate component scores

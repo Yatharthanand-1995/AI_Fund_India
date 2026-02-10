@@ -276,21 +276,31 @@ class HybridDataProvider(BaseDataProvider):
         - Yahoo provides financials and analyst ratings
         - Merge both for complete picture
         """
-        # If data came from NSE and missing financials, try to get from Yahoo
-        if data.get('provider') == 'NSEProvider' and self.yahoo_available:
-            if not data['data_completeness'].get('has_financials'):
+        # If financials are missing, try to enrich from Yahoo regardless of which provider
+        # was used. NSE never provides financials; Yahoo sometimes returns empty info too.
+        if self.yahoo_available and not data['data_completeness'].get('has_financials'):
+            # Skip if Yahoo was already the primary provider AND info already has financial keys
+            FINANCIAL_KEYS = ['returnOnEquity', 'trailingPE', 'priceToBook',
+                              'revenueGrowth', 'debtToEquity', 'profitMargins']
+            info = data.get('info', {})
+            already_has_financials = any(info.get(k) is not None for k in FINANCIAL_KEYS)
+
+            if not already_has_financials:
                 try:
-                    logger.info(f"Enriching NSE data with Yahoo Finance financials for {symbol}")
+                    logger.info(f"Enriching data with Yahoo Finance financials for {symbol}")
                     yahoo_data = self.yahoo_provider.get_comprehensive_data(symbol)
 
                     if not self._is_empty_data(yahoo_data):
                         data['financials'] = yahoo_data.get('financials', pd.DataFrame())
                         data['quarterly_financials'] = yahoo_data.get('quarterly_financials', pd.DataFrame())
+                        data.setdefault('info', {})
                         data['info'].update(yahoo_data.get('info', {}))
                         data['data_completeness']['has_financials'] = not yahoo_data.get('financials', pd.DataFrame()).empty
                         data['data_completeness']['has_quarterly'] = not yahoo_data.get('quarterly_financials', pd.DataFrame()).empty
-                        data['provider'] = 'HybridProvider (NSE + Yahoo)'
-                        logger.info(f"Successfully enriched data from Yahoo Finance")
+                        provider_tag = data.get('provider', 'Unknown')
+                        if 'Yahoo' not in provider_tag:
+                            data['provider'] = f'HybridProvider ({provider_tag} + Yahoo)'
+                        logger.info(f"Successfully enriched data from Yahoo Finance for {symbol}")
 
                 except Exception as e:
                     logger.warning(f"Failed to enrich data from Yahoo Finance: {e}")

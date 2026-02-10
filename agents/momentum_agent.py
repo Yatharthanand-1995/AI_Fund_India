@@ -488,6 +488,9 @@ class MomentumAgent:
             score += 5
         elif trend == 'strong_downtrend':
             score += 0
+        else:
+            # 'unknown' — SMA data unavailable, use neutral (same as sideways)
+            score += 10
 
         # Price vs SMA20 (10 points)
         price_vs_sma20 = metrics.get('price_vs_sma20')
@@ -500,6 +503,9 @@ class MomentumAgent:
                 score += 4   # Slightly below SMA20
             else:
                 score += 0   # Well below SMA20
+        else:
+            # SMA20 unavailable — use neutral (midpoint)
+            score += 5
 
         # MACD (5 points)
         macd = metrics.get('macd')
