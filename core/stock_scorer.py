@@ -15,6 +15,7 @@ import logging
 from typing import Dict, Optional, List
 from datetime import datetime
 import pandas as pd
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from agents.fundamentals_agent import FundamentalsAgent
 from agents.momentum_agent import MomentumAgent
@@ -23,6 +24,8 @@ from agents.sentiment_agent import SentimentAgent
 from agents.institutional_flow_agent import InstitutionalFlowAgent
 from data.hybrid_provider import HybridDataProvider
 from core.market_regime_service import MarketRegimeService
+from utils.validation import get_nifty_data
+from core.exceptions import DataValidationException
 
 logger = logging.getLogger(__name__)
 
@@ -55,15 +58,16 @@ class StockScorer:
     }
 
     # Recommendation thresholds
-    # More conservative thresholds to avoid too many buy signals
+    # ADJUSTED: Calibrated to achievable score range (39-59)
+    # Previous thresholds (80/68/58) were unreachable due to component constraints
     RECOMMENDATION_THRESHOLDS = {
-        'STRONG BUY': 80,  # Top tier stocks (>= 80)
-        'BUY': 68,         # Strong stocks (68-79)
-        'WEAK BUY': 58,    # Above average (58-67)
-        'HOLD_HIGH': 57,   # Neutral zone (45-57)
-        'HOLD_LOW': 45,    # Neutral zone (45-57)
-        'WEAK SELL': 35,   # Below average (35-44)
-        'SELL': 0          # Avoid (< 35)
+        'STRONG BUY': 55,  # Top tier stocks (>= 55) - near max achievable ~59
+        'BUY': 50,         # Strong stocks (50-54)
+        'WEAK BUY': 45,    # Above average (45-49)
+        'HOLD_HIGH': 42,   # Neutral zone (42-44)
+        'HOLD_LOW': 38,    # Neutral zone (38-41)
+        'WEAK SELL': 35,   # Below average (35-37)
+        'SELL': 0          # Avoid (< 35) - near min achievable ~39
     }
 
     def __init__(
@@ -120,13 +124,19 @@ class StockScorer:
 
         logger.info(f"Stock Scorer initialized (adaptive_weights: {use_adaptive_weights})")
 
-    def score_stock(self, symbol: str, nifty_data: Optional[pd.DataFrame] = None) -> Dict:
+    def score_stock(
+        self,
+        symbol: str,
+        nifty_data: Optional[pd.DataFrame] = None,
+        cached_data: Optional[Dict] = None
+    ) -> Dict:
         """
         Score a single stock using all 5 agents
 
         Args:
             symbol: Stock symbol (e.g., "TCS")
             nifty_data: NIFTY50 data for relative strength (optional, will fetch if None)
+            cached_data: Pre-fetched point-in-time data (for backtesting, optional)
 
         Returns:
             {
@@ -159,8 +169,12 @@ class StockScorer:
             logger.info(f"Using weights: {weights}")
 
             # Step 2: Fetch comprehensive data (once for all agents)
-            logger.info(f"Fetching comprehensive data for {symbol}...")
-            cached_data = self.data_provider.get_comprehensive_data(symbol)
+            # If cached_data provided (backtest mode), use it; otherwise fetch current data
+            if cached_data is None:
+                logger.info(f"Fetching comprehensive data for {symbol}...")
+                cached_data = self.data_provider.get_comprehensive_data(symbol)
+            else:
+                logger.info(f"Using pre-fetched point-in-time data for {symbol} (backtest mode)")
 
             if cached_data.get('error'):
                 raise ValueError(f"Data fetch failed: {cached_data.get('error')}")
@@ -173,36 +187,80 @@ class StockScorer:
             if nifty_data is None or nifty_data.empty:
                 logger.info("Fetching NIFTY50 data for relative strength...")
                 try:
-                    nifty_cached = self.data_provider.get_comprehensive_data('^NSEI')
-                    nifty_data = nifty_cached.get('historical_data', pd.DataFrame())
-                except Exception as e:
+                    nifty_data = get_nifty_data(self.data_provider, min_rows=20)
+                except DataValidationException as e:
                     logger.warning(f"Could not fetch NIFTY data: {e}")
                     nifty_data = pd.DataFrame()
 
-            # Step 4: Run all 5 agents
-            logger.info("Running all 5 agents...")
+            # Step 4: Run all 5 agents IN PARALLEL (5x speedup!)
+            logger.info("Running all 5 agents in parallel...")
 
-            # Fundamentals Agent
-            logger.info("  → Running Fundamentals Agent (36%)")
-            fundamentals_result = self.fundamentals_agent.analyze(symbol, cached_data)
+            # Define agent tasks for parallel execution
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                # Submit all agent tasks concurrently
+                future_to_agent = {
+                    executor.submit(
+                        self.fundamentals_agent.analyze,
+                        symbol,
+                        cached_data
+                    ): 'fundamentals',
 
-            # Momentum Agent
-            logger.info("  → Running Momentum Agent (27%)")
-            momentum_result = self.momentum_agent.analyze(
-                symbol, price_data, nifty_data, cached_data
-            )
+                    executor.submit(
+                        self.momentum_agent.analyze,
+                        symbol,
+                        price_data,
+                        nifty_data,
+                        cached_data
+                    ): 'momentum',
 
-            # Quality Agent
-            logger.info("  → Running Quality Agent (18%)")
-            quality_result = self.quality_agent.analyze(symbol, price_data, cached_data)
+                    executor.submit(
+                        self.quality_agent.analyze,
+                        symbol,
+                        price_data,
+                        cached_data
+                    ): 'quality',
 
-            # Sentiment Agent
-            logger.info("  → Running Sentiment Agent (9%)")
-            sentiment_result = self.sentiment_agent.analyze(symbol, cached_data)
+                    executor.submit(
+                        self.sentiment_agent.analyze,
+                        symbol,
+                        cached_data
+                    ): 'sentiment',
 
-            # Institutional Flow Agent
-            logger.info("  → Running Institutional Flow Agent (10%)")
-            flow_result = self.institutional_flow_agent.analyze(symbol, price_data, cached_data)
+                    executor.submit(
+                        self.institutional_flow_agent.analyze,
+                        symbol,
+                        price_data,
+                        cached_data
+                    ): 'institutional_flow'
+                }
+
+                # Collect results as they complete
+                agent_results = {}
+                for future in as_completed(future_to_agent):
+                    agent_name = future_to_agent[future]
+                    try:
+                        result = future.result()
+                        agent_results[agent_name] = result
+                        logger.info(f"  ✓ {agent_name.title()} Agent completed")
+                    except Exception as e:
+                        logger.error(f"  ✗ {agent_name.title()} Agent failed: {e}")
+                        # Return neutral result on failure
+                        agent_results[agent_name] = {
+                            'score': 50.0,
+                            'confidence': 0.1,
+                            'reasoning': f'Analysis failed: {str(e)}',
+                            'metrics': {},
+                            'breakdown': {},
+                            'agent': f'{agent_name.title()}Agent',
+                            'error': str(e)
+                        }
+
+            # Extract results (maintain backward compatibility)
+            fundamentals_result = agent_results['fundamentals']
+            momentum_result = agent_results['momentum']
+            quality_result = agent_results['quality']
+            sentiment_result = agent_results['sentiment']
+            flow_result = agent_results['institutional_flow']
 
             # Step 5: Calculate composite score
             logger.info("Calculating composite score...")
@@ -222,6 +280,16 @@ class StockScorer:
             analysis_time = (datetime.now() - start_time).total_seconds()
 
             # Step 8: Assemble complete result
+            # Compute trading levels (stop loss, target price)
+            current_price = cached_data.get('current_price')
+            trading_levels = self._compute_trading_levels(
+                current_price=current_price,
+                momentum_metrics=momentum_result.get('metrics', {}),
+                sentiment_metrics=sentiment_result.get('metrics', {}),
+                week_52_high=cached_data.get('week_52_high'),
+                week_52_low=cached_data.get('week_52_low'),
+            )
+
             result = {
                 'symbol': symbol,
                 'composite_score': round(composite_score, 2),
@@ -235,11 +303,14 @@ class StockScorer:
                     'institutional_flow': flow_result
                 },
                 'weights_used': weights,
-                'current_price': cached_data.get('current_price'),
+                'current_price': current_price,
                 'price_change_percent': cached_data.get('price_change_percent'),
                 'market_cap': cached_data.get('market_cap'),
                 'sector': cached_data.get('sector'),
                 'company_name': cached_data.get('company_name'),
+                'week_52_high': cached_data.get('week_52_high'),
+                'week_52_low': cached_data.get('week_52_low'),
+                'trading_levels': trading_levels,
                 'timestamp': datetime.now().isoformat(),
                 'analysis_time_seconds': round(analysis_time, 2),
                 'data_provider': cached_data.get('provider')
@@ -286,9 +357,8 @@ class StockScorer:
 
         # Fetch NIFTY data once for all stocks
         try:
-            nifty_cached = self.data_provider.get_comprehensive_data('^NSEI')
-            nifty_data = nifty_cached.get('historical_data', pd.DataFrame())
-        except Exception as e:
+            nifty_data = get_nifty_data(self.data_provider, min_rows=20)
+        except DataValidationException as e:
             logger.warning(f"Could not fetch NIFTY data: {e}")
             nifty_data = pd.DataFrame()
 
@@ -375,13 +445,13 @@ class StockScorer:
         Returns:
             Recommendation string
         """
-        # Adjust thresholds based on confidence
-        # Lower confidence = more conservative recommendations
-        confidence_factor = max(0.5, confidence)  # Minimum 0.5
+        # FIX: Removed confidence factor - it was creating backwards logic
+        # where low confidence made thresholds EASIER to pass instead of harder
+        # Now using fixed thresholds for consistent signal generation
 
-        if score >= self.RECOMMENDATION_THRESHOLDS['STRONG BUY'] * confidence_factor:
+        if score >= self.RECOMMENDATION_THRESHOLDS['STRONG BUY']:
             return 'STRONG BUY'
-        elif score >= self.RECOMMENDATION_THRESHOLDS['BUY'] * confidence_factor:
+        elif score >= self.RECOMMENDATION_THRESHOLDS['BUY']:
             return 'BUY'
         elif score >= self.RECOMMENDATION_THRESHOLDS['WEAK BUY']:
             return 'WEAK BUY'
@@ -429,6 +499,50 @@ class StockScorer:
         self.current_weights = weights
         logger.info(f"Custom weights set: {weights}")
 
+    def _compute_trading_levels(
+        self,
+        current_price,
+        momentum_metrics: Dict,
+        sentiment_metrics: Dict,
+        week_52_high=None,
+        week_52_low=None,
+    ) -> Dict:
+        """Compute actionable trading levels: stop loss, target price, risk/reward."""
+        if not current_price:
+            return {}
+
+        levels = {
+            'week_52_high': week_52_high,
+            'week_52_low': week_52_low,
+        }
+
+        # ATR-based stop loss (1.5x ATR below current price)
+        atr = momentum_metrics.get('atr')
+        if atr and atr > 0:
+            levels['atr'] = round(float(atr), 2)
+            levels['stop_loss'] = round(current_price - (1.5 * atr), 2)
+        else:
+            # Fallback: 7% trailing stop
+            levels['stop_loss'] = round(current_price * 0.93, 2)
+
+        # Target price: analyst mean target first, then ATR-based (3x ATR above entry)
+        target_mean = sentiment_metrics.get('target_mean_price')
+        if target_mean and target_mean > current_price:
+            levels['target_price'] = round(float(target_mean), 2)
+        elif atr and atr > 0:
+            levels['target_price'] = round(current_price + (3.0 * atr), 2)
+        else:
+            # Fallback: 15% upside target
+            levels['target_price'] = round(current_price * 1.15, 2)
+
+        # Risk/reward ratio
+        risk = current_price - levels['stop_loss']
+        reward = levels['target_price'] - current_price
+        if risk > 0:
+            levels['risk_reward_ratio'] = round(reward / risk, 2)
+
+        return levels
+
     def _update_average_score(self, new_score: float):
         """Update running average score"""
         current_avg = self.stats['average_score']
@@ -475,12 +589,18 @@ class StockScorer:
                 data_provider=self.data_provider
             )
         else:
+            from datetime import datetime
             return {
                 'regime': 'STATIC',
                 'trend': 'N/A',
                 'volatility': 'N/A',
                 'weights': self.STATIC_WEIGHTS,
-                'message': 'Adaptive weights not enabled'
+                'metrics': {
+                    'message': 'Adaptive weights not enabled',
+                    'mode': 'static'
+                },
+                'timestamp': datetime.now().isoformat(),
+                'cached': False
             }
 
 

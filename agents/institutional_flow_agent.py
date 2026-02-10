@@ -17,6 +17,10 @@ import numpy as np
 from typing import Dict, Optional
 import logging
 
+from utils.metric_extraction import MetricExtractor
+from utils.validation import validate_price_dataframe_schema
+from core.exceptions import DataValidationException, InsufficientDataException, CalculationException
+
 logger = logging.getLogger(__name__)
 
 
@@ -28,11 +32,12 @@ class InstitutionalFlowAgent:
     Institutional buying often precedes price movements.
 
     Scoring breakdown (0-100):
-    - OBV Trend: 30 points (accumulation/distribution)
-    - MFI: 25 points (money flow strength)
-    - CMF: 20 points (Chaikin Money Flow)
-    - Volume Spikes: 15 points (unusual activity)
+    - OBV Trend: 25 points (accumulation/distribution)
+    - MFI: 20 points (money flow strength)
+    - CMF: 18 points (Chaikin Money Flow)
+    - Volume Spikes: 12 points (unusual activity)
     - VWAP: 10 points (price positioning)
+    - Price-Volume Divergence: 15 points (institutional behavior detection)
 
     Base score: 50 (neutral)
     """
@@ -107,8 +112,8 @@ class InstitutionalFlowAgent:
         logger.info(f"Analyzing institutional flow for {symbol}")
 
         try:
-            if price_data.empty:
-                raise ValueError("Empty price data")
+            # Validate DataFrame schema
+            validate_price_dataframe_schema(price_data, symbol)
 
             # Extract technical indicators
             technical_data = cached_data.get('technical_data', {}) if cached_data else {}
@@ -122,10 +127,11 @@ class InstitutionalFlowAgent:
             cmf_adjustment = self._score_cmf(metrics)
             volume_spike_adjustment = self._score_volume_spikes(metrics)
             vwap_adjustment = self._score_vwap(metrics)
+            divergence_adjustment = self._score_price_volume_divergence(metrics)
 
             # Calculate total score
             total_score = 50 + obv_adjustment + mfi_adjustment + cmf_adjustment + \
-                         volume_spike_adjustment + vwap_adjustment
+                         volume_spike_adjustment + vwap_adjustment + divergence_adjustment
 
             # Clamp to 0-100
             total_score = max(0, min(100, total_score))
@@ -139,7 +145,8 @@ class InstitutionalFlowAgent:
                 'mfi': mfi_adjustment,
                 'cmf': cmf_adjustment,
                 'volume_spike': volume_spike_adjustment,
-                'vwap': vwap_adjustment
+                'vwap': vwap_adjustment,
+                'divergence': divergence_adjustment
             })
 
             return {
@@ -153,21 +160,62 @@ class InstitutionalFlowAgent:
                     'mfi_adjustment': round(mfi_adjustment, 2),
                     'cmf_adjustment': round(cmf_adjustment, 2),
                     'volume_spike_adjustment': round(volume_spike_adjustment, 2),
-                    'vwap_adjustment': round(vwap_adjustment, 2)
+                    'vwap_adjustment': round(vwap_adjustment, 2),
+                    'divergence_adjustment': round(divergence_adjustment, 2)
                 },
                 'agent': self.agent_name
             }
 
-        except Exception as e:
-            logger.error(f"Institutional flow analysis failed for {symbol}: {e}", exc_info=True)
+        except DataValidationException as e:
+            logger.warning(f"Data validation failed for {symbol}: {e}")
             return {
-                'score': 50.0,  # Neutral score on failure
+                'score': 50.0,
+                'confidence': 0.1,
+                'reasoning': f"Data validation failed: {str(e)}",
+                'metrics': {},
+                'breakdown': {},
+                'agent': self.agent_name,
+                'error': str(e),
+                'error_category': 'validation'
+            }
+
+        except InsufficientDataException as e:
+            logger.info(f"Insufficient data for {symbol}: {e}")
+            return {
+                'score': 50.0,
+                'confidence': 0.2,
+                'reasoning': f"Insufficient data: {str(e)}",
+                'metrics': {},
+                'breakdown': {},
+                'agent': self.agent_name,
+                'error': str(e),
+                'error_category': 'insufficient_data'
+            }
+
+        except (ValueError, TypeError, KeyError) as e:
+            logger.warning(f"Data format error for {symbol}: {e}")
+            return {
+                'score': 50.0,
+                'confidence': 0.15,
+                'reasoning': f"Data format error: {str(e)}",
+                'metrics': {},
+                'breakdown': {},
+                'agent': self.agent_name,
+                'error': str(e),
+                'error_category': 'data_format'
+            }
+
+        except Exception as e:
+            logger.error(f"Unexpected error analyzing {symbol}: {e}", exc_info=True)
+            return {
+                'score': 50.0,
                 'confidence': 0.1,
                 'reasoning': f"Analysis failed: {str(e)}",
                 'metrics': {},
                 'breakdown': {},
                 'agent': self.agent_name,
-                'error': str(e)
+                'error': str(e),
+                'error_category': 'unknown'
             }
 
     def _extract_metrics(self, price_data: pd.DataFrame, technical_data: Dict) -> Dict:
@@ -232,6 +280,9 @@ class InstitutionalFlowAgent:
         else:
             metrics['volume_trend'] = None
 
+        # Price-Volume Divergence (critical institutional signal)
+        metrics['pv_divergence'] = self._detect_price_volume_divergence(price_data)
+
         logger.debug(f"Extracted {len([v for v in metrics.values() if v is not None])} flow metrics")
         return metrics
 
@@ -286,9 +337,73 @@ class InstitutionalFlowAgent:
             logger.debug(f"Failed to calculate volume Z-score: {e}")
             return None
 
+    def _detect_price_volume_divergence(self, price_data: pd.DataFrame, window: int = 10) -> Optional[str]:
+        """
+        Detect price-volume divergence patterns (institutional behavior indicator)
+
+        Returns:
+        - 'bullish_accumulation': Price down + volume up (buying the dip)
+        - 'bearish_distribution': Price up + volume down (selling into strength)
+        - 'healthy_uptrend': Price up + volume up (confirmed rally)
+        - 'weak_downtrend': Price down + volume down (weak selling)
+        - 'neutral': No clear divergence
+
+        Divergences are strong institutional signals:
+        - Distribution (bearish): Institutions selling while retail buys
+        - Accumulation (bullish): Institutions buying while retail sells
+        """
+        try:
+            if len(price_data) < window * 2:
+                return None
+
+            # Get recent and past periods
+            recent_data = price_data.tail(window)
+            past_data = price_data.tail(window * 2).iloc[:window]
+
+            # Calculate price trends
+            recent_price_trend = (recent_data['Close'].iloc[-1] - recent_data['Close'].iloc[0]) / recent_data['Close'].iloc[0]
+            past_price_trend = (past_data['Close'].iloc[-1] - past_data['Close'].iloc[0]) / past_data['Close'].iloc[0]
+
+            # Calculate volume trends
+            recent_avg_volume = recent_data['Volume'].mean()
+            past_avg_volume = past_data['Volume'].mean()
+
+            if past_avg_volume == 0:
+                return None
+
+            volume_change = (recent_avg_volume - past_avg_volume) / past_avg_volume
+
+            # Define thresholds
+            price_up_threshold = 0.02  # 2% price increase
+            price_down_threshold = -0.02  # 2% price decrease
+            volume_up_threshold = 0.15  # 15% volume increase
+            volume_down_threshold = -0.15  # 15% volume decrease
+
+            # Detect patterns
+            price_rising = recent_price_trend > price_up_threshold
+            price_falling = recent_price_trend < price_down_threshold
+            volume_rising = volume_change > volume_up_threshold
+            volume_falling = volume_change < volume_down_threshold
+
+            # Pattern detection
+            if price_rising and volume_falling:
+                return 'bearish_distribution'  # RED FLAG: Institutions selling
+            elif price_falling and volume_rising:
+                return 'bullish_accumulation'  # GREEN FLAG: Institutions buying
+            elif price_rising and volume_rising:
+                return 'healthy_uptrend'  # Good: Confirmed strength
+            elif price_falling and volume_falling:
+                return 'weak_downtrend'  # Weak selling pressure
+            else:
+                return 'neutral'
+
+        except Exception as e:
+            logger.debug(f"Failed to detect price-volume divergence: {e}")
+            return None
+
     def _score_obv_trend(self, metrics: Dict) -> float:
         """
-        Score OBV trend (-15 to +15 adjustment)
+        Score OBV trend (-12 to +13 adjustment)
 
         Positive trend = accumulation (bullish)
         Negative trend = distribution (bearish)
@@ -299,19 +414,19 @@ class InstitutionalFlowAgent:
             return 0
 
         if obv_trend >= self.THRESHOLDS['obv_strong_accumulation']:
-            return 15  # Strong accumulation
+            return 13  # Strong accumulation
         elif obv_trend >= self.THRESHOLDS['obv_accumulation']:
-            return 10  # Accumulation
+            return 8  # Accumulation
         elif obv_trend > self.THRESHOLDS['obv_distribution']:
             return 0   # Neutral
         elif obv_trend > self.THRESHOLDS['obv_strong_distribution']:
-            return -10  # Distribution
+            return -8  # Distribution
         else:
-            return -15  # Strong distribution
+            return -12  # Strong distribution
 
     def _score_mfi(self, metrics: Dict) -> float:
         """
-        Score Money Flow Index (-12 to +13 adjustment)
+        Score Money Flow Index (-10 to +10 adjustment)
 
         Higher MFI = more buying pressure
         """
@@ -321,21 +436,21 @@ class InstitutionalFlowAgent:
             return 0
 
         if mfi >= self.THRESHOLDS['mfi_overbought']:
-            return 8   # Overbought (still bullish but cautious)
+            return 6   # Overbought (still bullish but cautious)
         elif mfi >= self.THRESHOLDS['mfi_strong_buying']:
-            return 13  # Strong buying pressure
+            return 10  # Strong buying pressure
         elif mfi >= self.THRESHOLDS['mfi_buying']:
-            return 7   # Buying pressure
+            return 5   # Buying pressure
         elif mfi >= self.THRESHOLDS['mfi_selling']:
             return 0   # Neutral
         elif mfi >= self.THRESHOLDS['mfi_strong_selling']:
-            return -7  # Selling pressure
+            return -5  # Selling pressure
         else:
-            return -12  # Strong selling pressure
+            return -10  # Strong selling pressure
 
     def _score_cmf(self, metrics: Dict) -> float:
         """
-        Score Chaikin Money Flow (-10 to +10 adjustment)
+        Score Chaikin Money Flow (-9 to +9 adjustment)
 
         Positive CMF = accumulation
         Negative CMF = distribution
@@ -346,19 +461,19 @@ class InstitutionalFlowAgent:
             return 0
 
         if cmf >= self.THRESHOLDS['cmf_strong_accumulation']:
-            return 10  # Strong accumulation
+            return 9  # Strong accumulation
         elif cmf >= self.THRESHOLDS['cmf_accumulation']:
-            return 6   # Accumulation
+            return 5   # Accumulation
         elif cmf > self.THRESHOLDS['cmf_distribution']:
             return 0   # Neutral
         elif cmf > self.THRESHOLDS['cmf_strong_distribution']:
-            return -6  # Distribution
+            return -5  # Distribution
         else:
-            return -10  # Strong distribution
+            return -9  # Strong distribution
 
     def _score_volume_spikes(self, metrics: Dict) -> float:
         """
-        Score volume spikes (-5 to +8 adjustment)
+        Score volume spikes (-4 to +6 adjustment)
 
         High volume spikes can indicate institutional activity
         """
@@ -368,11 +483,11 @@ class InstitutionalFlowAgent:
             return 0
 
         if volume_zscore >= self.THRESHOLDS['volume_spike']:
-            return 8   # Significant volume spike
+            return 6   # Significant volume spike
         elif volume_zscore >= self.THRESHOLDS['volume_high']:
-            return 5   # High volume
+            return 4   # High volume
         elif volume_zscore >= 1.0:
-            return 3   # Above average volume
+            return 2   # Above average volume
         elif volume_zscore >= -1.0:
             return 0   # Normal volume
         else:
@@ -406,6 +521,34 @@ class InstitutionalFlowAgent:
             else:
                 return -1  # Slightly below
 
+    def _score_price_volume_divergence(self, metrics: Dict) -> float:
+        """
+        Score price-volume divergence (-8 to +7 adjustment)
+
+        Critical institutional behavior detector:
+        - Bearish distribution: Price up + volume down (institutions selling)
+        - Bullish accumulation: Price down + volume up (institutions buying)
+        - Healthy uptrend: Price up + volume up (confirmed strength)
+        - Weak downtrend: Price down + volume down
+        """
+        divergence = metrics.get('pv_divergence')
+
+        if divergence is None:
+            return 0
+
+        if divergence == 'bullish_accumulation':
+            return 7   # GREEN FLAG: Institutions buying weakness
+        elif divergence == 'healthy_uptrend':
+            return 5   # Confirmed uptrend with volume
+        elif divergence == 'neutral':
+            return 0   # No clear pattern
+        elif divergence == 'weak_downtrend':
+            return -3  # Weak selling, not confirmed
+        elif divergence == 'bearish_distribution':
+            return -8  # RED FLAG: Institutions selling strength
+        else:
+            return 0
+
     def _calculate_confidence(self, technical_data: Dict, metrics: Dict) -> float:
         """Calculate confidence level (0-1)"""
         confidence = 0.7  # Base confidence
@@ -430,6 +573,15 @@ class InstitutionalFlowAgent:
     def _generate_reasoning(self, metrics: Dict, adjustments: Dict) -> str:
         """Generate human-readable reasoning"""
         reasons = []
+
+        # Price-Volume Divergence (most important signal)
+        divergence = metrics.get('pv_divergence')
+        if divergence == 'bearish_distribution':
+            reasons.append("⚠️ Distribution (price up, volume down)")
+        elif divergence == 'bullish_accumulation':
+            reasons.append("✓ Accumulation (price down, volume up)")
+        elif divergence == 'healthy_uptrend':
+            reasons.append("Healthy uptrend (confirmed)")
 
         # OBV trend
         obv_trend = metrics.get('obv_trend')

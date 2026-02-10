@@ -16,6 +16,11 @@ import numpy as np
 from typing import Dict, Optional
 import logging
 
+from utils.math_helpers import safe_divide
+from utils.metric_extraction import MetricExtractor
+from utils.validation import validate_price_dataframe_schema
+from core.exceptions import DataValidationException, InsufficientDataException, CalculationException
+
 logger = logging.getLogger(__name__)
 
 
@@ -102,8 +107,8 @@ class QualityAgent:
         logger.info(f"Analyzing quality for {symbol}")
 
         try:
-            if price_data.empty:
-                raise ValueError("Empty price data")
+            # Validate DataFrame schema
+            validate_price_dataframe_schema(price_data, symbol)
 
             # Calculate metrics
             metrics = self._extract_metrics(symbol, price_data, cached_data)
@@ -150,16 +155,56 @@ class QualityAgent:
                 'agent': self.agent_name
             }
 
-        except Exception as e:
-            logger.error(f"Quality analysis failed for {symbol}: {e}", exc_info=True)
+        except DataValidationException as e:
+            logger.warning(f"Data validation failed for {symbol}: {e}")
             return {
-                'score': 50.0,  # Neutral score on failure
+                'score': 50.0,
+                'confidence': 0.1,
+                'reasoning': f"Data validation failed: {str(e)}",
+                'metrics': {},
+                'breakdown': {},
+                'agent': self.agent_name,
+                'error': str(e),
+                'error_category': 'validation'
+            }
+
+        except InsufficientDataException as e:
+            logger.info(f"Insufficient data for {symbol}: {e}")
+            return {
+                'score': 50.0,
+                'confidence': 0.2,
+                'reasoning': f"Insufficient data: {str(e)}",
+                'metrics': {},
+                'breakdown': {},
+                'agent': self.agent_name,
+                'error': str(e),
+                'error_category': 'insufficient_data'
+            }
+
+        except (ValueError, TypeError, KeyError) as e:
+            logger.warning(f"Data format error for {symbol}: {e}")
+            return {
+                'score': 50.0,
+                'confidence': 0.15,
+                'reasoning': f"Data format error: {str(e)}",
+                'metrics': {},
+                'breakdown': {},
+                'agent': self.agent_name,
+                'error': str(e),
+                'error_category': 'data_format'
+            }
+
+        except Exception as e:
+            logger.error(f"Unexpected error analyzing {symbol}: {e}", exc_info=True)
+            return {
+                'score': 50.0,
                 'confidence': 0.1,
                 'reasoning': f"Analysis failed: {str(e)}",
                 'metrics': {},
                 'breakdown': {},
                 'agent': self.agent_name,
-                'error': str(e)
+                'error': str(e),
+                'error_category': 'unknown'
             }
 
     def _extract_metrics(self, symbol: str, price_data: pd.DataFrame, cached_data: Optional[Dict]) -> Dict:
@@ -205,13 +250,23 @@ class QualityAgent:
     def _calculate_return(self, price_data: pd.DataFrame, days: int) -> Optional[float]:
         """Calculate percentage return over specified days"""
         try:
+            # Bounds checking FIRST
             if len(price_data) < days:
+                logger.debug(f"Insufficient data: {len(price_data)} rows < {days} days required")
                 return None
 
-            current_price = price_data['Close'].iloc[-1]
-            past_price = price_data['Close'].iloc[-days]
+            if len(price_data) < 1:
+                return None
 
-            if past_price == 0:
+            # Safe index access
+            current_idx = len(price_data) - 1
+            past_idx = len(price_data) - days
+
+            current_price = price_data['Close'].iloc[current_idx]
+            past_price = price_data['Close'].iloc[past_idx]
+
+            # Validate values
+            if pd.isna(current_price) or pd.isna(past_price) or past_price <= 0:
                 return None
 
             return ((current_price - past_price) / past_price) * 100
@@ -263,12 +318,17 @@ class QualityAgent:
             mean_return = monthly_returns.mean()
             std_return = monthly_returns.std()
 
-            if mean_return == 0:
+            # Check for division by zero
+            if pd.isna(mean_return) or abs(mean_return) < 1e-10:
+                logger.debug("Mean return too small for CV calculation")
                 return None
 
-            # Coefficient of variation
-            cv = abs(std_return / mean_return)
-            return float(cv)
+            if pd.isna(std_return) or std_return == 0:
+                return 0.0  # Perfect consistency
+
+            # Coefficient of variation - safe division
+            cv = safe_divide(abs(std_return), abs(mean_return), default=None)
+            return float(cv) if cv is not None else None
 
         except Exception as e:
             logger.debug(f"Failed to calculate return consistency: {e}")
@@ -283,13 +343,25 @@ class QualityAgent:
             recent_data = price_data.tail(252)
             high_52w = recent_data['High'].max()
             low_52w = recent_data['Low'].min()
-            current_price = price_data['Close'].iloc[-1]
 
-            if high_52w == low_52w:
+            # Bounds checking before access
+            if len(price_data) < 1:
                 return None
 
-            range_pct = ((current_price - low_52w) / (high_52w - low_52w)) * 100
-            return float(range_pct)
+            current_price = price_data['Close'].iloc[-1]
+
+            # Safe division - check for zero range
+            range_diff = high_52w - low_52w
+            if pd.isna(range_diff) or abs(range_diff) < 1e-10:
+                return None
+
+            range_pct = safe_divide(
+                current_price - low_52w,
+                range_diff,
+                default=None
+            )
+
+            return float(range_pct * 100) if range_pct is not None else None
 
         except Exception as e:
             logger.debug(f"Failed to calculate 52w range: {e}")

@@ -22,6 +22,8 @@ from typing import List, Dict, Any, Optional, Tuple
 from contextlib import contextmanager
 from pathlib import Path
 
+from core.exceptions import DatabaseException
+
 logger = logging.getLogger(__name__)
 
 
@@ -47,18 +49,60 @@ class HistoricalDatabase:
 
     @contextmanager
     def _get_connection(self):
-        """Context manager for database connections"""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row  # Enable column access by name
+        """
+        Context manager with proper transaction support and error handling
+
+        Provides ACID compliance with automatic commit/rollback
+        """
+        conn = None
         try:
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+
+            # Enable Write-Ahead Logging for better concurrency
+            conn.execute("PRAGMA journal_mode=WAL")
+
+            # Faster with WAL mode
+            conn.execute("PRAGMA synchronous=NORMAL")
+
+            # Enable foreign keys
+            conn.execute("PRAGMA foreign_keys=ON")
+
+            # Enable column access by name
+            conn.row_factory = sqlite3.Row
+
             yield conn
+
+            # Commit on success
             conn.commit()
+            logger.debug("Database transaction committed")
+
+        except sqlite3.IntegrityError as e:
+            if conn:
+                conn.rollback()
+            logger.error(f"Database integrity error: {e}", exc_info=True)
+            raise DatabaseException(f"Data integrity violation: {e}") from e
+
+        except sqlite3.OperationalError as e:
+            if conn:
+                conn.rollback()
+            logger.error(f"Database operational error: {e}", exc_info=True)
+            raise DatabaseException(f"Database operation failed: {e}") from e
+
+        except sqlite3.DatabaseError as e:
+            if conn:
+                conn.rollback()
+            logger.error(f"Database error: {e}", exc_info=True)
+            raise DatabaseException(f"Database error: {e}") from e
+
         except Exception as e:
-            conn.rollback()
-            logger.error(f"Database error: {e}")
-            raise
+            if conn:
+                conn.rollback()
+            logger.error(f"Unexpected database error: {e}", exc_info=True)
+            raise DatabaseException(f"Unexpected database error: {e}") from e
+
         finally:
-            conn.close()
+            if conn:
+                conn.close()
 
     def _create_tables(self):
         """Create database tables if they don't exist"""

@@ -24,6 +24,7 @@ except ImportError:
     TALIB_AVAILABLE = False
 
 from data.base_provider import BaseDataProvider
+from core.cache_manager import TechnicalIndicatorCache, get_cache_manager
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,12 @@ class YahooFinanceProvider(BaseDataProvider):
         self.timeout = timeout
         self.exchange = exchange
 
+        # Initialize technical indicator cache for incremental updates
+        self.indicator_cache = TechnicalIndicatorCache(
+            cache_manager=get_cache_manager(),
+            max_incremental_bars=5
+        )
+
         if not YFINANCE_AVAILABLE:
             raise ImportError("yfinance is required. Install with: pip install yfinance")
 
@@ -71,6 +78,11 @@ class YahooFinanceProvider(BaseDataProvider):
         Returns:
             Symbol with suffix (e.g., "TCS.NS")
         """
+        # Don't add suffix to index symbols (starting with ^)
+        if symbol.startswith('^'):
+            return symbol
+
+        # Don't add suffix if already present
         if '.' not in symbol:
             return f"{symbol}.{self.exchange}"
         return symbol
@@ -170,8 +182,23 @@ class YahooFinanceProvider(BaseDataProvider):
             logger.error(f"Failed to fetch historical data for {symbol}: {e}")
             return pd.DataFrame()
 
-    def get_technical_indicators(self, historical_data: pd.DataFrame) -> Dict:
-        """Calculate technical indicators (same as NSE provider)"""
+    def get_technical_indicators(
+        self,
+        historical_data: pd.DataFrame,
+        symbol: Optional[str] = None,
+        use_cache: bool = True
+    ) -> Dict:
+        """
+        Calculate technical indicators with optional caching.
+
+        Args:
+            historical_data: Historical OHLCV DataFrame
+            symbol: Stock symbol (optional, enables caching if provided)
+            use_cache: Whether to use incremental caching (default: True)
+
+        Returns:
+            Dictionary of technical indicators
+        """
         if historical_data.empty or len(historical_data) < 14:
             logger.warning("Insufficient data for technical indicators")
             return {}
@@ -180,6 +207,27 @@ class YahooFinanceProvider(BaseDataProvider):
             logger.warning("TA-Lib not available, returning limited indicators")
             return {}
 
+        # Use cache if symbol provided and caching enabled
+        if symbol and use_cache:
+            return self.indicator_cache.get_indicators(
+                symbol=symbol,
+                price_data=historical_data,
+                calculator_func=lambda data: self._calculate_indicators(data)
+            )
+
+        # Direct calculation without cache
+        return self._calculate_indicators(historical_data)
+
+    def _calculate_indicators(self, historical_data: pd.DataFrame) -> Dict:
+        """
+        Internal method to calculate all technical indicators.
+
+        Args:
+            historical_data: Historical OHLCV DataFrame
+
+        Returns:
+            Dictionary of technical indicators
+        """
         try:
             # Convert to numpy arrays
             close = historical_data['Close'].values.astype(np.float64)
@@ -214,9 +262,15 @@ class YahooFinanceProvider(BaseDataProvider):
             indicators['ad'] = talib.AD(high, low, close, volume)
             indicators['mfi'] = talib.MFI(high, low, close, volume, timeperiod=14)
 
-            # VWAP
-            typical_price = (high + low + close) / 3
-            indicators['vwap'] = np.cumsum(typical_price * volume) / np.cumsum(volume)
+            # VWAP (using rolling window to prevent overflow)
+            high_series = pd.Series(high)
+            low_series = pd.Series(low)
+            close_series = pd.Series(close)
+            volume_series = pd.Series(volume)
+            typical_price = (high_series + low_series + close_series) / 3
+            tp_volume = typical_price * volume_series
+            vwap = tp_volume.rolling(window=50).sum() / volume_series.rolling(window=50).sum()
+            indicators['vwap'] = vwap.fillna(typical_price).values
 
             # Extract latest values
             result = {}
@@ -287,13 +341,21 @@ class YahooFinanceProvider(BaseDataProvider):
             # Get financials
             financials_data = self.get_financials(symbol)
 
-            # Calculate technical indicators
-            technical_data = self.get_technical_indicators(historical_data)
+            # Calculate technical indicators with caching
+            technical_data = self.get_technical_indicators(historical_data, symbol=symbol, use_cache=True)
 
             # Get latest price from historical data
             latest = historical_data.iloc[-1]
             prev = historical_data.iloc[-2] if len(historical_data) > 1 else latest
             price_change_pct = ((latest['Close'] - prev['Close']) / prev['Close']) * 100
+
+            # Compute 52-week high/low from historical data or info
+            week_52_high = info.get('fiftyTwoWeekHigh')
+            week_52_low = info.get('fiftyTwoWeekLow')
+            if (week_52_high is None or week_52_low is None) and not historical_data.empty:
+                last_year = historical_data.iloc[-252:] if len(historical_data) >= 252 else historical_data
+                week_52_high = week_52_high or float(last_year['High'].max())
+                week_52_low = week_52_low or float(last_year['Low'].min())
 
             # Assemble comprehensive data
             comprehensive_data = {
@@ -305,6 +367,8 @@ class YahooFinanceProvider(BaseDataProvider):
                 'sector': info.get('sector'),
                 'industry': info.get('industry'),
                 'company_name': info.get('longName') or info.get('shortName'),
+                'week_52_high': week_52_high,
+                'week_52_low': week_52_low,
                 'historical_data': historical_data,
                 'technical_data': technical_data,
                 'info': info,

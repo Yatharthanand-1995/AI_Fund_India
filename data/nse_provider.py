@@ -405,6 +405,14 @@ class NSEProvider(BaseDataProvider):
             # Calculate technical indicators with caching
             technical_data = self.get_technical_indicators(historical_data, symbol=symbol, use_cache=True)
 
+            # Compute 52-week high/low from historical data
+            week_52_high = None
+            week_52_low = None
+            if not historical_data.empty:
+                last_year = historical_data.iloc[-252:] if len(historical_data) >= 252 else historical_data
+                week_52_high = float(last_year['High'].max())
+                week_52_low = float(last_year['Low'].min())
+
             # Assemble comprehensive data
             comprehensive_data = {
                 'symbol': symbol,
@@ -412,6 +420,8 @@ class NSEProvider(BaseDataProvider):
                 'price_change_percent': stock_data.get('price_change_percent'),
                 'market_cap': None,  # NSEpy doesn't provide market cap
                 'sector': None,  # NSEpy doesn't provide sector
+                'week_52_high': week_52_high,
+                'week_52_low': week_52_low,
                 'historical_data': historical_data,
                 'technical_data': technical_data,
                 'info': stock_data,

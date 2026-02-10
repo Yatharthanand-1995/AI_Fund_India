@@ -8,6 +8,7 @@ Analyzes:
 - Price Returns (1M, 3M, 6M, 1Y)
 - Relative Strength vs NIFTY50
 - Trend Direction
+- Volume Confirmation (price moves without volume are less trustworthy)
 
 Scoring: 0-100 with confidence level
 """
@@ -16,6 +17,10 @@ import pandas as pd
 import numpy as np
 from typing import Dict, Optional
 import logging
+
+from utils.validation import validate_price_dataframe_schema
+from core.exceptions import DataValidationException, InsufficientDataException, CalculationException
+from utils.metric_extraction import MetricExtractor
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +34,11 @@ class MomentumAgent:
     - Trend (MA crossovers): 35 points
     - Returns: 30 points
     - Relative Strength vs NIFTY: 10 points
+    - Volume confirmation: Applied as multiplier (±5-15%)
+
+    Volume confirmation logic:
+    - Uptrends/positive returns without volume: score reduced 10-15%
+    - Uptrends/positive returns with strong volume: score boosted 5%
 
     Confidence factors:
     - Base: 0.8 (technical data is usually reliable)
@@ -102,8 +112,8 @@ class MomentumAgent:
         logger.info(f"Analyzing momentum for {symbol}")
 
         try:
-            if price_data.empty:
-                raise ValueError("Empty price data")
+            # Validate DataFrame schema
+            validate_price_dataframe_schema(price_data, symbol)
 
             # Extract technical indicators from cached data
             technical_data = cached_data.get('technical_data', {}) if cached_data else {}
@@ -150,16 +160,56 @@ class MomentumAgent:
                 'agent': self.agent_name
             }
 
-        except Exception as e:
-            logger.error(f"Momentum analysis failed for {symbol}: {e}", exc_info=True)
+        except DataValidationException as e:
+            logger.warning(f"Data validation failed for {symbol}: {e}")
             return {
-                'score': 50.0,  # Neutral score on failure
+                'score': 50.0,
+                'confidence': 0.1,
+                'reasoning': f"Data validation failed: {str(e)}",
+                'metrics': {},
+                'breakdown': {},
+                'agent': self.agent_name,
+                'error': str(e),
+                'error_category': 'validation'
+            }
+
+        except InsufficientDataException as e:
+            logger.info(f"Insufficient data for {symbol}: {e}")
+            return {
+                'score': 50.0,
+                'confidence': 0.2,
+                'reasoning': f"Insufficient data: {str(e)}",
+                'metrics': {},
+                'breakdown': {},
+                'agent': self.agent_name,
+                'error': str(e),
+                'error_category': 'insufficient_data'
+            }
+
+        except (ValueError, TypeError, KeyError) as e:
+            logger.warning(f"Data format error for {symbol}: {e}")
+            return {
+                'score': 50.0,
+                'confidence': 0.15,
+                'reasoning': f"Data format error: {str(e)}",
+                'metrics': {},
+                'breakdown': {},
+                'agent': self.agent_name,
+                'error': str(e),
+                'error_category': 'data_format'
+            }
+
+        except Exception as e:
+            logger.error(f"Unexpected error analyzing {symbol}: {e}", exc_info=True)
+            return {
+                'score': 50.0,
                 'confidence': 0.1,
                 'reasoning': f"Analysis failed: {str(e)}",
                 'metrics': {},
                 'breakdown': {},
                 'agent': self.agent_name,
-                'error': str(e)
+                'error': str(e),
+                'error_category': 'unknown'
             }
 
     def _extract_metrics(
@@ -204,9 +254,11 @@ class MomentumAgent:
 
         # Price position relative to MAs
         if metrics['sma_20']:
-            metrics['price_vs_sma20'] = ((current_price - metrics['sma_20']) / metrics['sma_20']) * 100
+            price_diff = current_price - metrics['sma_20']
+            metrics['price_vs_sma20'] = MetricExtractor.safe_divide(price_diff, metrics['sma_20'], 0.0) * 100
         if metrics['sma_50']:
-            metrics['price_vs_sma50'] = ((current_price - metrics['sma_50']) / metrics['sma_50']) * 100
+            price_diff = current_price - metrics['sma_50']
+            metrics['price_vs_sma50'] = MetricExtractor.safe_divide(price_diff, metrics['sma_50'], 0.0) * 100
 
         # Relative strength vs NIFTY
         if nifty_data is not None and not nifty_data.empty:
@@ -222,6 +274,14 @@ class MomentumAgent:
         # Volatility (for context)
         metrics['volatility'] = self._calculate_volatility(price_data)
 
+        # ATR for stop-loss computation
+        metrics['atr'] = technical_data.get('atr')
+
+        # Volume analysis for confirmation
+        metrics['avg_volume'] = self._calculate_avg_volume(price_data)
+        metrics['recent_volume_ratio'] = self._calculate_recent_volume_ratio(price_data)
+        metrics['volume_trend'] = self._determine_volume_trend(price_data)
+
         logger.debug(f"Extracted {len([v for v in metrics.values() if v is not None])} momentum metrics")
         return metrics
 
@@ -235,10 +295,10 @@ class MomentumAgent:
             current_price = price_data['Close'].iloc[-1]
             past_price = price_data['Close'].iloc[-days]
 
-            if past_price == 0:
-                return None
-
-            return ((current_price - past_price) / past_price) * 100
+            # Use safe division
+            price_change = current_price - past_price
+            result = MetricExtractor.safe_divide(price_change, past_price, None)
+            return result * 100 if result is not None else None
 
         except Exception as e:
             logger.debug(f"Failed to calculate {days}-day return: {e}")
@@ -277,6 +337,71 @@ class MomentumAgent:
         except Exception as e:
             logger.debug(f"Failed to calculate volatility: {e}")
             return None
+
+    def _calculate_avg_volume(self, price_data: pd.DataFrame, window: int = 20) -> Optional[float]:
+        """Calculate average volume over specified window"""
+        try:
+            if len(price_data) < window:
+                return None
+            avg_volume = price_data['Volume'].iloc[-window:].mean()
+            return float(avg_volume)
+        except Exception as e:
+            logger.debug(f"Failed to calculate average volume: {e}")
+            return None
+
+    def _calculate_recent_volume_ratio(self, price_data: pd.DataFrame, recent_days: int = 5) -> Optional[float]:
+        """
+        Calculate ratio of recent volume to average volume
+
+        > 1.0 = Above average volume
+        < 1.0 = Below average volume
+        """
+        try:
+            if len(price_data) < 20:
+                return None
+
+            avg_volume = self._calculate_avg_volume(price_data)
+            if avg_volume is None:
+                return None
+
+            recent_volume = price_data['Volume'].iloc[-recent_days:].mean()
+            result = MetricExtractor.safe_divide(recent_volume, avg_volume, None)
+            return float(result) if result is not None else None
+        except Exception as e:
+            logger.debug(f"Failed to calculate recent volume ratio: {e}")
+            return None
+
+    def _determine_volume_trend(self, price_data: pd.DataFrame) -> str:
+        """
+        Determine volume trend
+
+        Returns: 'increasing', 'decreasing', 'stable', 'unknown'
+        """
+        try:
+            if len(price_data) < 20:
+                return 'unknown'
+
+            # Compare recent 10 days vs previous 10 days
+            recent_vol = price_data['Volume'].iloc[-10:].mean()
+            prev_vol = price_data['Volume'].iloc[-20:-10].mean()
+
+            # Use safe division
+            vol_change = recent_vol - prev_vol
+            change_result = MetricExtractor.safe_divide(vol_change, prev_vol, None)
+            if change_result is None:
+                return 'unknown'
+
+            change = change_result * 100
+
+            if change > 20:
+                return 'increasing'
+            elif change < -20:
+                return 'decreasing'
+            else:
+                return 'stable'
+        except Exception as e:
+            logger.debug(f"Failed to determine volume trend: {e}")
+            return 'unknown'
 
     def _determine_trend(
         self,
@@ -347,6 +472,7 @@ class MomentumAgent:
         - Trend direction: 20 points
         - Price vs SMA20: 10 points
         - MACD: 5 points
+        - Volume confirmation applied as multiplier
         """
         score = 0.0
 
@@ -386,6 +512,18 @@ class MomentumAgent:
             elif macd < 0 and macd_signal < 0:
                 score += 1  # Both negative
 
+        # Volume confirmation: reduce score if trend lacks volume support
+        volume_ratio = metrics.get('recent_volume_ratio')
+        if volume_ratio is not None and trend in ['uptrend', 'strong_uptrend']:
+            if volume_ratio < 0.7:
+                # Uptrend without volume is suspicious - reduce by 15%
+                score *= 0.85
+                logger.debug(f"Trend score reduced due to weak volume (ratio: {volume_ratio:.2f})")
+            elif volume_ratio > 1.3:
+                # Strong volume confirms trend - small bonus
+                score *= 1.05
+                logger.debug(f"Trend score boosted by strong volume (ratio: {volume_ratio:.2f})")
+
         return min(35, score)
 
     def _score_returns(self, metrics: Dict) -> float:
@@ -396,6 +534,7 @@ class MomentumAgent:
         - 3-month return: 50% (15 points)
         - 6-month return: 30% (9 points)
         - 1-month return: 20% (6 points)
+        - Volume confirmation applied as multiplier
         """
         score = 0.0
 
@@ -438,6 +577,18 @@ class MomentumAgent:
                 score += 3
             elif ret_1m > -5:
                 score += 1
+
+        # Volume confirmation: positive returns without volume are less trustworthy
+        volume_ratio = metrics.get('recent_volume_ratio')
+        if volume_ratio is not None and ret_3m is not None and ret_3m > 5:
+            if volume_ratio < 0.8:
+                # Price gains without volume support - reduce by 10%
+                score *= 0.90
+                logger.debug(f"Returns score reduced due to weak volume (ratio: {volume_ratio:.2f})")
+            elif volume_ratio > 1.2:
+                # Price gains with strong volume - small bonus
+                score *= 1.05
+                logger.debug(f"Returns score boosted by strong volume (ratio: {volume_ratio:.2f})")
 
         return min(30, score)
 
@@ -510,14 +661,25 @@ class MomentumAgent:
             elif rsi <= 30:
                 reasons.append(f"Oversold RSI: {rsi:.1f}")
 
-        # Trend
+        # Trend with volume confirmation
         trend = metrics.get('trend')
+        volume_ratio = metrics.get('recent_volume_ratio')
         if trend == 'strong_uptrend':
-            reasons.append("Strong uptrend")
+            if volume_ratio and volume_ratio > 1.3:
+                reasons.append("Strong uptrend (volume confirmed)")
+            elif volume_ratio and volume_ratio < 0.7:
+                reasons.append("Strong uptrend (weak volume)")
+            else:
+                reasons.append("Strong uptrend")
         elif trend == 'uptrend':
-            reasons.append("Uptrend")
+            if volume_ratio and volume_ratio > 1.3:
+                reasons.append("Uptrend (volume confirmed)")
+            elif volume_ratio and volume_ratio < 0.7:
+                reasons.append("Uptrend (weak volume)")
+            else:
+                reasons.append("Uptrend")
         elif trend == 'downtrend' or trend == 'strong_downtrend':
-            reasons.append(f"Downtrend")
+            reasons.append("Downtrend")
 
         # 3-month return
         ret_3m = metrics.get('3m_return')

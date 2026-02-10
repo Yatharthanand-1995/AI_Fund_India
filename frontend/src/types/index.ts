@@ -48,6 +48,7 @@ export interface MomentumMetrics {
   price_vs_sma50?: number;
   relative_strength?: number;
   nifty_3m_return?: number;
+  atr?: number;
   volatility?: number;
   avg_volume?: number;
   recent_volume_ratio?: number;
@@ -151,12 +152,31 @@ export interface StockAnalysis {
   composite_score: number;
   recommendation: string;
   confidence: number;
+  // Price data (from stock scorer)
+  current_price?: number;
+  price_change_percent?: number;
+  company_name?: string;
+  market_cap?: number;
+  sector?: string;
+  week_52_high?: number;
+  week_52_low?: number;
+  // Trading levels (computed in Task #27)
+  trading_levels?: TradingLevels;
   agent_scores: AgentScores;
   weights: Record<string, number>;
   market_regime?: MarketRegime;
   narrative?: Narrative;
   timestamp: string;
   cached?: boolean;
+}
+
+export interface TradingLevels {
+  stop_loss?: number;
+  target_price?: number;
+  risk_reward_ratio?: number;
+  atr?: number;
+  week_52_high?: number;
+  week_52_low?: number;
 }
 
 export interface BatchAnalysisResponse {

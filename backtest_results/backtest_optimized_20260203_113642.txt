@@ -1,0 +1,22 @@
+================================================================================
+NIFTY 50 BACKTEST RESULTS (OPTIMIZED FOR PRICE-ONLY DATA)
+================================================================================
+
+Run ID: 848fc4dc-280a-4d08-bb88-3f31cd8b4c45
+Name: NIFTY 50 5-Year Backtest (Optimized)
+Date Range: 2021-02-04 to 2026-02-03
+Symbols: 48
+Frequency: monthly
+Generated: 2026-02-03T11:36:42.832565
+
+BACKTEST-OPTIMIZED CONFIGURATION:
+  Weights: {'fundamentals': 0.1, 'momentum': 0.45, 'quality': 0.25, 'sentiment': 0.05, 'institutional_flow': 0.15}
+  Thresholds: BUY≥60, SELL<32
+
+PERFORMANCE SUMMARY:
+  Total Signals: 2879
+  BUY Signals: 2837
+  SELL Signals: 42
+  Hit Rate (3M): 0.0%
+  Avg Alpha (3M): +0.00%
+  Sharpe Ratio (3M): 0.37

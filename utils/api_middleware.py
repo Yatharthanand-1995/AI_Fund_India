@@ -21,6 +21,12 @@ from starlette.types import ASGIApp
 
 logger = logging.getLogger(__name__)
 
+# Import metrics (with fallback if circular dependency)
+try:
+    from utils.metrics import metrics
+except ImportError:
+    metrics = None
+
 
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
     """
@@ -127,6 +133,24 @@ class PerformanceMonitoringMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
 
         duration_ms = (time.time() - start_time) * 1000
+
+        # Record metrics
+        if metrics:
+            # Track overall API requests
+            metrics.increment('api.requests')
+            metrics.record_timing('api.response_time', duration_ms)
+
+            # Track per-endpoint metrics
+            endpoint = request.url.path
+            metrics.increment(f'api.requests.{endpoint}')
+            metrics.record_timing(f'api.response_time.{endpoint}', duration_ms)
+
+            # Track status codes
+            if response.status_code >= 500:
+                metrics.increment('api.errors.5xx')
+                metrics.record_error(f'http_{response.status_code}')
+            elif response.status_code >= 400:
+                metrics.increment('api.errors.4xx')
 
         # Alert on slow requests
         if duration_ms > self.slow_request_threshold_ms:

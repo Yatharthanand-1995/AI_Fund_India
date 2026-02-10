@@ -1,12 +1,15 @@
 """
 Hybrid Data Provider - Orchestrates NSEpy + Yahoo Finance with automatic failover
 Primary provider with intelligent fallback and circuit breaker protection
+Supports parallel batch fetching for improved performance
 """
 
 import pandas as pd
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 from datetime import datetime
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 from data.base_provider import BaseDataProvider
 from data.nse_provider import NSEProvider
@@ -92,12 +95,36 @@ class HybridDataProvider(BaseDataProvider):
             'total_requests': 0
         }
 
+        # Thread pool for parallel data fetching
+        self.executor = ThreadPoolExecutor(
+            max_workers=5,
+            thread_name_prefix='data-fetch'
+        )
+        self._executor_lock = threading.Lock()
+
     def get_stock_data(self, symbol: str) -> Dict:
         """Fetch basic stock data with fallback"""
-        return self._fetch_with_fallback(
+        data = self._fetch_with_fallback(
             symbol,
             lambda provider: provider.get_stock_data(symbol)
         )
+
+        # If we got data but no sector, try to enrich from Yahoo
+        if data and not data.get('sector') and self.yahoo_available:
+            try:
+                logger.debug(f"Enriching {symbol} with sector from Yahoo")
+                yahoo_data = self.yahoo_provider.get_stock_data(symbol)
+                if yahoo_data and yahoo_data.get('sector'):
+                    data['sector'] = yahoo_data['sector']
+                    data['industry'] = yahoo_data.get('industry')
+            except Exception as e:
+                logger.debug(f"Could not enrich sector from Yahoo: {e}")
+
+        # Ensure sector is never None
+        if not data.get('sector'):
+            data['sector'] = 'Unknown'
+
+        return data
 
     def get_historical_data(
         self,
@@ -308,6 +335,86 @@ class HybridDataProvider(BaseDataProvider):
         failure = self.stats.get(f'{provider}_failure', 0)
         total = success + failure
         return (success / total * 100) if total > 0 else 0.0
+
+    def get_batch_data(
+        self,
+        symbols: List[str],
+        max_workers: Optional[int] = None,
+        timeout: float = 60.0
+    ) -> Dict[str, Dict]:
+        """
+        Fetch comprehensive data for multiple symbols in parallel.
+
+        This method significantly improves performance when analyzing multiple stocks
+        by fetching data concurrently instead of sequentially.
+
+        Args:
+            symbols: List of stock symbols to fetch
+            max_workers: Maximum number of parallel workers (default: None = use pool default)
+            timeout: Timeout in seconds for the entire batch operation (default: 60s)
+
+        Returns:
+            Dictionary mapping symbols to their comprehensive data
+            Failed symbols will have an 'error' key in their data
+
+        Example:
+            >>> provider = HybridDataProvider()
+            >>> data = provider.get_batch_data(['TCS', 'INFY', 'RELIANCE'])
+            >>> print(f"Fetched data for {len(data)} stocks")
+        """
+        logger.info(f"Fetching batch data for {len(symbols)} symbols in parallel")
+        start_time = datetime.now()
+
+        results = {}
+        future_to_symbol = {}
+
+        # Submit all fetch tasks
+        with self._executor_lock:
+            for symbol in symbols:
+                future = self.executor.submit(self.get_comprehensive_data, symbol)
+                future_to_symbol[future] = symbol
+
+        # Collect results as they complete
+        completed = 0
+        for future in as_completed(future_to_symbol, timeout=timeout):
+            symbol = future_to_symbol[future]
+            try:
+                results[symbol] = future.result(timeout=30)
+                completed += 1
+                logger.debug(f"Completed {completed}/{len(symbols)}: {symbol}")
+            except Exception as e:
+                logger.error(f"Failed to fetch {symbol}: {e}")
+                results[symbol] = {
+                    'error': str(e),
+                    'symbol': symbol,
+                    'timestamp': datetime.now().isoformat()
+                }
+                completed += 1
+
+        elapsed = (datetime.now() - start_time).total_seconds()
+        logger.info(
+            f"Batch fetch completed: {completed}/{len(symbols)} symbols in {elapsed:.2f}s "
+            f"({elapsed/len(symbols):.2f}s avg per symbol)"
+        )
+
+        return results
+
+    def shutdown(self):
+        """
+        Shutdown the thread pool executor gracefully.
+
+        This should be called when the provider is no longer needed to ensure
+        all threads are properly cleaned up.
+        """
+        logger.info("Shutting down hybrid provider thread pool")
+        self.executor.shutdown(wait=True)
+
+    def __del__(self):
+        """Cleanup executor on deletion"""
+        try:
+            self.executor.shutdown(wait=False)
+        except Exception:
+            pass  # Ignore errors during cleanup
 
 
 # Example usage

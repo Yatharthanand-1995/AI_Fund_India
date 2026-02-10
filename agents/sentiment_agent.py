@@ -13,6 +13,9 @@ Scoring: 0-100 with confidence level
 import logging
 from typing import Dict, Optional
 
+from utils.metric_extraction import MetricExtractor
+from core.exceptions import DataValidationException, InsufficientDataException, CalculationException
+
 logger = logging.getLogger(__name__)
 
 
@@ -131,16 +134,56 @@ class SentimentAgent:
                 'agent': self.agent_name
             }
 
-        except Exception as e:
-            logger.error(f"Sentiment analysis failed for {symbol}: {e}", exc_info=True)
+        except DataValidationException as e:
+            logger.warning(f"Data validation failed for {symbol}: {e}")
             return {
-                'score': 50.0,  # Neutral score on failure
+                'score': 50.0,
+                'confidence': 0.1,
+                'reasoning': f"Data validation failed: {str(e)}",
+                'metrics': {},
+                'breakdown': {},
+                'agent': self.agent_name,
+                'error': str(e),
+                'error_category': 'validation'
+            }
+
+        except InsufficientDataException as e:
+            logger.info(f"Insufficient data for {symbol}: {e}")
+            return {
+                'score': 50.0,
+                'confidence': 0.2,
+                'reasoning': f"Insufficient data: {str(e)}",
+                'metrics': {},
+                'breakdown': {},
+                'agent': self.agent_name,
+                'error': str(e),
+                'error_category': 'insufficient_data'
+            }
+
+        except (ValueError, TypeError, KeyError) as e:
+            logger.warning(f"Data format error for {symbol}: {e}")
+            return {
+                'score': 50.0,
+                'confidence': 0.15,
+                'reasoning': f"Data format error: {str(e)}",
+                'metrics': {},
+                'breakdown': {},
+                'agent': self.agent_name,
+                'error': str(e),
+                'error_category': 'data_format'
+            }
+
+        except Exception as e:
+            logger.error(f"Unexpected error analyzing {symbol}: {e}", exc_info=True)
+            return {
+                'score': 50.0,
                 'confidence': 0.1,
                 'reasoning': f"Analysis failed: {str(e)}",
                 'metrics': {},
                 'breakdown': {},
                 'agent': self.agent_name,
-                'error': str(e)
+                'error': str(e),
+                'error_category': 'unknown'
             }
 
     def _extract_metrics(self, symbol: str, info: Dict) -> Dict:

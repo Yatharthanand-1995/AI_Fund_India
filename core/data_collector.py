@@ -229,15 +229,18 @@ class HistoricalDataCollector:
 
         # Get additional data
         price = None
-        sector = None
+        sector = 'Unknown'
 
         try:
             # Try to get current price from data provider
             data = self.stock_scorer.data_provider.get_stock_data(symbol)
-            if data and 'price' in data:
+            if data and 'current_price' in data:
+                price = data['current_price']
+            elif data and 'price' in data:
                 price = data['price']
-            if data and 'sector' in data:
-                sector = data['sector']
+            # Get sector with fallback to 'Unknown'
+            if data:
+                sector = data.get('sector') or 'Unknown'
         except Exception as e:
             logger.debug(f"Could not fetch price/sector for {symbol}: {e}")
 

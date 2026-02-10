@@ -224,6 +224,16 @@ class StockAnalysisResponse(BaseModel):
     recommendation: str = Field(..., description="Investment recommendation")
     confidence: float = Field(..., description="Overall confidence (0-1)")
 
+    # Price data
+    current_price: Optional[float] = Field(None, description="Current market price")
+    price_change_percent: Optional[float] = Field(None, description="Price change % today")
+    company_name: Optional[str] = Field(None, description="Company name")
+    market_cap: Optional[float] = Field(None, description="Market capitalization")
+    sector: Optional[str] = Field(None, description="Industry sector")
+    week_52_high: Optional[float] = Field(None, description="52-week high price")
+    week_52_low: Optional[float] = Field(None, description="52-week low price")
+    trading_levels: Optional[Dict] = Field(None, description="Stop loss, target, risk/reward")
+
     # Agent scores
     agent_scores: Dict[str, AgentScore]
 
@@ -559,6 +569,14 @@ async def analyze_stock(body: AnalyzeRequest, request: Request):
             'composite_score': result['composite_score'],
             'recommendation': result['recommendation'],
             'confidence': result['composite_confidence'],
+            'current_price': result.get('current_price'),
+            'price_change_percent': result.get('price_change_percent'),
+            'company_name': result.get('company_name'),
+            'market_cap': result.get('market_cap'),
+            'sector': result.get('sector'),
+            'week_52_high': result.get('week_52_high'),
+            'week_52_low': result.get('week_52_low'),
+            'trading_levels': result.get('trading_levels'),
             'agent_scores': format_agent_scores(result['agent_scores']),
             'weights': result.get('weights_used', {}),
             'market_regime': result.get('market_regime'),
@@ -652,6 +670,14 @@ async def analyze_batch(body: BatchAnalyzeRequest, request: Request):
                     'composite_score': result['composite_score'],
                     'recommendation': result['recommendation'],
                     'confidence': result['composite_confidence'],
+                    'current_price': result.get('current_price'),
+                    'price_change_percent': result.get('price_change_percent'),
+                    'company_name': result.get('company_name'),
+                    'market_cap': result.get('market_cap'),
+                    'sector': result.get('sector'),
+                    'week_52_high': result.get('week_52_high'),
+                    'week_52_low': result.get('week_52_low'),
+                    'trading_levels': result.get('trading_levels'),
                     'agent_scores': format_agent_scores(result['agent_scores']),
                     'weights': result.get('weights_used', {}),
                     'market_regime': regime,
@@ -754,6 +780,14 @@ async def get_top_picks(
                     'composite_score': result['composite_score'],
                     'recommendation': result['recommendation'],
                     'confidence': result['composite_confidence'],
+                    'current_price': result.get('current_price'),
+                    'price_change_percent': result.get('price_change_percent'),
+                    'company_name': result.get('company_name'),
+                    'market_cap': result.get('market_cap'),
+                    'sector': result.get('sector'),
+                    'week_52_high': result.get('week_52_high'),
+                    'week_52_low': result.get('week_52_low'),
+                    'trading_levels': result.get('trading_levels'),
                     'agent_scores': format_agent_scores(result['agent_scores']),
                     'weights': result.get('weights_used', {}),
                     'market_regime': regime,

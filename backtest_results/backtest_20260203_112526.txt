@@ -1,0 +1,54 @@
+================================================================================
+NIFTY 50 BACKTEST RESULTS
+================================================================================
+
+Run ID: 569a79b9-b5df-48f0-b03c-0090c901d108
+Name: NIFTY 50 5-Year Backtest
+Date Range: 2021-02-04 to 2026-02-03
+Symbols: 48
+Frequency: monthly
+Generated: 2026-02-03T11:25:26.285496
+
+================================================================================
+PERFORMANCE SUMMARY
+================================================================================
+
+Total Signals: 2887
+BUY Signals: 0
+SELL Signals: 2887
+
+Hit Rates (% Positive Alpha):
+  1 Month:  0.0%
+  3 Months: 0.0%
+  6 Months: 0.0%
+
+Average Returns:
+  1 Month:  +0.00%
+  3 Months: +0.00%
+  6 Months: +0.00%
+
+Alpha (Excess Return vs NIFTY 50):
+  1 Month:  +0.00%
+  3 Months: +0.00%
+  6 Months: +0.00%
+
+Risk Metrics:
+  Sharpe Ratio (3M): 0.00
+  Max Drawdown: 0.00%
+  Win Rate: 0.0%
+  Win/Loss Ratio: 0.00x
+
+================================================================================
+RECOMMENDATIONS
+================================================================================
+
+1. Increase fundamentals weight from 36.0% to 40.4% (+4.4% change)
+2. Increase momentum weight from 27.0% to 46.2% (+19.2% change)
+3. Decrease quality weight from 18.0% to 0.0% (-18.0% change)
+4. Increase sentiment weight from 9.0% to 13.4% (+4.4% change)
+5. Decrease institutional_flow weight from 10.0% to 0.0% (-10.0% change)
+6. Fundamentals shows weak correlation (+nan) - review algorithm or reduce weight
+7. Momentum shows weak correlation (+0.15) - review algorithm or reduce weight
+8. Quality shows weak correlation (+0.04) - review algorithm or reduce weight
+9. Sentiment shows weak correlation (+nan) - review algorithm or reduce weight
+10. Institutional_Flow shows weak correlation (-0.02) - review algorithm or reduce weight
