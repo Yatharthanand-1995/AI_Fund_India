@@ -1,6 +1,7 @@
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { useEffect, lazy, Suspense } from 'react';
 import Header from './components/layout/Header';
+import { logger } from './lib/logger';
 import Dashboard from './pages/Dashboard';
 import Ideas from './pages/Ideas';
 import About from './pages/About';
@@ -33,25 +34,25 @@ function App() {
     try {
       // Load market regime
       try {
-        console.log('[App] Loading market regime...');
+        logger.log('[App] Loading market regime...');
         const regime = await api.getMarketRegime();
-        console.log('[App] Market regime loaded:', regime);
+        logger.log('[App] Market regime loaded:', regime);
         setMarketRegime(regime);
       } catch (err) {
         // Market regime load failed, but not critical
-        console.error('[App] Market regime failed:', err);
+        logger.error('[App] Market regime failed:', err);
       }
 
       // Load stock universe (optional - continue if it fails)
       try {
-        console.log('[App] Loading stock universe...');
+        logger.log('[App] Loading stock universe...');
         const universe = await api.getStockUniverse();
-        console.log('[App] Stock universe loaded:', universe);
+        logger.log('[App] Stock universe loaded:', universe);
         setStockUniverse(universe);
       } catch (err) {
         // Log the actual error so we can see what's failing
-        console.error('[App] Failed to load stock universe:', err);
-        console.error('[App] Error details:', err instanceof Error ? err.message : String(err));
+        logger.error('[App] Failed to load stock universe:', err);
+        logger.error('[App] Error details:', err instanceof Error ? err.message : String(err));
         // Set default empty universe on error
         setStockUniverse({
           total_stocks: 0,
@@ -62,15 +63,15 @@ function App() {
 
       // Preload top picks in background (optional - silently fails)
       try {
-        console.log('[App] Preloading top picks...');
+        logger.log('[App] Preloading top picks...');
         const topPicks = await api.getTopPicks(50, false);
         const cacheKey = `50:false`;
         // cacheTopPicks already adds timestamp internally
         cacheTopPicks(cacheKey, topPicks);
-        console.log('[App] Top picks preloaded and cached');
+        logger.log('[App] Top picks preloaded and cached');
       } catch (err) {
         // Silently fail - not critical
-        console.log('[App] Top picks preloading failed (non-critical):', err instanceof Error ? err.message : String(err));
+        logger.log('[App] Top picks preloading failed (non-critical):', err instanceof Error ? err.message : String(err));
       }
     } catch (error) {
       // Failed to load initial data, but app can still function
