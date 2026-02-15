@@ -30,6 +30,7 @@ import {
   formatTooltipDate,
   getRegimeColor
 } from '../../lib/chartUtils';
+import ChartErrorBoundary from './ChartErrorBoundary';
 
 // ============================================================================
 // Types
@@ -279,4 +280,9 @@ export const MarketRegimeTimeline: React.FC<MarketRegimeTimelineProps> = ({
   );
 };
 
-export default MarketRegimeTimeline;
+const _MarketRegimeTimelineWrapped = (props: MarketRegimeTimelineProps) => (
+  <ChartErrorBoundary title="Market Regime Timeline">
+    <MarketRegimeTimeline {...props} />
+  </ChartErrorBoundary>
+);
+export default _MarketRegimeTimelineWrapped;

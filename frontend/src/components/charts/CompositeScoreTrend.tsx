@@ -33,6 +33,7 @@ import {
   transformHistoryData
 } from '../../lib/chartUtils';
 import { TrendingUp, TrendingDown, Minus } from 'lucide-react';
+import ChartErrorBoundary from './ChartErrorBoundary';
 
 // ============================================================================
 // Types
@@ -330,4 +331,9 @@ export const CompositeScoreTrend: React.FC<CompositeScoreTrendProps> = ({
   );
 };
 
-export default CompositeScoreTrend;
+const _CompositeScoreTrendWrapped = (props: CompositeScoreTrendProps) => (
+  <ChartErrorBoundary title="Composite Score Trend">
+    <CompositeScoreTrend {...props} />
+  </ChartErrorBoundary>
+);
+export default _CompositeScoreTrendWrapped;

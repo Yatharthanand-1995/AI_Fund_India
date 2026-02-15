@@ -93,7 +93,7 @@ class FundamentalsAgent:
 
         logger.info(f"Fundamentals Agent initialized (sector_benchmarks: {use_sector_benchmarks})")
 
-    def analyze(self, symbol: str, cached_data: Optional[Dict] = None) -> Dict:
+    def analyze(self, symbol: str, cached_data: Optional[Dict] = None, market_regime: Optional[str] = None) -> Dict:
         """
         Analyze fundamental metrics for a stock
 
@@ -147,6 +147,7 @@ class FundamentalsAgent:
                     'score': 50.0,
                     'confidence': 0.3,
                     'reasoning': 'No fundamental financial data available - using neutral score',
+                    'status': 'no_data',
                     'metrics': {},
                     'breakdown': {
                         'profitability_score': 0.0,
@@ -215,6 +216,7 @@ class FundamentalsAgent:
                     'dividend_score': round(dividend_score, 2),
                     'promoter_bonus': round(promoter_bonus, 2)
                 },
+                'status': 'success',
                 'agent': self.agent_name
             }
 
@@ -227,6 +229,7 @@ class FundamentalsAgent:
                 'metrics': {},
                 'breakdown': {},
                 'agent': self.agent_name,
+                'status': 'error',
                 'error': str(e),
                 'error_category': 'validation'
             }
@@ -240,6 +243,7 @@ class FundamentalsAgent:
                 'metrics': {},
                 'breakdown': {},
                 'agent': self.agent_name,
+                'status': 'error',
                 'error': str(e),
                 'error_category': 'insufficient_data'
             }
@@ -253,6 +257,7 @@ class FundamentalsAgent:
                 'metrics': {},
                 'breakdown': {},
                 'agent': self.agent_name,
+                'status': 'error',
                 'error': str(e),
                 'error_category': 'data_format'
             }
@@ -266,6 +271,7 @@ class FundamentalsAgent:
                 'metrics': {},
                 'breakdown': {},
                 'agent': self.agent_name,
+                'status': 'error',
                 'error': str(e),
                 'error_category': 'unknown'
             }

@@ -256,7 +256,7 @@
 1. **Start the Backend**
    ```bash
    cd "/Users/yatharthanand/Indian Stock Fund"
-   uvicorn api.main:app --reload --port 8000
+   uvicorn api.main:app --reload --port 8010
    ```
    - Background collector will start automatically
    - Historical data collection begins every 4 hours

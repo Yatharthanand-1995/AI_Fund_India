@@ -19,7 +19,7 @@ import { api } from '../lib/api';
 
 export interface WatchlistItem {
   symbol: string;
-  added_at: string;
+  added_at: number;
   notes?: string;
   latest_score?: number;
   latest_recommendation?: string;
@@ -52,7 +52,12 @@ export const useWatchlist = (): UseWatchlistReturn => {
       setError(null);
 
       const response = await api.get('/watchlist');
-      setWatchlist(response.data.watchlist || []);
+      // Convert backend ISO strings to millisecond timestamps (store canonical type is number)
+      const items = (response.data.watchlist || []).map((item: any) => ({
+        ...item,
+        added_at: typeof item.added_at === 'string' ? new Date(item.added_at).getTime() : (item.added_at ?? Date.now()),
+      }));
+      setWatchlist(items);
     } catch (err: any) {
       console.error('Failed to fetch watchlist:', err);
       setError(err);
@@ -72,7 +77,7 @@ export const useWatchlist = (): UseWatchlistReturn => {
       // Optimistic update
       const newItem: WatchlistItem = {
         symbol: symbol.toUpperCase(),
-        added_at: new Date().toISOString(),
+        added_at: Date.now(),
         notes
       };
       setWatchlist(prev => [newItem, ...prev]);

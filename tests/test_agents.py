@@ -53,8 +53,8 @@ class TestFundamentalsAgent:
         agent = FundamentalsAgent()
         result = agent.analyze('TCS', None)
 
-        assert result['score'] == 0.0  # No data = worst score
-        assert result['confidence'] == 0.5  # Medium confidence in the lack of data
+        assert result['score'] == 50.0  # No data = neutral score
+        assert result['status'] == 'no_data'
 
     def test_score_breakdown(self, sample_comprehensive_data):
         """Test score breakdown components"""
@@ -203,6 +203,7 @@ class TestQualityAgent:
         prices = 100 + np.random.randn(100) * 0.5  # Very low volatility
 
         data = pd.DataFrame({
+            'Open': prices * 0.998,
             'Close': prices,
             'High': prices * 1.005,
             'Low': prices * 0.995,
@@ -332,6 +333,7 @@ class TestInstitutionalFlowAgent:
         volumes = pd.Series(range(1000000, 2000000, 10000), index=dates)
 
         data = pd.DataFrame({
+            'Open': prices * 0.998,
             'Close': prices,
             'High': prices * 1.01,
             'Low': prices * 0.99,

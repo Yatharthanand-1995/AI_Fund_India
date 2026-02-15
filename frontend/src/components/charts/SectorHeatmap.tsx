@@ -22,6 +22,7 @@ import {
   getScoreColor,
   formatTooltipValue
 } from '../../lib/chartUtils';
+import ChartErrorBoundary from './ChartErrorBoundary';
 
 // ============================================================================
 // Types
@@ -296,4 +297,9 @@ export const SectorHeatmap: React.FC<SectorHeatmapProps> = ({
   );
 };
 
-export default SectorHeatmap;
+const _SectorHeatmapWrapped = (props: SectorHeatmapProps) => (
+  <ChartErrorBoundary title="Sector Heatmap">
+    <SectorHeatmap {...props} />
+  </ChartErrorBoundary>
+);
+export default _SectorHeatmapWrapped;

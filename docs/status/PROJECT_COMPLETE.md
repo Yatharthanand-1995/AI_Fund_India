@@ -432,7 +432,7 @@
 **Start the Application**:
 ```bash
 # Terminal 1: Backend
-uvicorn api.main:app --reload --port 8000
+uvicorn api.main:app --reload --port 8010
 
 # Terminal 2: Frontend
 cd frontend && npm run dev
@@ -440,8 +440,8 @@ cd frontend && npm run dev
 
 **Access**:
 - Frontend: http://localhost:3000
-- Backend: http://localhost:8000
-- API Docs: http://localhost:8000/docs
+- Backend: http://localhost:8010
+- API Docs: http://localhost:8010/docs
 
 **Available Features**:
 - ✅ Stock analysis with 5 AI agents

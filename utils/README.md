@@ -400,7 +400,7 @@ python scripts/monitor_system.py
 grep "Slow request" logs/app.log
 
 # View metrics
-curl http://localhost:8000/metrics | jq .timings
+curl http://localhost:8010/metrics | jq .timings
 ```
 
 ### Log Files Too Large

@@ -181,7 +181,7 @@ class TestTopPicksEndpoint:
 
     def test_get_top_picks_invalid_limit(self, api_client):
         """Test with invalid limit"""
-        response = api_client.get('/portfolio/top-picks?limit=100')  # Exceeds max
+        response = api_client.get('/portfolio/top-picks?limit=200')  # Exceeds max of 100
 
         assert response.status_code == 422  # Validation error
 

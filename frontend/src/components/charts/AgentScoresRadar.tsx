@@ -14,7 +14,7 @@
  * - Legend toggle
  */
 
-import React, { useMemo, memo } from 'react';
+import React, { useMemo } from 'react';
 import {
   RadarChart,
   PolarGrid,
@@ -30,6 +30,7 @@ import {
   formatTooltipValue,
   transformAgentScores
 } from '../../lib/chartUtils';
+import ChartErrorBoundary from './ChartErrorBoundary';
 
 // ============================================================================
 // Types
@@ -233,4 +234,9 @@ export const AgentScoresRadar: React.FC<AgentScoresRadarProps> = ({
 };
 
 // Export memoized component for better performance
-export default memo(AgentScoresRadar);
+const _AgentScoresRadarWrapped = (props: AgentScoresRadarProps) => (
+  <ChartErrorBoundary title="Agent Scores Radar">
+    <AgentScoresRadar {...props} />
+  </ChartErrorBoundary>
+);
+export default _AgentScoresRadarWrapped;

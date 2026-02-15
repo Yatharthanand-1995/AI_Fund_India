@@ -25,6 +25,7 @@ import {
   CHART_DEFAULTS,
   getRecommendationColor
 } from '../../lib/chartUtils';
+import ChartErrorBoundary from './ChartErrorBoundary';
 
 // ============================================================================
 // Types
@@ -246,4 +247,9 @@ export const RecommendationPie: React.FC<RecommendationPieProps> = ({
   );
 };
 
-export default RecommendationPie;
+const _RecommendationPieWrapped = (props: RecommendationPieProps) => (
+  <ChartErrorBoundary title="Recommendation Chart">
+    <RecommendationPie {...props} />
+  </ChartErrorBoundary>
+);
+export default _RecommendationPieWrapped;

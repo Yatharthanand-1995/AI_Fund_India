@@ -18,6 +18,8 @@ import os
 import logging
 from typing import Dict, Optional, List
 import json
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from utils.circuit_breaker import CircuitBreaker, CircuitBreakerError
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +74,11 @@ class InvestmentNarrativeEngine:
 
         # Initialize LLM client
         self.llm_client = None
+        self._llm_circuit_breaker = CircuitBreaker(
+            failure_threshold=int(os.getenv('LLM_CIRCUIT_BREAKER_THRESHOLD', '5')),
+            recovery_timeout=int(os.getenv('LLM_CIRCUIT_BREAKER_TIMEOUT', '120')),
+            name='llm_narrative'
+        )
         if self.enable_llm:
             self._initialize_llm_client()
 
@@ -194,11 +201,12 @@ class InvestmentNarrativeEngine:
             symbol, agent_scores, composite_score, recommendation, stock_info
         )
 
-        try:
-            # Call LLM based on provider
+        timeout_secs = self.PROVIDERS.get(self.llm_provider, {}).get('timeout', 30)
+
+        def _call_llm():
+            """Blocking LLM call — executed in a thread to enforce timeout."""
             if self.llm_provider == 'gemini':
-                response = self.llm_client.generate_content(prompt)
-                narrative_text = response.text
+                return self.llm_client.generate_content(prompt).text
 
             elif self.llm_provider == 'openai':
                 response = self.llm_client.chat.completions.create(
@@ -210,25 +218,36 @@ class InvestmentNarrativeEngine:
                     temperature=0.7,
                     max_tokens=1000
                 )
-                narrative_text = response.choices[0].message.content
+                return response.choices[0].message.content
 
             elif self.llm_provider == 'anthropic':
                 response = self.llm_client.messages.create(
                     model=self.PROVIDERS['anthropic']['model'],
                     max_tokens=1000,
-                    messages=[
-                        {"role": "user", "content": prompt}
-                    ]
+                    messages=[{"role": "user", "content": prompt}]
                 )
-                narrative_text = response.content[0].text
+                return response.content[0].text
+
+            else:
+                raise ValueError(f"Unknown LLM provider: {self.llm_provider}")
+
+        try:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(self._llm_circuit_breaker.call, _call_llm)
+                narrative_text = future.result(timeout=timeout_secs)
 
             # Parse LLM response
             parsed = self._parse_llm_response(narrative_text, symbol, composite_score, recommendation)
             parsed['generated_by'] = self.llm_provider
-            logger.info(f"✅ LLM narrative generated successfully")
-
+            logger.info("✅ LLM narrative generated successfully")
             return parsed
 
+        except FuturesTimeoutError:
+            logger.warning(f"LLM call timed out after {timeout_secs}s for {symbol}")
+            raise TimeoutError(f"LLM provider {self.llm_provider} timed out after {timeout_secs}s")
+        except CircuitBreakerError as e:
+            logger.warning(f"LLM circuit breaker blocked call for {symbol}: {e}")
+            raise
         except Exception as e:
             logger.error(f"LLM generation failed: {e}")
             raise

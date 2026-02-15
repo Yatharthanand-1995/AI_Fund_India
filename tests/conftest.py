@@ -9,6 +9,7 @@ import os
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
+from fastapi.testclient import TestClient
 
 # Add parent directory to Python path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -118,6 +119,14 @@ def sample_historical_data():
         'Close': prices,
         'Volume': np.random.randint(1000000, 10000000, 300)
     }, index=dates)
+
+
+@pytest.fixture
+def api_client():
+    """FastAPI test client"""
+    from api.main import app
+    with TestClient(app) as client:
+        yield client
 
 
 @pytest.fixture

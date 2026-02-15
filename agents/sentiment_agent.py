@@ -62,7 +62,7 @@ class SentimentAgent:
         self.weight = 0.09  # 9% of total score
         self.enable_news_sentiment = enable_news_sentiment
 
-    def analyze(self, symbol: str, cached_data: Optional[Dict] = None) -> Dict:
+    def analyze(self, symbol: str, cached_data: Optional[Dict] = None, market_regime: Optional[str] = None) -> Dict:
         """
         Analyze market sentiment and analyst outlook
 
@@ -138,6 +138,7 @@ class SentimentAgent:
                     'target_price_score': round(target_price_score, 2),
                     'coverage_score': round(coverage_score, 2)
                 },
+                'status': 'success',
                 'agent': self.agent_name
             }
 
@@ -151,6 +152,7 @@ class SentimentAgent:
                 'breakdown': {},
                 'agent': self.agent_name,
                 'error': str(e),
+                'status': 'error',
                 'error_category': 'validation'
             }
 
@@ -164,6 +166,7 @@ class SentimentAgent:
                 'breakdown': {},
                 'agent': self.agent_name,
                 'error': str(e),
+                'status': 'error',
                 'error_category': 'insufficient_data'
             }
 
@@ -177,6 +180,7 @@ class SentimentAgent:
                 'breakdown': {},
                 'agent': self.agent_name,
                 'error': str(e),
+                'status': 'error',
                 'error_category': 'data_format'
             }
 
@@ -190,9 +194,9 @@ class SentimentAgent:
                 'breakdown': {},
                 'agent': self.agent_name,
                 'error': str(e),
+                'status': 'error',
                 'error_category': 'unknown'
             }
-
     def _extract_metrics(self, symbol: str, info: Dict) -> Dict:
         """Extract sentiment-related metrics"""
         metrics = {}

@@ -18,9 +18,20 @@ import InvestmentIdeaCard from '@/components/InvestmentIdeaCard';
 import IdeasComparisonTable from '@/components/IdeasComparisonTable';
 import MarketRegimeCard from '@/components/MarketRegimeCard';
 import { RecommendationPie } from '@/components/charts/RecommendationPie';
+import { useUrlFilters } from '@/hooks/useUrlFilters';
 import type { TopPicksResponse } from '@/types';
 
 type ViewMode = 'cards' | 'table' | 'comparison';
+
+interface IdeasFilters {
+  topCount?: number;
+  sortBy?: string;
+  sectorFilter?: string;
+  recommendationFilter?: string;
+  viewMode?: string;
+}
+
+const IDEAS_NUMBER_KEYS = ['topCount'];
 
 export default function Ideas() {
   const {
@@ -31,16 +42,36 @@ export default function Ideas() {
     getCachedTopPicks,
   } = useStore();
 
+  const [urlFilters, setUrlFilters] = useUrlFilters<IdeasFilters>({
+    numberKeys: IDEAS_NUMBER_KEYS,
+  });
+
   const [data, setData] = useState<TopPicksResponse | null>(null);
   const [cacheAge, setCacheAge] = useState<number | null>(null);
-  const [viewMode, setViewMode] = useState<ViewMode>('cards');
+  const [viewMode, setViewMode] = useState<ViewMode>((urlFilters.viewMode as ViewMode) || 'cards');
 
-  // Filters
-  const [topCount, setTopCount] = useState(10);
-  const [sortBy, setSortBy] = useState<'score' | 'confidence' | 'symbol'>('score');
-  const [sectorFilter, setSectorFilter] = useState<string>('All');
-  const [recommendationFilter, setRecommendationFilter] = useState<string>('All');
+  // Filters — initialised from URL if present
+  const [topCount, setTopCount] = useState(urlFilters.topCount ?? 10);
+  const [sortBy, setSortBy] = useState<'score' | 'confidence' | 'symbol'>(
+    (urlFilters.sortBy as 'score' | 'confidence' | 'symbol') || 'score'
+  );
+  const [sectorFilter, setSectorFilter] = useState<string>(urlFilters.sectorFilter || 'All');
+  const [recommendationFilter, setRecommendationFilter] = useState<string>(
+    urlFilters.recommendationFilter || 'All'
+  );
   const [showFilters, setShowFilters] = useState(false);
+
+  // Persist all filter changes to URL
+  const persistFilters = (overrides: Partial<IdeasFilters> = {}) => {
+    setUrlFilters({
+      topCount,
+      sortBy,
+      sectorFilter,
+      recommendationFilter,
+      viewMode,
+      ...overrides,
+    } as IdeasFilters);
+  };
 
   useEffect(() => {
     loadIdeas();
@@ -275,7 +306,7 @@ export default function Ideas() {
             {/* View Mode Selector */}
             <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-1">
               <button
-                onClick={() => setViewMode('cards')}
+                onClick={() => { setViewMode('cards'); persistFilters({ viewMode: 'cards' }); }}
                 className={`px-3 py-2 rounded-md text-sm font-medium transition-colors flex items-center gap-2 ${
                   viewMode === 'cards'
                     ? 'bg-white text-blue-600 shadow'
@@ -286,7 +317,7 @@ export default function Ideas() {
                 Cards
               </button>
               <button
-                onClick={() => setViewMode('table')}
+                onClick={() => { setViewMode('table'); persistFilters({ viewMode: 'table' }); }}
                 className={`px-3 py-2 rounded-md text-sm font-medium transition-colors flex items-center gap-2 ${
                   viewMode === 'table'
                     ? 'bg-white text-blue-600 shadow'
@@ -297,7 +328,7 @@ export default function Ideas() {
                 Table
               </button>
               <button
-                onClick={() => setViewMode('comparison')}
+                onClick={() => { setViewMode('comparison'); persistFilters({ viewMode: 'comparison' }); }}
                 className={`px-3 py-2 rounded-md text-sm font-medium transition-colors flex items-center gap-2 ${
                   viewMode === 'comparison'
                     ? 'bg-white text-blue-600 shadow'
@@ -321,7 +352,7 @@ export default function Ideas() {
               <label className="text-sm font-medium text-gray-700">Top:</label>
               <select
                 value={topCount}
-                onChange={(e) => setTopCount(Number(e.target.value))}
+                onChange={(e) => { const v = Number(e.target.value); setTopCount(v); persistFilters({ topCount: v }); }}
                 className="border border-gray-300 rounded-md px-3 py-2 text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none"
                 disabled={loading.topPicks}
               >
@@ -377,7 +408,7 @@ export default function Ideas() {
                 </label>
                 <select
                   value={sortBy}
-                  onChange={(e) => setSortBy(e.target.value as any)}
+                  onChange={(e) => { const v = e.target.value as 'score' | 'confidence' | 'symbol'; setSortBy(v); persistFilters({ sortBy: v }); }}
                   className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none"
                 >
                   <option value="score">Composite Score</option>
@@ -392,7 +423,7 @@ export default function Ideas() {
                 </label>
                 <select
                   value={sectorFilter}
-                  onChange={(e) => setSectorFilter(e.target.value)}
+                  onChange={(e) => { setSectorFilter(e.target.value); persistFilters({ sectorFilter: e.target.value }); }}
                   className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none"
                 >
                   {sectors.map(sector => (
@@ -407,7 +438,7 @@ export default function Ideas() {
                 </label>
                 <select
                   value={recommendationFilter}
-                  onChange={(e) => setRecommendationFilter(e.target.value)}
+                  onChange={(e) => { setRecommendationFilter(e.target.value); persistFilters({ recommendationFilter: e.target.value }); }}
                   className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none"
                 >
                   {recommendations.map(rec => (
@@ -426,6 +457,7 @@ export default function Ideas() {
                   onClick={() => {
                     setSectorFilter('All');
                     setRecommendationFilter('All');
+                    persistFilters({ sectorFilter: 'All', recommendationFilter: 'All' });
                   }}
                   className="text-blue-600 hover:text-blue-700"
                 >
@@ -497,6 +529,7 @@ export default function Ideas() {
             onClick={() => {
               setSectorFilter('All');
               setRecommendationFilter('All');
+              persistFilters({ sectorFilter: 'All', recommendationFilter: 'All' });
             }}
             className="text-blue-600 hover:text-blue-700"
           >

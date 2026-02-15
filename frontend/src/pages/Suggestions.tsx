@@ -15,6 +15,7 @@ import Loading from '@/components/ui/Loading';
 import SuggestionCard from '@/components/suggestions/SuggestionCard';
 import { useWatchlist } from '@/hooks/useWatchlist';
 import api from '@/lib/api';
+import { logger } from '@/lib/logger';
 import type { StockAnalysis } from '@/types';
 import {
   analyzePortfolioProfile,
@@ -30,8 +31,6 @@ type SuggestionCategory = 'personalized' | 'diversification' | 'trending' | 'all
 export default function Suggestions() {
   const { watchlist } = useWatchlist();
   const [loading, setLoading] = useState(true);
-  const [_allStocks, setAllStocks] = useState<StockAnalysis[]>([]);
-  const [_watchlistStocks, setWatchlistStocks] = useState<StockAnalysis[]>([]);
   const [profile, setProfile] = useState<PortfolioProfile | null>(null);
   const [suggestions, setSuggestions] = useState<{
     personalized: StockSuggestion[];
@@ -54,7 +53,6 @@ export default function Suggestions() {
       // Load all stocks for analysis
       const response = await api.getTopPicks(100, false);
       const stocks = response.top_picks || [];
-      setAllStocks(stocks);
 
       // Load watchlist stock analyses
       const watchlistSymbols = watchlist.map(w => w.symbol);
@@ -64,7 +62,6 @@ export default function Suggestions() {
         )
       );
       const validWatchlistStocks = watchlistAnalyses.filter(a => a !== null) as StockAnalysis[];
-      setWatchlistStocks(validWatchlistStocks);
 
       // Analyze user profile
       const userProfile = analyzePortfolioProfile(validWatchlistStocks);
@@ -97,7 +94,7 @@ export default function Suggestions() {
         trending,
       });
     } catch (error) {
-      console.error('Failed to load suggestions:', error);
+      logger.error('Failed to load suggestions:', error);
     } finally {
       setLoading(false);
     }

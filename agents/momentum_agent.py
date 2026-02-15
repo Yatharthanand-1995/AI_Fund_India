@@ -76,7 +76,8 @@ class MomentumAgent:
         symbol: str,
         price_data: pd.DataFrame,
         nifty_data: Optional[pd.DataFrame] = None,
-        cached_data: Optional[Dict] = None
+        cached_data: Optional[Dict] = None,
+        market_regime: Optional[str] = None
     ) -> Dict:
         """
         Analyze momentum and technical indicators
@@ -157,6 +158,7 @@ class MomentumAgent:
                     'returns_score': round(returns_score, 2),
                     'relative_strength_score': round(relative_strength_score, 2)
                 },
+                'status': 'success',
                 'agent': self.agent_name
             }
 
@@ -169,6 +171,7 @@ class MomentumAgent:
                 'metrics': {},
                 'breakdown': {},
                 'agent': self.agent_name,
+                'status': 'error',
                 'error': str(e),
                 'error_category': 'validation'
             }
@@ -182,6 +185,7 @@ class MomentumAgent:
                 'metrics': {},
                 'breakdown': {},
                 'agent': self.agent_name,
+                'status': 'error',
                 'error': str(e),
                 'error_category': 'insufficient_data'
             }
@@ -195,6 +199,7 @@ class MomentumAgent:
                 'metrics': {},
                 'breakdown': {},
                 'agent': self.agent_name,
+                'status': 'error',
                 'error': str(e),
                 'error_category': 'data_format'
             }
@@ -208,6 +213,7 @@ class MomentumAgent:
                 'metrics': {},
                 'breakdown': {},
                 'agent': self.agent_name,
+                'status': 'error',
                 'error': str(e),
                 'error_category': 'unknown'
             }

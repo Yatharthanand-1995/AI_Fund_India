@@ -37,6 +37,7 @@ import {
   transformHistoryData,
   sampleData
 } from '../../lib/chartUtils';
+import ChartErrorBoundary from './ChartErrorBoundary';
 
 // ============================================================================
 // Types
@@ -322,4 +323,9 @@ export const StockPriceChart: React.FC<StockPriceChartProps> = ({
   );
 };
 
-export default StockPriceChart;
+const _StockPriceChartWrapped = (props: StockPriceChartProps) => (
+  <ChartErrorBoundary title="Stock Price Chart">
+    <StockPriceChart {...props} />
+  </ChartErrorBoundary>
+);
+export default _StockPriceChartWrapped;

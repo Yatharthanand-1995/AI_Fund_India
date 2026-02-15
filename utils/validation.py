@@ -4,6 +4,7 @@ Validation utility functions for data integrity checks.
 Provides helper functions for validating inputs, data frames, and safe data access.
 """
 
+import math
 from typing import Any, Optional, List, Dict
 import pandas as pd
 
@@ -76,7 +77,7 @@ def validate_numeric(
             return allow_none
 
         # Check for infinity
-        if not pd.isfinite(num):
+        if not math.isfinite(num):
             return False
 
         # Check range

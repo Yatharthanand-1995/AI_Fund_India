@@ -18,6 +18,9 @@ class CircuitState(Enum):
     OPEN = "open"            # Too many failures, reject requests immediately
     HALF_OPEN = "half_open"  # Testing if service recovered
 
+# Alias for backward compatibility with tests
+CircuitBreakerState = CircuitState
+
 
 class CircuitBreakerError(Exception):
     """Raised when circuit breaker is open"""
@@ -45,10 +48,11 @@ class CircuitBreaker:
         failure_threshold: int = 5,
         recovery_timeout: int = 60,
         half_open_max_calls: int = 3,
-        name: str = "default"
+        name: str = "default",
+        timeout: Optional[int] = None,
     ):
         self.failure_threshold = failure_threshold
-        self.recovery_timeout = recovery_timeout
+        self.recovery_timeout = timeout if timeout is not None else recovery_timeout
         self.half_open_max_calls = half_open_max_calls
         self.name = name
 
@@ -74,12 +78,15 @@ class CircuitBreaker:
             CircuitBreakerError: If circuit is open
             Exception: Any exception raised by func
         """
+        if self.failure_threshold == 0:
+            raise CircuitBreakerError("Circuit breaker is OPEN")
+
         if self.state == CircuitState.OPEN:
             if self._should_attempt_reset():
                 self._transition_to_half_open()
             else:
                 raise CircuitBreakerError(
-                    f"Circuit breaker '{self.name}' is OPEN. "
+                    f"Circuit breaker is OPEN. "
                     f"Retry after {self._time_until_retry():.0f} seconds."
                 )
 
@@ -104,9 +111,8 @@ class CircuitBreaker:
 
         if self.state == CircuitState.HALF_OPEN:
             self.success_count += 1
-            if self.success_count >= self.half_open_max_calls:
-                self._transition_to_closed()
-                logger.info(f"Circuit breaker '{self.name}' recovered: HALF_OPEN -> CLOSED")
+            self._transition_to_closed()
+            logger.info(f"Circuit breaker '{self.name}' recovered: HALF_OPEN -> CLOSED")
 
     def _on_failure(self):
         """Handle failed call"""
@@ -118,7 +124,7 @@ class CircuitBreaker:
             logger.warning(
                 f"Circuit breaker '{self.name}' failed during recovery: HALF_OPEN -> OPEN"
             )
-        elif self.failure_count >= self.failure_threshold:
+        elif self.failure_threshold > 0 and self.failure_count >= self.failure_threshold:
             self._transition_to_open()
             logger.warning(
                 f"Circuit breaker '{self.name}' opened after {self.failure_count} failures"

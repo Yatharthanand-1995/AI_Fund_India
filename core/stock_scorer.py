@@ -12,6 +12,7 @@ This is the main orchestration layer that:
 """
 
 import logging
+import os
 from typing import Dict, Optional, List
 from datetime import datetime
 import pandas as pd
@@ -192,17 +193,27 @@ class StockScorer:
                     logger.warning(f"Could not fetch NIFTY data: {e}")
                     nifty_data = pd.DataFrame()
 
+            # Step 3b: Detect market regime from NIFTY data (cached after first call)
+            regime_trend = 'SIDEWAYS'
+            try:
+                regime_info = self.get_market_regime()
+                regime_trend = regime_info.get('trend', 'SIDEWAYS') if regime_info else 'SIDEWAYS'
+                logger.info(f"Market regime for scoring: {regime_trend}")
+            except Exception as _re:
+                logger.warning(f"Could not detect regime before agents: {_re}. Using SIDEWAYS default.")
+
             # Step 4: Run all 5 agents IN PARALLEL (5x speedup!)
             logger.info("Running all 5 agents in parallel...")
 
             # Define agent tasks for parallel execution
             with ThreadPoolExecutor(max_workers=5) as executor:
-                # Submit all agent tasks concurrently
+                # Submit all agent tasks concurrently — pass regime for awareness
                 future_to_agent = {
                     executor.submit(
                         self.fundamentals_agent.analyze,
                         symbol,
-                        cached_data
+                        cached_data,
+                        regime_trend
                     ): 'fundamentals',
 
                     executor.submit(
@@ -210,27 +221,31 @@ class StockScorer:
                         symbol,
                         price_data,
                         nifty_data,
-                        cached_data
+                        cached_data,
+                        regime_trend
                     ): 'momentum',
 
                     executor.submit(
                         self.quality_agent.analyze,
                         symbol,
                         price_data,
-                        cached_data
+                        cached_data,
+                        regime_trend
                     ): 'quality',
 
                     executor.submit(
                         self.sentiment_agent.analyze,
                         symbol,
-                        cached_data
+                        cached_data,
+                        regime_trend
                     ): 'sentiment',
 
                     executor.submit(
                         self.institutional_flow_agent.analyze,
                         symbol,
                         price_data,
-                        cached_data
+                        cached_data,
+                        regime_trend
                     ): 'institutional_flow'
                 }
 
@@ -254,6 +269,15 @@ class StockScorer:
                             'agent': f'{agent_name.title()}Agent',
                             'error': str(e)
                         }
+
+            # Apply regime-aware score adjustment to each agent's score
+            _REGIME_MULTIPLIERS = {'BEAR': 0.95, 'BULL': 1.03, 'SIDEWAYS': 1.0}
+            _multiplier = _REGIME_MULTIPLIERS.get(regime_trend, 1.0)
+            if _multiplier != 1.0:
+                for _agent_name, _result in agent_results.items():
+                    if _result.get('status') != 'error' and 'score' in _result:
+                        _result['score'] = round(min(100.0, max(0.0, _result['score'] * _multiplier)), 2)
+                logger.info(f"  Applied regime multiplier {_multiplier:.2f}x ({regime_trend}) to all agent scores")
 
             # Extract results (maintain backward compatibility)
             fundamentals_result = agent_results['fundamentals']
@@ -362,19 +386,31 @@ class StockScorer:
             logger.warning(f"Could not fetch NIFTY data: {e}")
             nifty_data = pd.DataFrame()
 
-        # Score each stock
-        for i, symbol in enumerate(symbols, 1):
-            logger.info(f"\nProgress: {i}/{len(symbols)} - {symbol}")
-            try:
-                result = self.score_stock(symbol, nifty_data)
-                results.append(result)
-            except Exception as e:
-                logger.error(f"Failed to score {symbol}: {e}")
-                results.append({
-                    'symbol': symbol,
-                    'composite_score': 0.0,
-                    'error': str(e)
-                })
+        # Score stocks in parallel (conservative worker count — score_stock
+        # itself uses an inner ThreadPoolExecutor of 5 workers per stock)
+        max_workers = min(len(symbols), int(os.environ.get('BATCH_MAX_WORKERS', '8')))
+        logger.info(f"Scoring {len(symbols)} stocks with up to {max_workers} parallel workers...")
+
+        with ThreadPoolExecutor(max_workers=max_workers) as batch_executor:
+            future_to_symbol = {
+                batch_executor.submit(self.score_stock, symbol, nifty_data): symbol
+                for symbol in symbols
+            }
+            completed = 0
+            for future in as_completed(future_to_symbol):
+                symbol = future_to_symbol[future]
+                completed += 1
+                logger.info(f"\nProgress: {completed}/{len(symbols)} - {symbol}")
+                try:
+                    result = future.result()
+                    results.append(result)
+                except Exception as e:
+                    logger.error(f"Failed to score {symbol}: {e}")
+                    results.append({
+                        'symbol': symbol,
+                        'composite_score': 0.0,
+                        'error': str(e)
+                    })
 
         # Sort by composite score (descending)
         results.sort(key=lambda x: x.get('composite_score', 0), reverse=True)
@@ -411,6 +447,12 @@ class StockScorer:
         sent_conf = sentiment_result.get('confidence', 0.5)
         flow_conf = flow_result.get('confidence', 0.5)
 
+        # Guard: count failed agents — penalize confidence when majority failed
+        agent_results_list = [fundamentals_result, momentum_result, quality_result, sentiment_result, flow_result]
+        error_count = sum(1 for r in agent_results_list if r.get('status') == 'error')
+        if error_count > 0:
+            logger.warning(f"  {error_count}/5 agents failed — composite score reliability reduced")
+
         # Calculate weighted composite score
         composite_score = (
             weights['fundamentals'] * fund_score +
@@ -428,6 +470,15 @@ class StockScorer:
             weights['sentiment'] * sent_conf +
             weights['institutional_flow'] * flow_conf
         )
+
+        # Penalize confidence proportionally when agents have failed
+        if error_count >= 3:
+            composite_confidence *= 0.3
+            logger.warning("  Confidence heavily penalized — majority of agents failed")
+        elif error_count == 2:
+            composite_confidence *= 0.6
+        elif error_count == 1:
+            composite_confidence *= 0.85
 
         logger.info(f"  Composite Score: {composite_score:.2f}/100")
         logger.info(f"  Composite Confidence: {composite_confidence:.2%}")

@@ -20,6 +20,7 @@ import ScreenerFilters from '@/components/screener/ScreenerFilters';
 import ScreenerResults from '@/components/screener/ScreenerResults';
 import ScreenerPresets from '@/components/screener/ScreenerPresets';
 import { useScreener } from '@/hooks/useScreener';
+import { useUrlFilters } from '@/hooks/useUrlFilters';
 import type { StockAnalysis } from '@/types';
 
 export type ViewMode = 'cards' | 'table';
@@ -69,9 +70,25 @@ export interface ScreenerFilters {
   analystCountMin?: number;
 }
 
+// Keys for URL param parsing (must match ScreenerFilters interface)
+const ARRAY_KEYS = ['recommendations', 'sectors', 'trends'];
+const NUMBER_KEYS = [
+  'scoreMin', 'scoreMax', 'marketCapMin', 'marketCapMax',
+  'return1mMin', 'return1mMax', 'return3mMin', 'return3mMax',
+  'return6mMin', 'return6mMax', 'return1yMin', 'return1yMax',
+  'rsiMin', 'rsiMax', 'volatilityMin', 'volatilityMax',
+  'fundamentalsMin', 'momentumMin', 'qualityMin', 'sentimentMin',
+  'institutionalFlowMin', 'analystCountMin',
+];
+
 export default function Screener() {
+  const [urlFilters, setUrlFilters] = useUrlFilters<ScreenerFilters>({
+    arrayKeys: ARRAY_KEYS,
+    numberKeys: NUMBER_KEYS,
+  });
+
   const [viewMode, setViewMode] = useState<ViewMode>('table');
-  const [filters, setFilters] = useState<ScreenerFilters>({});
+  const [filters, setFilters] = useState<ScreenerFilters>(urlFilters);
   const [showFilters, setShowFilters] = useState(true);
   const [showPresets, setShowPresets] = useState(false);
 
@@ -83,6 +100,7 @@ export default function Screener() {
 
   const handleApplyFilters = (newFilters: ScreenerFilters) => {
     setFilters(newFilters);
+    setUrlFilters(newFilters);
     applyFilters(newFilters);
   };
 

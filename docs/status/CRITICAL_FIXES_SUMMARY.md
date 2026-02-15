@@ -40,7 +40,7 @@ Created centralized `get_nifty_data()` helper function that tries multiple symbo
 ### Verification
 ```bash
 # Test market regime endpoint
-curl http://localhost:8000/market/regime
+curl http://localhost:8010/market/regime
 
 # Should now return actual regime (UPTREND_NORMAL, DOWNTREND_HIGH, etc.)
 # Instead of default SIDEWAYS_NORMAL
@@ -87,7 +87,7 @@ Handles:
 
 ### Verification
 ```bash
-curl http://localhost:8000/analytics/sectors
+curl http://localhost:8010/analytics/sectors
 
 # Should return sector stats without errors
 # All stocks with missing sectors grouped under "Unknown"
@@ -291,25 +291,25 @@ def validate_symbol(cls, v):
 
 1. **Test NIFTY Data Fetch**
 ```bash
-curl http://localhost:8000/market/regime
+curl http://localhost:8010/market/regime
 ```
 Expected: Actual regime (not default), no errors in logs
 
 2. **Test Sector Analysis**
 ```bash
-curl http://localhost:8000/analytics/sectors
+curl http://localhost:8010/analytics/sectors
 ```
 Expected: JSON response with sector stats, no Pydantic errors
 
 3. **Test Symbol Validation**
 ```bash
 # Valid symbol
-curl -X POST http://localhost:8000/analyze \
+curl -X POST http://localhost:8010/analyze \
   -H "Content-Type: application/json" \
   -d '{"symbol": "TCS"}'
 
 # Invalid symbol
-curl -X POST http://localhost:8000/analyze \
+curl -X POST http://localhost:8010/analyze \
   -H "Content-Type: application/json" \
   -d '{"symbol": "TCS@#$"}'
 ```
@@ -319,7 +319,7 @@ Expected: First succeeds, second returns 422 validation error
 ```bash
 # Run concurrent requests
 for i in {1..50}; do
-  curl http://localhost:8000/market/regime &
+  curl http://localhost:8010/market/regime &
 done
 wait
 ```
@@ -327,7 +327,7 @@ Expected: No race condition errors, consistent responses
 
 5. **Test Complete Analysis Flow**
 ```bash
-curl -X POST http://localhost:8000/analyze \
+curl -X POST http://localhost:8010/analyze \
   -H "Content-Type: application/json" \
   -d '{"symbol": "TCS", "include_narrative": false}'
 ```
@@ -340,10 +340,10 @@ Expected: Analysis with adaptive weights based on actual market regime
 # brew install httpd (macOS)
 
 # Test 100 requests, 10 concurrent
-ab -n 100 -c 10 http://localhost:8000/health
+ab -n 100 -c 10 http://localhost:8010/health
 
 # Test cache performance
-ab -n 1000 -c 50 http://localhost:8000/market/regime
+ab -n 1000 -c 50 http://localhost:8010/market/regime
 ```
 
 Expected Results:
@@ -430,8 +430,8 @@ Before deploying to production:
 ### Testing
 - [ ] Run manual tests (see "Immediate Verification" above)
 - [ ] Check logs for errors: `tail -f logs/app.log | grep ERROR`
-- [ ] Verify cache stats: `curl http://localhost:8000/cache/stats`
-- [ ] Test market regime: `curl http://localhost:8000/market/regime`
+- [ ] Verify cache stats: `curl http://localhost:8010/cache/stats`
+- [ ] Test market regime: `curl http://localhost:8010/market/regime`
 
 ### Monitoring
 - [ ] Set up error alerts (Sentry, CloudWatch, etc.)

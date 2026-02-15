@@ -7,7 +7,7 @@ interface WatchlistItem {
   symbol: string;
   latest_score?: number;
   latest_recommendation?: string;
-  added_at: string;
+  added_at: number;
   notes?: string;
 }
 

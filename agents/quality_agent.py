@@ -75,7 +75,7 @@ class QualityAgent:
         self.weight = 0.18  # 18% of total score
         self.sector_mapping = sector_mapping or {}
 
-    def analyze(self, symbol: str, price_data: pd.DataFrame, cached_data: Optional[Dict] = None) -> Dict:
+    def analyze(self, symbol: str, price_data: pd.DataFrame, cached_data: Optional[Dict] = None, market_regime: Optional[str] = None) -> Dict:
         """
         Analyze business quality and stability
 
@@ -152,6 +152,7 @@ class QualityAgent:
                     'drawdown_adjustment': round(drawdown_adjustment, 2),
                     'consistency_adjustment': round(consistency_adjustment, 2)
                 },
+                'status': 'success',
                 'agent': self.agent_name
             }
 
@@ -164,6 +165,7 @@ class QualityAgent:
                 'metrics': {},
                 'breakdown': {},
                 'agent': self.agent_name,
+                'status': 'error',
                 'error': str(e),
                 'error_category': 'validation'
             }
@@ -177,6 +179,7 @@ class QualityAgent:
                 'metrics': {},
                 'breakdown': {},
                 'agent': self.agent_name,
+                'status': 'error',
                 'error': str(e),
                 'error_category': 'insufficient_data'
             }
@@ -190,6 +193,7 @@ class QualityAgent:
                 'metrics': {},
                 'breakdown': {},
                 'agent': self.agent_name,
+                'status': 'error',
                 'error': str(e),
                 'error_category': 'data_format'
             }
@@ -203,6 +207,7 @@ class QualityAgent:
                 'metrics': {},
                 'breakdown': {},
                 'agent': self.agent_name,
+                'status': 'error',
                 'error': str(e),
                 'error_category': 'unknown'
             }

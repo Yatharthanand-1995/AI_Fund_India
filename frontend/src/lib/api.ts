@@ -6,6 +6,7 @@
  */
 
 import axios, { AxiosInstance, AxiosError } from 'axios';
+import { logger } from './logger';
 import type {
   AnalyzeRequest,
   BatchAnalyzeRequest,
@@ -18,20 +19,25 @@ import type {
 } from '@/types';
 
 const BASE_URL = import.meta.env.VITE_API_URL || '/api';
+const API_KEY = import.meta.env.VITE_API_KEY || '';
 
 class APIClient {
   private client: AxiosInstance;
 
   constructor() {
-    console.log('[APIClient] Initializing with BASE_URL:', BASE_URL);
+    logger.log('[APIClient] Initializing with BASE_URL:', BASE_URL);
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (API_KEY) {
+      headers['X-API-Key'] = API_KEY;
+    }
     this.client = axios.create({
       baseURL: BASE_URL,
       timeout: 120000, // 2 minutes for batch operations
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers,
     });
-    console.log('[APIClient] Axios baseURL:', this.client.defaults.baseURL);
+    logger.log('[APIClient] Axios baseURL:', this.client.defaults.baseURL);
 
     // Response interceptor for error handling
     this.client.interceptors.response.use(

@@ -5,6 +5,7 @@ Provides helper functions that handle edge cases like division by zero,
 NaN values, and floating-point precision issues.
 """
 
+import math
 import pandas as pd
 from typing import Optional
 
@@ -85,7 +86,7 @@ def safe_percentage_change(
     try:
         change = ((current - previous) / previous) * 100
 
-        if pd.isna(change) or not pd.isfinite(change):
+        if pd.isna(change) or not math.isfinite(change):
             return default
 
         return float(change)

@@ -77,7 +77,8 @@ class InstitutionalFlowAgent:
         self,
         symbol: str,
         price_data: pd.DataFrame,
-        cached_data: Optional[Dict] = None
+        cached_data: Optional[Dict] = None,
+        market_regime: Optional[str] = None
     ) -> Dict:
         """
         Analyze institutional money flow
@@ -163,6 +164,7 @@ class InstitutionalFlowAgent:
                     'vwap_adjustment': round(vwap_adjustment, 2),
                     'divergence_adjustment': round(divergence_adjustment, 2)
                 },
+                'status': 'success',
                 'agent': self.agent_name
             }
 
@@ -175,6 +177,7 @@ class InstitutionalFlowAgent:
                 'metrics': {},
                 'breakdown': {},
                 'agent': self.agent_name,
+                'status': 'error',
                 'error': str(e),
                 'error_category': 'validation'
             }
@@ -188,6 +191,7 @@ class InstitutionalFlowAgent:
                 'metrics': {},
                 'breakdown': {},
                 'agent': self.agent_name,
+                'status': 'error',
                 'error': str(e),
                 'error_category': 'insufficient_data'
             }
@@ -201,6 +205,7 @@ class InstitutionalFlowAgent:
                 'metrics': {},
                 'breakdown': {},
                 'agent': self.agent_name,
+                'status': 'error',
                 'error': str(e),
                 'error_category': 'data_format'
             }
@@ -214,6 +219,7 @@ class InstitutionalFlowAgent:
                 'metrics': {},
                 'breakdown': {},
                 'agent': self.agent_name,
+                'status': 'error',
                 'error': str(e),
                 'error_category': 'unknown'
             }

@@ -31,6 +31,7 @@ import {
   formatTooltipValue,
   getScoreColor
 } from '../../lib/chartUtils';
+import ChartErrorBoundary from './ChartErrorBoundary';
 
 // ============================================================================
 // Types
@@ -292,4 +293,9 @@ export const AgentScoresBar: React.FC<AgentScoresBarProps> = ({
   );
 };
 
-export default AgentScoresBar;
+const _AgentScoresBarWrapped = (props: AgentScoresBarProps) => (
+  <ChartErrorBoundary title="Agent Scores">
+    <AgentScoresBar {...props} />
+  </ChartErrorBoundary>
+);
+export default _AgentScoresBarWrapped;

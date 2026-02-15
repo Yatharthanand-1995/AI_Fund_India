@@ -9,18 +9,21 @@ Exposes REST API endpoints for:
 - Health checks
 - Stock universe listing
 
-Run with: uvicorn api.main:app --reload --port 8000
+Run with: uvicorn api.main:app --reload --port 8010
 """
 
+import asyncio
+import functools
 import logging
 import os
 import time
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Query, Request
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Query, Request, Depends, Security
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field, validator
 import pandas as pd
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -42,7 +45,7 @@ from utils.api_middleware import (
 )
 from utils.metrics import metrics, track_api_request, track_api_error, Timer
 from utils.validation import get_nifty_data
-from core.exceptions import DataValidationException
+from core.exceptions import DataValidationException, ErrorCode
 
 # Setup comprehensive logging
 setup_logging(
@@ -83,6 +86,47 @@ limiter = Limiter(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+# API Key Authentication (optional — enable via ENABLE_API_KEY_AUTH=true in .env)
+_API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
+_API_KEY = os.getenv('API_KEY', '')
+_ENABLE_API_KEY_AUTH = os.getenv('ENABLE_API_KEY_AUTH', 'false').lower() == 'true'
+
+
+async def verify_api_key(api_key: Optional[str] = Security(_API_KEY_HEADER)) -> None:
+    """Validate API key when authentication is enabled."""
+    if _ENABLE_API_KEY_AUTH and _API_KEY:
+        if api_key != _API_KEY:
+            raise HTTPException(
+                status_code=403,
+                detail="Invalid or missing API Key. Provide X-API-Key header."
+            )
+
+
+# Async helper: run blocking sync functions without stalling the event loop
+async def run_in_thread(func, *args, **kwargs):
+    """Offload a blocking synchronous call to a thread pool executor."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, functools.partial(func, *args, **kwargs))
+
+
+def make_error_response(
+    error_code: ErrorCode,
+    message: str,
+    detail: str | None = None,
+    symbol: str | None = None,
+) -> dict:
+    """Build a structured error payload included in HTTP error responses."""
+    payload: dict = {
+        "error_code": error_code.value,
+        "message": message,
+    }
+    if detail:
+        payload["detail"] = detail
+    if symbol:
+        payload["symbol"] = symbol
+    return payload
+
+
 # Logging and monitoring middleware
 app.add_middleware(RequestLoggingMiddleware)
 app.add_middleware(PerformanceMonitoringMiddleware, slow_request_threshold_ms=2000)
@@ -114,6 +158,9 @@ data_collector = init_collector(
 # Initialize unified cache manager
 cache_manager = get_cache_manager()
 api_cache = cache_manager.get_cache('api', max_size=1000, ttl=900)  # 15 minutes
+
+# Invalidate API cache automatically after each data collection cycle
+data_collector.on_collection_complete = lambda: api_cache.clear()
 
 logger.info("FastAPI backend initialized successfully")
 
@@ -214,7 +261,7 @@ class NarrativeResponse(BaseModel):
     key_strengths: List[str]
     key_risks: List[str]
     summary: str
-    provider: str
+    provider: str = "rule_based"
 
 
 class StockAnalysisResponse(BaseModel):
@@ -526,7 +573,8 @@ async def root():
     }
 
 
-@app.post("/analyze", response_model=StockAnalysisResponse, tags=["Analysis"])
+@app.post("/analyze", response_model=StockAnalysisResponse, tags=["Analysis"],
+          dependencies=[Depends(verify_api_key)])
 @limiter.limit("30/minute")
 async def analyze_stock(body: AnalyzeRequest, request: Request):
     """
@@ -549,16 +597,16 @@ async def analyze_stock(body: AnalyzeRequest, request: Request):
         if cached:
             return StockAnalysisResponse(**{**cached, 'cached': True})
 
-        # Fetch NIFTY data for market context
+        # Fetch NIFTY data for market context (non-blocking)
         try:
-            nifty_data = get_nifty_data(data_provider, min_rows=20)
+            nifty_data = await run_in_thread(get_nifty_data, data_provider, min_rows=20)
         except DataValidationException as e:
             logger.warning(f"Could not fetch NIFTY data: {e}. Proceeding without market context.")
             nifty_data = None
 
-        # Score stock
+        # Score stock (non-blocking — wraps sync I/O in thread pool)
         start_time = time.time()
-        result = stock_scorer.score_stock(symbol, nifty_data=nifty_data)
+        result = await run_in_thread(stock_scorer.score_stock, symbol, nifty_data=nifty_data)
         duration = time.time() - start_time
 
         logger.info(f"Scoring completed in {duration:.2f}s: {symbol} = {result['composite_score']:.1f}")
@@ -568,7 +616,7 @@ async def analyze_stock(body: AnalyzeRequest, request: Request):
             'symbol': symbol,
             'composite_score': result['composite_score'],
             'recommendation': result['recommendation'],
-            'confidence': result['composite_confidence'],
+            'confidence': result.get('composite_confidence', result.get('confidence', 0.0)),
             'current_price': result.get('current_price'),
             'price_change_percent': result.get('price_change_percent'),
             'company_name': result.get('company_name'),
@@ -612,7 +660,7 @@ async def analyze_stock(body: AnalyzeRequest, request: Request):
                 symbol=symbol,
                 composite_score=result['composite_score'],
                 recommendation=result['recommendation'],
-                confidence=result['composite_confidence'],
+                confidence=result.get('composite_confidence', result.get('confidence', 0.0)),
                 agent_scores=result.get('agent_scores', {}),
                 weights=result.get('weights_used', {}),
                 market_regime=result.get('market_regime'),
@@ -626,12 +674,23 @@ async def analyze_stock(body: AnalyzeRequest, request: Request):
 
         return StockAnalysisResponse(**response_data)
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Analysis failed for {request.symbol}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+        logger.error(f"Analysis failed for {body.symbol}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=make_error_response(
+                ErrorCode.ANALYSIS_FAILED,
+                f"Stock analysis failed for {body.symbol}",
+                detail=str(e),
+                symbol=body.symbol,
+            ),
+        )
 
 
-@app.post("/analyze/batch", response_model=BatchAnalysisResponse, tags=["Analysis"])
+@app.post("/analyze/batch", response_model=BatchAnalysisResponse, tags=["Analysis"],
+          dependencies=[Depends(verify_api_key)])
 @limiter.limit("10/minute")
 async def analyze_batch(body: BatchAnalyzeRequest, request: Request):
     """
@@ -645,18 +704,18 @@ async def analyze_batch(body: BatchAnalyzeRequest, request: Request):
 
         start_time = time.time()
 
-        # Fetch NIFTY data once for all stocks
+        # Fetch NIFTY data once for all stocks (non-blocking)
         try:
-            nifty_data = get_nifty_data(data_provider, min_rows=20)
+            nifty_data = await run_in_thread(get_nifty_data, data_provider, min_rows=20)
         except DataValidationException as e:
             logger.warning(f"Could not fetch NIFTY data: {e}. Proceeding without market context.")
             nifty_data = None
 
-        # Get market regime once
-        regime = stock_scorer.get_market_regime()
+        # Get market regime once (non-blocking)
+        regime = await run_in_thread(stock_scorer.get_market_regime)
 
-        # Score all stocks
-        batch_results = stock_scorer.score_stocks_batch(symbols=body.symbols)
+        # Score all stocks (non-blocking — parallel batch via ThreadPoolExecutor)
+        batch_results = await run_in_thread(stock_scorer.score_stocks_batch, symbols=body.symbols)
 
         # Format results
         formatted_results = []
@@ -669,7 +728,7 @@ async def analyze_batch(body: BatchAnalyzeRequest, request: Request):
                     'symbol': result['symbol'],
                     'composite_score': result['composite_score'],
                     'recommendation': result['recommendation'],
-                    'confidence': result['composite_confidence'],
+                    'confidence': result.get('composite_confidence', result.get('confidence', 0.0)),
                     'current_price': result.get('current_price'),
                     'price_change_percent': result.get('price_change_percent'),
                     'company_name': result.get('company_name'),
@@ -727,9 +786,18 @@ async def analyze_batch(body: BatchAnalyzeRequest, request: Request):
             duration_seconds=round(duration, 2)
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Batch analysis failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Batch analysis failed: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=make_error_response(
+                ErrorCode.BATCH_ANALYSIS_FAILED,
+                "Batch stock analysis failed",
+                detail=str(e),
+            ),
+        )
 
 
 @app.get("/portfolio/top-picks", response_model=TopPicksResponse, tags=["Portfolio"])
@@ -757,19 +825,19 @@ async def get_top_picks(
         # Get NIFTY 50 constituents from stock universe
         nifty_50_symbols = stock_universe.get_symbols('NIFTY_50')
 
-        # Fetch NIFTY data
+        # Fetch NIFTY data (non-blocking)
         try:
-            nifty_data = get_nifty_data(data_provider, min_rows=20)
+            nifty_data = await run_in_thread(get_nifty_data, data_provider, min_rows=20)
         except DataValidationException as e:
             logger.warning(f"Could not fetch NIFTY data: {e}. Using default market regime.")
             nifty_data = None
 
-        # Get market regime
-        regime = stock_scorer.get_market_regime()
+        # Get market regime (non-blocking)
+        regime = await run_in_thread(stock_scorer.get_market_regime)
 
-        # Score all stocks
+        # Score all stocks (non-blocking — parallel batch)
         logger.info(f"Scoring {len(nifty_50_symbols)} NIFTY 50 stocks...")
-        batch_results = stock_scorer.score_stocks_batch(symbols=nifty_50_symbols)
+        batch_results = await run_in_thread(stock_scorer.score_stocks_batch, symbols=nifty_50_symbols)
 
         # Format and sort by score
         formatted_results = []
@@ -779,7 +847,7 @@ async def get_top_picks(
                     'symbol': result['symbol'],
                     'composite_score': result['composite_score'],
                     'recommendation': result['recommendation'],
-                    'confidence': result['composite_confidence'],
+                    'confidence': result.get('composite_confidence', result.get('confidence', 0.0)),
                     'current_price': result.get('current_price'),
                     'price_change_percent': result.get('price_change_percent'),
                     'company_name': result.get('company_name'),
@@ -859,13 +927,13 @@ async def get_market_regime():
 
         # Fetch NIFTY data
         try:
-            nifty_data = get_nifty_data(data_provider, min_rows=20)
+            nifty_data = await run_in_thread(get_nifty_data, data_provider, min_rows=20)
         except DataValidationException as e:
             logger.error(f"Failed to fetch NIFTY data for regime detection: {e}")
             raise HTTPException(status_code=503, detail="Market regime data unavailable")
 
-        # Get regime
-        regime = stock_scorer.get_market_regime()
+        # Get regime (non-blocking)
+        regime = await run_in_thread(stock_scorer.get_market_regime)
 
         response_data = {
             'regime': regime['regime'],
@@ -1459,7 +1527,8 @@ async def remove_from_watchlist(symbol: str):
 # Comparison Endpoint
 # ============================================================================
 
-@app.post("/compare", response_model=ComparisonResponse, tags=["Analysis"])
+@app.post("/compare", response_model=ComparisonResponse, tags=["Analysis"],
+          dependencies=[Depends(verify_api_key)])
 async def compare_stocks(request: CompareRequest):
     """
     Compare multiple stocks side-by-side
@@ -1479,8 +1548,8 @@ async def compare_stocks(request: CompareRequest):
                 analysis = cached
                 analysis['cached'] = True
             else:
-                # Analyze stock
-                result = stock_scorer.score_stock(symbol)
+                # Analyze stock (non-blocking)
+                result = await run_in_thread(stock_scorer.score_stock, symbol)
 
                 if result and not result.get('error'):
                     # Generate narrative if requested (but not for comparison by default)
@@ -1495,7 +1564,7 @@ async def compare_stocks(request: CompareRequest):
                         symbol=symbol,
                         composite_score=result['composite_score'],
                         recommendation=result['recommendation'],
-                        confidence=result['composite_confidence'],
+                        confidence=result.get('composite_confidence', result.get('confidence', 0.0)),
                         agent_scores=agent_scores_dict,
                         weights=result.get('weights_used', {}),
                         market_regime=result.get('market_regime'),
@@ -1516,7 +1585,7 @@ async def compare_stocks(request: CompareRequest):
                             symbol=symbol,
                             composite_score=result['composite_score'],
                             recommendation=result['recommendation'],
-                            confidence=result['composite_confidence'],
+                            confidence=result.get('composite_confidence', result.get('confidence', 0.0)),
                             agent_scores=result.get('agent_scores', {}),
                             weights=result.get('weights_used', {}),
                             market_regime=result.get('market_regime')
@@ -1655,9 +1724,13 @@ async def trigger_collection():
         collector = get_collector()
         result = collector.collect_now()
 
+        # Explicitly invalidate API cache after manual collection
+        api_cache.clear()
+        logger.info("API cache cleared after manual data collection")
+
         return {
             'success': True,
-            'message': 'Data collection triggered',
+            'message': 'Data collection triggered and cache invalidated',
             'result': result,
             'timestamp': datetime.now().isoformat()
         }

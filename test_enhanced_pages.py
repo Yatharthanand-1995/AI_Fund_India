@@ -8,7 +8,7 @@ import requests
 import json
 from datetime import datetime
 
-BASE_URL = "http://localhost:8000"
+BASE_URL = "http://localhost:8010"
 
 def test_endpoint(name, method, url, data=None, expected_keys=None):
     """Test an API endpoint"""
@@ -217,7 +217,7 @@ def main():
         print("The enhanced pages are ready to use.")
     else:
         print("⚠️  Some tests failed. Check the backend is running.")
-        print("   Run: uvicorn api.main:app --reload --port 8000")
+        print("   Run: uvicorn api.main:app --reload --port 8010")
 
     print("=" * 60)
 

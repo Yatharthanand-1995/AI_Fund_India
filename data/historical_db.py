@@ -551,7 +551,7 @@ class HistoricalDatabase:
                     VALUES (?, ?, ?)
                 """, (user_id, symbol.upper(), notes))
                 return True
-        except sqlite3.IntegrityError:
+        except (sqlite3.IntegrityError, DatabaseException):
             logger.warning(f"Stock {symbol} already in watchlist for user {user_id}")
             return False
 

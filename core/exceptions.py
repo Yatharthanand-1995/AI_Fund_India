@@ -54,3 +54,26 @@ class ConfigurationException(StockFundException):
 class CacheException(StockFundException):
     """Cache operation errors"""
     pass
+
+
+from enum import Enum
+
+
+class ErrorCode(str, Enum):
+    """Structured error codes for API responses"""
+    # Data layer
+    DATA_FETCH_FAILED = "DATA_FETCH_FAILED"
+    DATA_VALIDATION_FAILED = "DATA_VALIDATION_FAILED"
+    INSUFFICIENT_DATA = "INSUFFICIENT_DATA"
+    SYMBOL_NOT_FOUND = "SYMBOL_NOT_FOUND"
+    # Analysis
+    ANALYSIS_FAILED = "ANALYSIS_FAILED"
+    BATCH_ANALYSIS_FAILED = "BATCH_ANALYSIS_FAILED"
+    # System
+    SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE"
+    RATE_LIMIT_EXCEEDED = "RATE_LIMIT_EXCEEDED"
+    INTERNAL_ERROR = "INTERNAL_ERROR"
+    # Auth
+    INVALID_API_KEY = "INVALID_API_KEY"
+    # Cache
+    CACHE_OPERATION_FAILED = "CACHE_OPERATION_FAILED"

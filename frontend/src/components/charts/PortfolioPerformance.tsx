@@ -30,6 +30,7 @@ import {
   formatTooltipValue,
   formatTooltipDate
 } from '../../lib/chartUtils';
+import ChartErrorBoundary from './ChartErrorBoundary';
 
 // ============================================================================
 // Types
@@ -347,4 +348,9 @@ export const PortfolioPerformance: React.FC<PortfolioPerformanceProps> = ({
   );
 };
 
-export default PortfolioPerformance;
+const _PortfolioPerformanceWrapped = (props: PortfolioPerformanceProps) => (
+  <ChartErrorBoundary title="Portfolio Performance">
+    <PortfolioPerformance {...props} />
+  </ChartErrorBoundary>
+);
+export default _PortfolioPerformanceWrapped;

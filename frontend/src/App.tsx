@@ -5,6 +5,7 @@ import { logger } from './lib/logger';
 import Dashboard from './pages/Dashboard';
 import Ideas from './pages/Ideas';
 import About from './pages/About';
+import NotFound from './pages/NotFound';
 import Toast from './components/ui/Toast';
 import ErrorBoundary from './components/ErrorBoundary';
 import Loading from './components/ui/Loading';
@@ -101,6 +102,7 @@ function App() {
                 <Route path="/backtest" element={<ErrorBoundary><Backtest /></ErrorBoundary>} />
                 <Route path="/system" element={<ErrorBoundary><SystemHealth /></ErrorBoundary>} />
                 <Route path="/about" element={<ErrorBoundary><About /></ErrorBoundary>} />
+                <Route path="*" element={<NotFound />} />
               </Routes>
             </Suspense>
           </ErrorBoundary>

@@ -76,6 +76,7 @@ class HistoricalDataCollector:
             'last_collection_time': None,
             'last_collection_duration': None
         }
+        self.on_collection_complete = None
 
         logger.info(
             f"Historical data collector initialized "
@@ -179,6 +180,13 @@ class HistoricalDataCollector:
                 f"(success: {success_count}, failed: {fail_count})"
             )
 
+            # Trigger cache invalidation callback if registered
+            if self.on_collection_complete:
+                try:
+                    self.on_collection_complete()
+                    logger.info("Cache invalidation callback triggered")
+                except Exception as cb_err:
+                    logger.warning(f"Cache invalidation callback failed: {cb_err}")
             # Cleanup old data
             self._cleanup_old_data()
 

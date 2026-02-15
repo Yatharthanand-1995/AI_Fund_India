@@ -29,7 +29,7 @@ Modern, responsive web interface for the AI Hedge Fund stock analysis system.
 ### Prerequisites
 
 - Node.js 18+ and npm/yarn
-- Backend API running on `http://localhost:8000`
+- Backend API running on `http://localhost:8010`
 
 ### Installation
 
@@ -172,14 +172,14 @@ api.getStockUniverse()
 
 ### Development Proxy
 
-In development, Vite proxies `/api/*` requests to `http://localhost:8000`:
+In development, Vite proxies `/api/*` requests to `http://localhost:8010`:
 
 ```typescript
 // vite.config.ts
 server: {
   proxy: {
     '/api': {
-      target: 'http://localhost:8000',
+      target: 'http://localhost:8010',
       changeOrigin: true,
       rewrite: (path) => path.replace(/^\/api/, ''),
     },
@@ -369,7 +369,7 @@ interface StockCardProps {
 
 If you see "No response from server":
 
-1. Check if backend is running: `curl http://localhost:8000/health`
+1. Check if backend is running: `curl http://localhost:8010/health`
 2. Verify proxy configuration in `vite.config.ts`
 3. Check CORS settings in backend
 
