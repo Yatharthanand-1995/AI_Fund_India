@@ -271,13 +271,29 @@ class StockScorer:
                         }
 
             # Apply regime-aware score adjustment to each agent's score
-            _REGIME_MULTIPLIERS = {'BEAR': 0.95, 'BULL': 1.03, 'SIDEWAYS': 1.0}
-            _multiplier = _REGIME_MULTIPLIERS.get(regime_trend, 1.0)
-            if _multiplier != 1.0:
-                for _agent_name, _result in agent_results.items():
-                    if _result.get('status') != 'error' and 'score' in _result:
-                        _result['score'] = round(min(100.0, max(0.0, _result['score'] * _multiplier)), 2)
-                logger.info(f"  Applied regime multiplier {_multiplier:.2f}x ({regime_trend}) to all agent scores")
+            # Skip when adaptive weights are active (regime already captured in weights)
+            if not self.use_adaptive_weights:
+                _REGIME_AGENT_MULTIPLIERS = {
+                    'BULL': {
+                        'fundamentals': 1.05, 'momentum': 1.08, 'quality': 0.97,
+                        'sentiment': 1.00, 'institutional_flow': 1.02
+                    },
+                    'BEAR': {
+                        'fundamentals': 0.92, 'momentum': 0.88, 'quality': 1.08,
+                        'sentiment': 1.05, 'institutional_flow': 1.00
+                    },
+                    'SIDEWAYS': {
+                        'fundamentals': 1.0, 'momentum': 1.0, 'quality': 1.0,
+                        'sentiment': 1.0, 'institutional_flow': 1.0
+                    },
+                }
+                _agent_multipliers = _REGIME_AGENT_MULTIPLIERS.get(regime_trend, {})
+                if _agent_multipliers:
+                    for _agent_name, _result in agent_results.items():
+                        _m = _agent_multipliers.get(_agent_name, 1.0)
+                        if _m != 1.0 and _result.get('status') != 'error' and 'score' in _result:
+                            _result['score'] = round(min(100.0, max(0.0, _result['score'] * _m)), 2)
+                    logger.info(f"  Applied agent-specific regime multipliers ({regime_trend})")
 
             # Extract results (maintain backward compatibility)
             fundamentals_result = agent_results['fundamentals']
@@ -376,6 +392,10 @@ class StockScorer:
         Returns:
             List of analysis results, sorted by composite score (descending)
         """
+        # Deduplicate symbols while preserving order
+        seen = set()
+        symbols = [s for s in symbols if s not in seen and not seen.add(s)]
+
         logger.info(f"Batch scoring {len(symbols)} stocks...")
         results = []
 
@@ -462,14 +482,9 @@ class StockScorer:
             weights['institutional_flow'] * flow_score
         )
 
-        # Calculate weighted composite confidence
-        composite_confidence = (
-            weights['fundamentals'] * fund_conf +
-            weights['momentum'] * mom_conf +
-            weights['quality'] * qual_conf +
-            weights['sentiment'] * sent_conf +
-            weights['institutional_flow'] * flow_conf
-        )
+        # Calculate composite confidence using equal-weight mean
+        # (independent of score weights so low-weighted agents don't under-count data quality)
+        composite_confidence = (fund_conf + mom_conf + qual_conf + sent_conf + flow_conf) / 5.0
 
         # Penalize confidence proportionally when agents have failed
         if error_count >= 3:
@@ -506,6 +521,8 @@ class StockScorer:
             return 'BUY'
         elif score >= self.RECOMMENDATION_THRESHOLDS['WEAK BUY']:
             return 'WEAK BUY'
+        elif score >= self.RECOMMENDATION_THRESHOLDS['HOLD_HIGH']:
+            return 'HOLD+'
         elif score >= self.RECOMMENDATION_THRESHOLDS['HOLD_LOW']:
             return 'HOLD'
         elif score >= self.RECOMMENDATION_THRESHOLDS['WEAK SELL']:
@@ -571,7 +588,9 @@ class StockScorer:
         atr = momentum_metrics.get('atr')
         if atr and atr > 0:
             levels['atr'] = round(float(atr), 2)
-            levels['stop_loss'] = round(current_price - (1.5 * atr), 2)
+            atr_stop = round(current_price - (1.5 * atr), 2)
+            # Ensure stop_loss is always positive and not greater than current price
+            levels['stop_loss'] = max(atr_stop, round(current_price * 0.85, 2))
         else:
             # Fallback: 7% trailing stop
             levels['stop_loss'] = round(current_price * 0.93, 2)

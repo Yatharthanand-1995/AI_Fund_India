@@ -20,6 +20,7 @@ import logging
 from utils.metric_extraction import MetricExtractor
 from utils.validation import validate_price_dataframe_schema
 from core.exceptions import DataValidationException, InsufficientDataException, CalculationException
+from data.fii_dii_provider import get_default_provider as get_fii_dii_provider
 
 logger = logging.getLogger(__name__)
 
@@ -130,9 +131,23 @@ class InstitutionalFlowAgent:
             vwap_adjustment = self._score_vwap(metrics)
             divergence_adjustment = self._score_price_volume_divergence(metrics)
 
+            # FII/DII net flow adjustment (India-specific, ±15 points)
+            try:
+                fii_dii = get_fii_dii_provider()
+                flow_data = fii_dii.get_flow_data()
+                fii_dii_adjustment = fii_dii.score_flow(flow_data)
+                metrics['fii_net_30d'] = flow_data.get('fii_net_30d')
+                metrics['dii_net_30d'] = flow_data.get('dii_net_30d')
+                metrics['fii_trend'] = flow_data.get('fii_recent_trend')
+                metrics['dii_trend'] = flow_data.get('dii_recent_trend')
+            except Exception as _fii_err:
+                logger.debug(f"FII/DII data unavailable for {symbol}: {_fii_err}")
+                fii_dii_adjustment = 0.0
+
             # Calculate total score
             total_score = 50 + obv_adjustment + mfi_adjustment + cmf_adjustment + \
-                         volume_spike_adjustment + vwap_adjustment + divergence_adjustment
+                         volume_spike_adjustment + vwap_adjustment + divergence_adjustment + \
+                         fii_dii_adjustment
 
             # Clamp to 0-100
             total_score = max(0, min(100, total_score))
@@ -147,7 +162,8 @@ class InstitutionalFlowAgent:
                 'cmf': cmf_adjustment,
                 'volume_spike': volume_spike_adjustment,
                 'vwap': vwap_adjustment,
-                'divergence': divergence_adjustment
+                'divergence': divergence_adjustment,
+                'fii_dii': fii_dii_adjustment
             })
 
             return {
@@ -162,7 +178,8 @@ class InstitutionalFlowAgent:
                     'cmf_adjustment': round(cmf_adjustment, 2),
                     'volume_spike_adjustment': round(volume_spike_adjustment, 2),
                     'vwap_adjustment': round(vwap_adjustment, 2),
-                    'divergence_adjustment': round(divergence_adjustment, 2)
+                    'divergence_adjustment': round(divergence_adjustment, 2),
+                    'fii_dii_adjustment': round(fii_dii_adjustment, 2)
                 },
                 'status': 'success',
                 'agent': self.agent_name
@@ -287,7 +304,13 @@ class InstitutionalFlowAgent:
             metrics['volume_trend'] = None
 
         # Price-Volume Divergence (critical institutional signal)
-        metrics['pv_divergence'] = self._detect_price_volume_divergence(price_data)
+        pv_result = self._detect_price_volume_divergence(price_data, return_trend=True)
+        if isinstance(pv_result, dict):
+            metrics['pv_divergence'] = pv_result.get('pattern')
+            metrics['pv_trend_reversal'] = pv_result.get('trend_reversal', False)
+        else:
+            metrics['pv_divergence'] = pv_result
+            metrics['pv_trend_reversal'] = False
 
         logger.debug(f"Extracted {len([v for v in metrics.values() if v is not None])} flow metrics")
         return metrics
@@ -343,16 +366,15 @@ class InstitutionalFlowAgent:
             logger.debug(f"Failed to calculate volume Z-score: {e}")
             return None
 
-    def _detect_price_volume_divergence(self, price_data: pd.DataFrame, window: int = 10) -> Optional[str]:
+    def _detect_price_volume_divergence(self, price_data: pd.DataFrame, window: int = 10, return_trend: bool = False):
         """
         Detect price-volume divergence patterns (institutional behavior indicator)
 
-        Returns:
-        - 'bullish_accumulation': Price down + volume up (buying the dip)
-        - 'bearish_distribution': Price up + volume down (selling into strength)
-        - 'healthy_uptrend': Price up + volume up (confirmed rally)
-        - 'weak_downtrend': Price down + volume down (weak selling)
-        - 'neutral': No clear divergence
+        Returns (when return_trend=False):
+        - str: pattern name or None
+
+        Returns (when return_trend=True):
+        - dict: {'pattern': str, 'trend_reversal': bool} or None
 
         Divergences are strong institutional signals:
         - Distribution (bearish): Institutions selling while retail buys
@@ -391,17 +413,27 @@ class InstitutionalFlowAgent:
             volume_rising = volume_change > volume_up_threshold
             volume_falling = volume_change < volume_down_threshold
 
+            # Detect trend reversal: past and recent price directions are opposite
+            trend_reversal = bool(
+                (past_price_trend > price_up_threshold and price_falling) or
+                (past_price_trend < price_down_threshold and price_rising)
+            )
+
             # Pattern detection
             if price_rising and volume_falling:
-                return 'bearish_distribution'  # RED FLAG: Institutions selling
+                pattern = 'bearish_distribution'  # RED FLAG: Institutions selling
             elif price_falling and volume_rising:
-                return 'bullish_accumulation'  # GREEN FLAG: Institutions buying
+                pattern = 'bullish_accumulation'  # GREEN FLAG: Institutions buying
             elif price_rising and volume_rising:
-                return 'healthy_uptrend'  # Good: Confirmed strength
+                pattern = 'healthy_uptrend'  # Good: Confirmed strength
             elif price_falling and volume_falling:
-                return 'weak_downtrend'  # Weak selling pressure
+                pattern = 'weak_downtrend'  # Weak selling pressure
             else:
-                return 'neutral'
+                pattern = 'neutral'
+
+            if return_trend:
+                return {'pattern': pattern, 'trend_reversal': trend_reversal}
+            return pattern
 
         except Exception as e:
             logger.debug(f"Failed to detect price-volume divergence: {e}")
@@ -538,22 +570,30 @@ class InstitutionalFlowAgent:
         - Weak downtrend: Price down + volume down
         """
         divergence = metrics.get('pv_divergence')
+        trend_reversal = metrics.get('pv_trend_reversal', False)
 
         if divergence is None:
             return 0
 
+        base_score = 0
         if divergence == 'bullish_accumulation':
-            return 7   # GREEN FLAG: Institutions buying weakness
+            base_score = 7   # GREEN FLAG: Institutions buying weakness
         elif divergence == 'healthy_uptrend':
-            return 5   # Confirmed uptrend with volume
+            base_score = 5   # Confirmed uptrend with volume
         elif divergence == 'neutral':
-            return 0   # No clear pattern
+            base_score = 0   # No clear pattern
         elif divergence == 'weak_downtrend':
-            return -3  # Weak selling, not confirmed
+            base_score = -3  # Weak selling, not confirmed
         elif divergence == 'bearish_distribution':
-            return -8  # RED FLAG: Institutions selling strength
-        else:
-            return 0
+            base_score = -8  # RED FLAG: Institutions selling strength
+
+        # Amplify signal when a trend reversal is detected (prior trend flipping)
+        # A bullish accumulation after a downtrend is a stronger buy signal
+        # A bearish distribution after an uptrend is a stronger sell signal
+        if trend_reversal and base_score != 0:
+            base_score = round(base_score * 1.3)
+
+        return base_score
 
     def _calculate_confidence(self, technical_data: Dict, metrics: Dict) -> float:
         """Calculate confidence level (0-1)"""
@@ -630,6 +670,20 @@ class InstitutionalFlowAgent:
                 reasons.append(f"Above VWAP (+{price_vs_vwap:.1f}%)")
             elif vwap_pos == 'below' and price_vs_vwap <= -1:
                 reasons.append(f"Below VWAP ({price_vs_vwap:.1f}%)")
+
+        # FII/DII flow (India-specific signal)
+        fii_trend = metrics.get('fii_trend')
+        dii_trend = metrics.get('dii_trend')
+        fii_net = metrics.get('fii_net_30d')
+        if fii_net is not None:
+            if fii_trend == 'buying' and dii_trend == 'buying':
+                reasons.append(f"FII+DII both buying (30d FII: ₹{fii_net:+,.0f}Cr)")
+            elif fii_trend == 'selling' and dii_trend == 'selling':
+                reasons.append(f"FII+DII both selling (30d FII: ₹{fii_net:+,.0f}Cr)")
+            elif fii_trend == 'buying':
+                reasons.append(f"FII buying (30d: ₹{fii_net:+,.0f}Cr)")
+            elif fii_trend == 'selling':
+                reasons.append(f"FII selling (30d: ₹{fii_net:+,.0f}Cr)")
 
         if not reasons:
             reasons.append("Neutral institutional flow")

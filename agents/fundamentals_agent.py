@@ -53,11 +53,11 @@ class FundamentalsAgent:
         'roe_fair': 8.0,          # vs 10% in US
         'roe_poor': 5.0,
 
-        # P/E ratio thresholds (Indian market trades at lower multiples)
-        'pe_undervalued': 12.0,   # vs 15 in US
-        'pe_fair': 18.0,          # vs 20 in US
-        'pe_expensive': 25.0,     # vs 30 in US
-        'pe_overvalued': 35.0,
+        # P/E ratio thresholds (aligned with SectorBenchmarks.DEFAULT_BENCHMARKS)
+        'pe_undervalued': 15.0,
+        'pe_fair': 22.0,
+        'pe_expensive': 30.0,
+        'pe_overvalued': 40.0,
 
         # P/B ratio
         'pb_undervalued': 1.5,
@@ -180,16 +180,18 @@ class FundamentalsAgent:
             health_score = self._score_financial_health(metrics, benchmarks)
             dividend_score = self._score_dividends(metrics, benchmarks)
             promoter_bonus = self._score_promoter_holding(metrics, benchmarks)
+            pledge_penalty = self._score_promoter_pledge(metrics)
 
-            # Calculate total score (max 105, capped at 100)
-            total_score = min(100,
+            # Calculate total score (max 105, capped at 100, floor at 0)
+            total_score = max(0, min(100,
                 profitability_score +
                 valuation_score +
                 growth_score +
                 health_score +
                 dividend_score +
-                promoter_bonus
-            )
+                promoter_bonus +
+                pledge_penalty
+            ))
 
             # Calculate confidence
             confidence = self._calculate_confidence(metrics, financials)
@@ -214,7 +216,8 @@ class FundamentalsAgent:
                     'growth_score': round(growth_score, 2),
                     'health_score': round(health_score, 2),
                     'dividend_score': round(dividend_score, 2),
-                    'promoter_bonus': round(promoter_bonus, 2)
+                    'promoter_bonus': round(promoter_bonus, 2),
+                    'pledge_penalty': round(pledge_penalty, 2)
                 },
                 'status': 'success',
                 'agent': self.agent_name
@@ -282,7 +285,30 @@ class FundamentalsAgent:
 
         # Profitability metrics
         metrics['roe'] = MetricExtractor.get_safe_value(info, 'returnOnEquity', multiply=100)
+
+        # ROE fallback: compute from net income / (bookValue * sharesOutstanding)
+        # Needed for Indian stocks where Yahoo Finance omits returnOnEquity
+        if metrics['roe'] is None:
+            ni = info.get('netIncomeToCommon')
+            bv = info.get('bookValue')
+            shares = info.get('sharesOutstanding')
+            if ni and bv and shares and bv > 0 and shares > 0:
+                try:
+                    metrics['roe'] = round(ni / (bv * shares) * 100, 4)
+                except (TypeError, ZeroDivisionError):
+                    pass
+
         metrics['roa'] = MetricExtractor.get_safe_value(info, 'returnOnAssets', multiply=100)
+
+        # ROA fallback: net income / total assets
+        if metrics['roa'] is None:
+            ni = info.get('netIncomeToCommon')
+            total_assets = info.get('totalAssets')
+            if ni and total_assets and total_assets > 0:
+                try:
+                    metrics['roa'] = round(ni / total_assets * 100, 4)
+                except (TypeError, ZeroDivisionError):
+                    pass
         metrics['profit_margin'] = MetricExtractor.get_safe_value(info, 'profitMargins', multiply=100)
         metrics['operating_margin'] = MetricExtractor.get_safe_value(info, 'operatingMargins', multiply=100)
         metrics['gross_margin'] = MetricExtractor.get_safe_value(info, 'grossMargins', multiply=100)
@@ -326,6 +352,12 @@ class FundamentalsAgent:
         # Alternative names for promoter holding
         if metrics['promoter_holding'] is None:
             metrics['promoter_holding'] = MetricExtractor.get_safe_value(info, 'insiderOwnership', multiply=100)
+
+        # Promoter pledge percent (risk factor: pledged shares = forced selling risk)
+        # Yahoo Finance may expose as 'promoterSharesPledgedPercent' or not at all
+        metrics['promoter_pledge_pct'] = MetricExtractor.get_safe_value(
+            info, 'promoterSharesPledgedPercent', multiply=1
+        )
 
         # Market metrics — use large max_value for absolute rupee amounts
         metrics['market_cap'] = MetricExtractor.get_safe_value(info, 'marketCap', max_value=1e15)
@@ -509,7 +541,18 @@ class FundamentalsAgent:
             elif earnings_growth < -10:
                 score -= 2
 
-        return max(0, min(20, score))
+        # Earnings acceleration bonus (up to +3 pts): quarterly growth > annual growth
+        # signals accelerating earnings momentum
+        quarterly_growth = metrics.get('earnings_quarterly_growth')
+        if earnings_growth is not None and quarterly_growth is not None:
+            if quarterly_growth > earnings_growth + 10:
+                score += 3  # Strong acceleration
+            elif quarterly_growth > earnings_growth + 5:
+                score += 2  # Moderate acceleration
+            elif quarterly_growth > earnings_growth:
+                score += 1  # Mild acceleration
+
+        return max(0, min(23, score))
 
     def _score_financial_health(self, metrics: Dict, benchmarks: Dict) -> float:
         """
@@ -518,10 +561,18 @@ class FundamentalsAgent:
         Components:
         - Debt-to-Equity: 6 points
         - Current Ratio: 4 points
+
+        Note: Banks and financial companies typically don't report DTE/currentRatio
+        via Yahoo Finance — returns neutral (5/10) when no health data available.
         """
-        score = 0.0
         debt_to_equity = metrics.get('debt_to_equity')
         current_ratio = metrics.get('current_ratio')
+
+        # No health data at all → neutral score (5/10) rather than unfair zero
+        if debt_to_equity is None and current_ratio is None:
+            return 5.0
+
+        score = 0.0
 
         # Debt-to-Equity scoring (6 points) - Lower is better
         if debt_to_equity is not None:
@@ -531,8 +582,9 @@ class FundamentalsAgent:
                 score += 4  # Moderate debt
             elif debt_to_equity < benchmarks['debt_high']:
                 score += 2  # High debt
-            else:
-                score += 0  # Very high debt (concerning)
+            # else: very high debt → 0
+        else:
+            score += 3  # Partial neutral when only one metric missing
 
         # Current Ratio scoring (4 points) - Liquidity
         if current_ratio is not None:
@@ -542,8 +594,9 @@ class FundamentalsAgent:
                 score += 3
             elif current_ratio >= 1.0:
                 score += 2
-            else:
-                score += 0  # Poor liquidity
+            # else: poor liquidity → 0
+        else:
+            score += 2  # Partial neutral when only one metric missing
 
         return min(10, score)
 
@@ -602,6 +655,33 @@ class FundamentalsAgent:
             return 3.0  # Medium promoter holding
         elif promoter >= 10.0:
             return 1.0  # Low promoter holding
+        else:
+            return 0.0
+
+    def _score_promoter_pledge(self, metrics: Dict) -> float:
+        """
+        Penalty for high promoter pledge percent (0 to -15 points)
+
+        Pledged promoter shares = forced selling risk if stock falls.
+        This is a critical India-specific risk factor.
+
+        Thresholds:
+        - < 10%: No penalty (acceptable)
+        - 10-25%: Mild penalty (-5 pts)
+        - 25-50%: Moderate penalty (-10 pts)
+        - > 50%: Severe penalty (-15 pts) — extreme forced selling risk
+        """
+        pledge_pct = metrics.get('promoter_pledge_pct')
+
+        if pledge_pct is None:
+            return 0.0  # Data unavailable — no penalty assumed
+
+        if pledge_pct >= 50.0:
+            return -15.0
+        elif pledge_pct >= 25.0:
+            return -10.0
+        elif pledge_pct >= 10.0:
+            return -5.0
         else:
             return 0.0
 

@@ -233,6 +233,7 @@ export type RecommendationType =
   | 'STRONG BUY'
   | 'BUY'
   | 'WEAK BUY'
+  | 'HOLD+'
   | 'HOLD'
   | 'WEAK SELL'
   | 'SELL';

@@ -127,13 +127,15 @@ class MomentumAgent:
             trend_score = self._score_trend(metrics)
             returns_score = self._score_returns(metrics)
             relative_strength_score = self._score_relative_strength(metrics)
+            breakout_bonus = self._score_52w_breakout(metrics)
 
             # Calculate total score
             total_score = (
                 rsi_score +
                 trend_score +
                 returns_score +
-                relative_strength_score
+                relative_strength_score +
+                breakout_bonus
             )
 
             # Calculate confidence
@@ -144,7 +146,8 @@ class MomentumAgent:
                 'rsi': rsi_score,
                 'trend': trend_score,
                 'returns': returns_score,
-                'relative_strength': relative_strength_score
+                'relative_strength': relative_strength_score,
+                'breakout': breakout_bonus
             })
 
             return {
@@ -156,7 +159,8 @@ class MomentumAgent:
                     'rsi_score': round(rsi_score, 2),
                     'trend_score': round(trend_score, 2),
                     'returns_score': round(returns_score, 2),
-                    'relative_strength_score': round(relative_strength_score, 2)
+                    'relative_strength_score': round(relative_strength_score, 2),
+                    'breakout_bonus': round(breakout_bonus, 2)
                 },
                 'status': 'success',
                 'agent': self.agent_name
@@ -282,6 +286,19 @@ class MomentumAgent:
 
         # ATR for stop-loss computation
         metrics['atr'] = technical_data.get('atr')
+
+        # 52-week high breakout signal
+        if len(price_data) >= 252:
+            high_52w = float(price_data['Close'].iloc[-252:].max())
+            metrics['high_52w'] = high_52w
+            metrics['pct_from_52w_high'] = ((current_price - high_52w) / high_52w) * 100
+        elif len(price_data) >= 20:
+            high_52w = float(price_data['Close'].max())
+            metrics['high_52w'] = high_52w
+            metrics['pct_from_52w_high'] = ((current_price - high_52w) / high_52w) * 100
+        else:
+            metrics['high_52w'] = None
+            metrics['pct_from_52w_high'] = None
 
         # Volume analysis for confirmation
         metrics['avg_volume'] = self._calculate_avg_volume(price_data)
@@ -443,13 +460,13 @@ class MomentumAgent:
         """
         Score RSI (25 points max)
 
-        RSI Interpretation:
-        - 50-70: Bullish but not overbought (best) - 25 pts
-        - 40-50: Neutral to slightly bullish - 18 pts
-        - 30-40: Oversold (potential bounce) - 15 pts
-        - 70-80: Overbought (still okay) - 12 pts
-        - >80: Very overbought (caution) - 8 pts
-        - <30: Very oversold (risky) - 10 pts
+        RSI Interpretation for momentum (higher RSI = stronger momentum):
+        - 50-70: Sweet spot - bullish momentum without excess - 25 pts
+        - 70-80: Overbought but strong momentum - 20 pts
+        - 40-50: Neutral to slightly bullish - 15 pts
+        - >80: Very overbought (extended, risk of pullback) - 12 pts
+        - 30-40: Oversold (weak momentum) - 10 pts
+        - <30: Very oversold (momentum breakdown) - 6 pts
         """
         rsi = metrics.get('rsi')
         if rsi is None:
@@ -457,18 +474,16 @@ class MomentumAgent:
 
         if 50 <= rsi < 70:
             return 25  # Sweet spot - bullish momentum
-        elif 40 <= rsi < 50:
-            return 18  # Neutral to slightly bullish
         elif 70 <= rsi < 80:
-            return 15  # Overbought but acceptable
-        elif 30 <= rsi < 40:
-            return 15  # Oversold - potential buying opportunity
+            return 20  # Overbought but strong upward momentum
+        elif 40 <= rsi < 50:
+            return 15  # Neutral to slightly bullish
         elif rsi >= 80:
-            return 8   # Very overbought - caution
-        elif rsi < 30:
-            return 10  # Very oversold - risky
+            return 12  # Very overbought - extended, caution
+        elif 30 <= rsi < 40:
+            return 10  # Oversold - weak momentum
         else:
-            return 12.5
+            return 6   # Very oversold - momentum breakdown
 
     def _score_trend(self, metrics: Dict) -> float:
         """
@@ -524,17 +539,27 @@ class MomentumAgent:
             elif macd < 0 and macd_signal < 0:
                 score += 1  # Both negative
 
-        # Volume confirmation: reduce score if trend lacks volume support
+        # Volume confirmation: adjust score based on volume support
         volume_ratio = metrics.get('recent_volume_ratio')
-        if volume_ratio is not None and trend in ['uptrend', 'strong_uptrend']:
-            if volume_ratio < 0.7:
-                # Uptrend without volume is suspicious - reduce by 15%
-                score *= 0.85
-                logger.debug(f"Trend score reduced due to weak volume (ratio: {volume_ratio:.2f})")
-            elif volume_ratio > 1.3:
-                # Strong volume confirms trend - small bonus
-                score *= 1.05
-                logger.debug(f"Trend score boosted by strong volume (ratio: {volume_ratio:.2f})")
+        if volume_ratio is not None:
+            if trend in ['uptrend', 'strong_uptrend']:
+                if volume_ratio < 0.7:
+                    # Uptrend without volume is suspicious - reduce by 15%
+                    score *= 0.85
+                    logger.debug(f"Trend score reduced due to weak volume (ratio: {volume_ratio:.2f})")
+                elif volume_ratio > 1.3:
+                    # Strong volume confirms uptrend - small bonus
+                    score *= 1.05
+                    logger.debug(f"Trend score boosted by strong volume (ratio: {volume_ratio:.2f})")
+            elif trend in ['downtrend', 'strong_downtrend']:
+                if volume_ratio > 1.3:
+                    # High volume confirms downtrend - extra penalty
+                    score *= 0.85
+                    logger.debug(f"Trend score further penalised by high-volume downtrend (ratio: {volume_ratio:.2f})")
+                elif volume_ratio < 0.7:
+                    # Low volume downtrend suggests exhaustion - slight relief
+                    score *= 1.05
+                    logger.debug(f"Trend score slightly relieved by low-volume downtrend (ratio: {volume_ratio:.2f})")
 
         return min(35, score)
 
@@ -590,17 +615,27 @@ class MomentumAgent:
             elif ret_1m > -5:
                 score += 1
 
-        # Volume confirmation: positive returns without volume are less trustworthy
+        # Volume confirmation: adjust returns score based on volume support
         volume_ratio = metrics.get('recent_volume_ratio')
-        if volume_ratio is not None and ret_3m is not None and ret_3m > 5:
-            if volume_ratio < 0.8:
-                # Price gains without volume support - reduce by 10%
-                score *= 0.90
-                logger.debug(f"Returns score reduced due to weak volume (ratio: {volume_ratio:.2f})")
-            elif volume_ratio > 1.2:
-                # Price gains with strong volume - small bonus
-                score *= 1.05
-                logger.debug(f"Returns score boosted by strong volume (ratio: {volume_ratio:.2f})")
+        if volume_ratio is not None and ret_3m is not None:
+            if ret_3m > 5:
+                if volume_ratio < 0.8:
+                    # Positive returns without volume support - less trustworthy
+                    score *= 0.90
+                    logger.debug(f"Returns score reduced due to weak volume (ratio: {volume_ratio:.2f})")
+                elif volume_ratio > 1.2:
+                    # Positive returns with strong volume - confirmed
+                    score *= 1.05
+                    logger.debug(f"Returns score boosted by strong volume (ratio: {volume_ratio:.2f})")
+            elif ret_3m < -5:
+                if volume_ratio > 1.2:
+                    # Negative returns with high volume - confirmed distribution
+                    score *= 0.90
+                    logger.debug(f"Returns score penalised by high-volume decline (ratio: {volume_ratio:.2f})")
+                elif volume_ratio < 0.8:
+                    # Negative returns on low volume - possible exhaustion
+                    score *= 1.05
+                    logger.debug(f"Returns score relieved by low-volume decline (ratio: {volume_ratio:.2f})")
 
         return min(30, score)
 
@@ -629,6 +664,29 @@ class MomentumAgent:
             return 2
         else:
             return 0   # Strong underperformance
+
+    def _score_52w_breakout(self, metrics: Dict) -> float:
+        """
+        Bonus/penalty for proximity to 52-week high (0 to +5 bonus)
+
+        Near 52-week high = strong momentum signal (breakout = institutions accumulating)
+        Far below 52-week high = momentum absent
+        """
+        pct_from_high = metrics.get('pct_from_52w_high')
+
+        if pct_from_high is None:
+            return 0.0  # No data — no adjustment
+
+        if pct_from_high >= -2:
+            return 5.0   # At or near 52-week high — strong breakout momentum
+        elif pct_from_high >= -5:
+            return 3.0   # Within 5% of high — strong momentum
+        elif pct_from_high >= -10:
+            return 1.0   # Within 10% — decent momentum
+        elif pct_from_high >= -20:
+            return 0.0   # 10-20% below — neutral
+        else:
+            return -2.0  # >20% below 52w high — significant weakness
 
     def _calculate_confidence(
         self,
@@ -710,6 +768,14 @@ class MomentumAgent:
                 reasons.append(f"Outperforming NIFTY: +{rel_str:.1f}%")
             elif rel_str < -10:
                 reasons.append(f"Underperforming NIFTY: {rel_str:.1f}%")
+
+        # 52-week high proximity
+        pct_from_high = metrics.get('pct_from_52w_high')
+        if pct_from_high is not None:
+            if pct_from_high >= -2:
+                reasons.append("Near 52W high (breakout)")
+            elif pct_from_high <= -20:
+                reasons.append(f"{pct_from_high:.0f}% below 52W high")
 
         if not reasons:
             reasons.append("Limited momentum data")

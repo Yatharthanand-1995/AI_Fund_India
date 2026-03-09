@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { TrendingUp, BarChart3, Star, Activity, PieChart, ArrowRight } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useStore } from '@/store/useStore';
@@ -27,6 +27,7 @@ export default function Dashboard() {
   const [analysis, setAnalysis] = useState<StockAnalysis | null>(null);
   const [regimeHistory, setRegimeHistory] = useState<any[]>([]);
   const [systemStats, setSystemStats] = useState<any>(null);
+  const analyzeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Load initial data
   useEffect(() => {
@@ -42,12 +43,24 @@ export default function Dashboard() {
       // Load system stats
       const statsData = await api.getSystemAnalytics();
       setSystemStats(statsData);
-    } catch (err) {
-      // Failed to load dashboard data, but page can still function
+    } catch (_err) {
+      addToast({
+        type: 'info',
+        message: 'Some dashboard metrics could not be loaded. The page will still function.',
+      });
     }
   };
 
-  const analyzeSymbol = async (symbolToAnalyze: string) => {
+  const analyzeSymbol = useCallback((symbolToAnalyze: string) => {
+    if (analyzeDebounceRef.current) {
+      clearTimeout(analyzeDebounceRef.current);
+    }
+    analyzeDebounceRef.current = setTimeout(() => {
+      doAnalyze(symbolToAnalyze);
+    }, 300);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const doAnalyze = async (symbolToAnalyze: string) => {
     if (!symbolToAnalyze.trim()) {
       addToast({ type: 'warning', message: 'Please enter a stock symbol' });
       return;

@@ -252,7 +252,8 @@ class HybridDataProvider(BaseDataProvider):
             except Exception as e:
                 logger.warning(f"Yahoo Finance fetch failed: {e}")
 
-        return {} if isinstance(fetch_func(self.nse_provider), dict) else pd.DataFrame()
+        # Both providers failed — return safe empty result without making another call
+        return {} if self.nse_available else pd.DataFrame()
 
     def _is_empty_data(self, data: Dict) -> bool:
         """Check if data is empty/invalid"""

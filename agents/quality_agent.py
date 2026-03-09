@@ -219,7 +219,8 @@ class QualityAgent:
         # Get basic info
         if cached_data:
             info = cached_data.get('info', {})
-            metrics['sector'] = info.get('sector', 'Unknown')
+            raw_sector = info.get('sector', 'Unknown')
+            metrics['sector'] = raw_sector if raw_sector and raw_sector != 'None' else 'Unknown'
             metrics['market_cap'] = info.get('marketCap')
 
         # Calculate volatility (annualized)
@@ -315,6 +316,8 @@ class QualityAgent:
         Lower CV = more consistent returns = better quality
         """
         try:
+            if not isinstance(price_data.index, pd.DatetimeIndex):
+                return None
             monthly_returns = price_data['Close'].resample('M').last().pct_change().dropna()
 
             if len(monthly_returns) < 6:

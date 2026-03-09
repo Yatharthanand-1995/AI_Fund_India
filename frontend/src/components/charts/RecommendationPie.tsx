@@ -123,7 +123,7 @@ export const RecommendationPie: React.FC<RecommendationPieProps> = ({
     if (!data || !Array.isArray(data)) return [];
 
     // Define recommendation order (from best to worst)
-    const order = ['STRONG BUY', 'BUY', 'WEAK BUY', 'HOLD', 'WEAK SELL', 'SELL'];
+    const order = ['STRONG BUY', 'BUY', 'WEAK BUY', 'HOLD+', 'HOLD', 'WEAK SELL', 'SELL'];
 
     const total = data.reduce((sum, item) => sum + item.count, 0);
 

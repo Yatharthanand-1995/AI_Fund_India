@@ -46,7 +46,7 @@ class MarketRegimeService:
     VOLATILITY_THRESHOLDS = {
         'high': 25,      # >25% = high volatility
         'normal': 15,    # 15-25% = normal
-        'low': 15,       # <15% = low volatility
+        'low': 12,       # <12% = low volatility (distinct from normal)
     }
 
     # Adaptive weight mappings
@@ -191,8 +191,7 @@ class MarketRegimeService:
                         'regime_confidence': 0.3,  # Low confidence when using default
                         'timestamp': datetime.now().isoformat(),
                         'description': 'Default regime (NIFTY data unavailable)',
-                        'indicators': {},
-                        'adaptive_weights_enabled': self.enable_adaptive_weights
+                        'indicators': {}
                     }
 
             # Detect regime
