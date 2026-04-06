@@ -7,7 +7,9 @@ Analyzes:
 - CMF (Chaikin Money Flow) - Volume-weighted accumulation
 - Volume Spikes - Unusual institutional activity
 - VWAP - Price vs Volume Weighted Average Price
-- Optional: FII/DII flow data (if available for Indian stocks)
+- FII/DII flow data (NSE public API — free)
+- Delivery Volume % (NSE public API — free, no API key)
+- Block/Bulk Deals (NSE public API — free, no API key)
 
 Scoring: 0-100 with confidence level
 """
@@ -21,6 +23,7 @@ from utils.metric_extraction import MetricExtractor
 from utils.validation import validate_price_dataframe_schema
 from core.exceptions import DataValidationException, InsufficientDataException, CalculationException
 from data.fii_dii_provider import get_default_provider as get_fii_dii_provider
+from data.nse_delivery_provider import get_default_provider as get_delivery_provider
 
 logger = logging.getLogger(__name__)
 
@@ -144,10 +147,28 @@ class InstitutionalFlowAgent:
                 logger.debug(f"FII/DII data unavailable for {symbol}: {_fii_err}")
                 fii_dii_adjustment = 0.0
 
+            # Delivery volume adjustment (NSE public API — free, ±8 points)
+            delivery_adjustment = 0.0
+            deals_adjustment = 0.0
+            try:
+                delivery_provider = get_delivery_provider()
+                delivery_data = delivery_provider.get_delivery_data(symbol)
+                delivery_adjustment = delivery_provider.score_delivery(symbol, delivery_data)
+                deals_data = delivery_provider.get_deals_for_symbol(symbol)
+                deals_adjustment = delivery_provider.score_deals(symbol, deals_data)
+                metrics['delivery_pct'] = delivery_data.get('delivery_pct')
+                metrics['delivery_change_pct'] = delivery_data.get('change_pct')
+                metrics['bulk_buy_count'] = deals_data.get('bulk_buy_count', 0)
+                metrics['bulk_sell_count'] = deals_data.get('bulk_sell_count', 0)
+                metrics['block_buy_count'] = deals_data.get('block_buy_count', 0)
+                metrics['block_sell_count'] = deals_data.get('block_sell_count', 0)
+            except Exception as _del_err:
+                logger.debug(f"Delivery/deals data unavailable for {symbol}: {_del_err}")
+
             # Calculate total score
             total_score = 50 + obv_adjustment + mfi_adjustment + cmf_adjustment + \
                          volume_spike_adjustment + vwap_adjustment + divergence_adjustment + \
-                         fii_dii_adjustment
+                         fii_dii_adjustment + delivery_adjustment + deals_adjustment
 
             # Clamp to 0-100
             total_score = max(0, min(100, total_score))
@@ -179,7 +200,9 @@ class InstitutionalFlowAgent:
                     'volume_spike_adjustment': round(volume_spike_adjustment, 2),
                     'vwap_adjustment': round(vwap_adjustment, 2),
                     'divergence_adjustment': round(divergence_adjustment, 2),
-                    'fii_dii_adjustment': round(fii_dii_adjustment, 2)
+                    'fii_dii_adjustment': round(fii_dii_adjustment, 2),
+                    'delivery_adjustment': round(delivery_adjustment, 2),
+                    'deals_adjustment': round(deals_adjustment, 2),
                 },
                 'status': 'success',
                 'agent': self.agent_name
@@ -684,6 +707,30 @@ class InstitutionalFlowAgent:
                 reasons.append(f"FII buying (30d: ₹{fii_net:+,.0f}Cr)")
             elif fii_trend == 'selling':
                 reasons.append(f"FII selling (30d: ₹{fii_net:+,.0f}Cr)")
+
+        # Delivery volume (NSE)
+        delivery_pct = metrics.get('delivery_pct')
+        change_pct = metrics.get('delivery_change_pct')
+        if delivery_pct is not None:
+            if delivery_pct >= 60 and change_pct is not None and change_pct > 0:
+                reasons.append(f"High delivery {delivery_pct:.0f}% on up-day (accumulation)")
+            elif delivery_pct >= 60 and change_pct is not None and change_pct < 0:
+                reasons.append(f"High delivery {delivery_pct:.0f}% on down-day (distribution)")
+            elif delivery_pct < 25:
+                reasons.append(f"Low delivery {delivery_pct:.0f}% (intraday/speculative)")
+
+        # Block/Bulk deals
+        bulk_buy = metrics.get('bulk_buy_count', 0)
+        bulk_sell = metrics.get('bulk_sell_count', 0)
+        block_buy = metrics.get('block_buy_count', 0)
+        block_sell = metrics.get('block_sell_count', 0)
+        total_buy_deals = bulk_buy + block_buy
+        total_sell_deals = bulk_sell + block_sell
+        if total_buy_deals > 0 or total_sell_deals > 0:
+            if total_buy_deals > total_sell_deals:
+                reasons.append(f"Institutional buying in deals ({total_buy_deals} buy vs {total_sell_deals} sell)")
+            elif total_sell_deals > total_buy_deals:
+                reasons.append(f"Institutional selling in deals ({total_sell_deals} sell vs {total_buy_deals} buy)")
 
         if not reasons:
             reasons.append("Neutral institutional flow")

@@ -1,5 +1,5 @@
 """
-Investment Narrative Engine - LLM-Powered Investment Thesis Generation
+Investment Narrative Engine - Investment Thesis Generation
 
 Transforms quantitative agent scores into human-readable narratives:
 - Investment thesis (2-3 paragraphs)
@@ -8,10 +8,11 @@ Transforms quantitative agent scores into human-readable narratives:
 - Professional-grade reports
 
 Supports multiple LLM providers:
-- Google Gemini (default, free tier)
-- OpenAI GPT-4 (optional)
-- Anthropic Claude (optional)
-- Rule-based fallback (if LLM fails)
+- Groq (FREE — Llama 3, no credit card, sign up at console.groq.com)
+- Google Gemini (free tier — 15 RPM)
+- OpenAI GPT-4 (optional, paid)
+- Anthropic Claude (optional, paid)
+- Rule-based fallback (no API key needed — uses actual metrics)
 """
 
 import os
@@ -34,6 +35,12 @@ class InvestmentNarrativeEngine:
 
     # LLM provider configurations
     PROVIDERS = {
+        'groq': {
+            'name': 'Groq (Llama 3) — FREE',
+            'model': 'llama3-8b-8192',
+            'env_var': 'GROQ_API_KEY',
+            'timeout': 20
+        },
         'gemini': {
             'name': 'Google Gemini',
             'model': 'gemini-1.5-flash',
@@ -103,7 +110,12 @@ class InvestmentNarrativeEngine:
             return
 
         try:
-            if self.llm_provider == 'gemini':
+            if self.llm_provider == 'groq':
+                from groq import Groq
+                self.llm_client = Groq(api_key=api_key)
+                logger.info("✅ Groq client initialized (free tier)")
+
+            elif self.llm_provider == 'gemini':
                 import google.generativeai as genai
                 genai.configure(api_key=api_key)
                 self.llm_client = genai.GenerativeModel(provider_config['model'])
@@ -205,7 +217,19 @@ class InvestmentNarrativeEngine:
 
         def _call_llm():
             """Blocking LLM call — executed in a thread to enforce timeout."""
-            if self.llm_provider == 'gemini':
+            if self.llm_provider == 'groq':
+                response = self.llm_client.chat.completions.create(
+                    model=self.PROVIDERS['groq']['model'],
+                    messages=[
+                        {"role": "system", "content": "You are a professional stock analyst for Indian equity markets. Generate concise, data-driven investment theses."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.7,
+                    max_tokens=1000
+                )
+                return response.choices[0].message.content
+
+            elif self.llm_provider == 'gemini':
                 return self.llm_client.generate_content(prompt).text
 
             elif self.llm_provider == 'openai':
@@ -414,22 +438,35 @@ Guidelines:
         recommendation: str,
         stock_info: Optional[Dict]
     ) -> Dict:
-        """Generate narrative using rules (fallback)"""
+        """Generate metric-driven narrative using rules (no API key needed)"""
         logger.info("Generating rule-based narrative...")
 
         company_name = stock_info.get('company_name', symbol) if stock_info else symbol
+        sector = stock_info.get('sector', '') if stock_info else ''
+        current_price = stock_info.get('current_price') if stock_info else None
+        market_cap = stock_info.get('market_cap') if stock_info else None
 
-        # Generate thesis
-        thesis = self._create_rule_based_thesis(
-            company_name, agent_scores, composite_score, recommendation
+        fund_data = agent_scores.get('fundamentals', {})
+        mom_data = agent_scores.get('momentum', {})
+        qual_data = agent_scores.get('quality', {})
+        sent_data = agent_scores.get('sentiment', {})
+        flow_data = agent_scores.get('institutional_flow', {})
+
+        strengths = self._extract_strengths_from_metrics(
+            fund_data, mom_data, qual_data, sent_data, flow_data
         )
-
-        # Extract strengths and risks
-        strengths = self._extract_strengths(agent_scores)
-        risks = self._extract_risks(agent_scores)
-
-        # Generate summary
-        summary = f"{recommendation}: {company_name} ({symbol}) scores {composite_score:.1f}/100 based on comprehensive quantitative analysis."
+        risks = self._extract_risks_from_metrics(
+            fund_data, mom_data, qual_data, sent_data, flow_data
+        )
+        thesis = self._build_thesis(
+            company_name, symbol, sector, composite_score, recommendation,
+            fund_data, mom_data, qual_data, sent_data, flow_data,
+            current_price, market_cap
+        )
+        summary = self._build_summary(
+            company_name, symbol, composite_score, recommendation,
+            fund_data, mom_data, qual_data
+        )
 
         return {
             'investment_thesis': thesis,
@@ -439,92 +476,388 @@ Guidelines:
             'generated_by': 'rule_based'
         }
 
-    def _create_rule_based_thesis(
+    def _build_thesis(
         self,
         company_name: str,
-        agent_scores: Dict,
+        symbol: str,
+        sector: str,
         composite_score: float,
-        recommendation: str
+        recommendation: str,
+        fund_data: Dict,
+        mom_data: Dict,
+        qual_data: Dict,
+        sent_data: Dict,
+        flow_data: Dict,
+        current_price,
+        market_cap
     ) -> str:
-        """Create rule-based investment thesis"""
-        fund_score = agent_scores.get('fundamentals', {}).get('score', 50)
-        mom_score = agent_scores.get('momentum', {}).get('score', 50)
-        qual_score = agent_scores.get('quality', {}).get('score', 50)
+        """Build a detailed, metric-specific investment thesis."""
+        fund_score = fund_data.get('score', 50)
+        mom_score = mom_data.get('score', 50)
+        qual_score = qual_data.get('score', 50)
+        sent_score = sent_data.get('score', 50)
+        flow_score = flow_data.get('score', 50)
 
-        # Determine overall assessment
-        if composite_score >= 70:
-            assessment = "presents a compelling investment opportunity"
-        elif composite_score >= 60:
-            assessment = "shows positive investment characteristics"
-        elif composite_score >= 50:
-            assessment = "presents a balanced risk-reward profile"
+        fund_metrics = fund_data.get('metrics', {})
+        mom_metrics = mom_data.get('metrics', {})
+        qual_metrics = qual_data.get('metrics', {})
+        sent_metrics = sent_data.get('metrics', {})
+        flow_metrics = flow_data.get('metrics', {})
+
+        sector_str = f" in the {sector} sector" if sector else ""
+        price_str = f" trading at ₹{current_price:,.2f}" if current_price else ""
+
+        # --- Paragraph 1: Overall verdict with key numbers ---
+        if composite_score >= 68:
+            verdict = "presents a compelling investment opportunity"
+        elif composite_score >= 58:
+            verdict = "shows a favourable risk-reward profile"
+        elif composite_score >= 48:
+            verdict = "warrants a cautious, selective approach"
         else:
-            assessment = "faces notable investment challenges"
+            verdict = "carries meaningful downside risks at current levels"
 
-        # Build thesis
-        thesis = f"{company_name} {assessment} with a composite score of {composite_score:.1f}/100. "
+        para1 = (
+            f"{company_name} ({symbol}){sector_str}{price_str} "
+            f"{verdict}, scoring {composite_score:.1f}/100 on our five-agent quantitative framework "
+            f"with a {recommendation} recommendation. "
+        )
 
-        # Add fundamentals commentary
-        if fund_score >= 70:
-            thesis += "The company demonstrates strong fundamental metrics with solid profitability and attractive valuation. "
-        elif fund_score >= 50:
-            thesis += "Fundamental analysis reveals mixed signals with both strengths and areas of concern. "
-        else:
-            thesis += "Fundamental metrics indicate challenges in profitability or valuation. "
+        # Add agent summary line
+        agent_summary = []
+        if fund_score >= 60:
+            agent_summary.append(f"fundamentals ({fund_score:.0f}/100)")
+        if mom_score >= 60:
+            agent_summary.append(f"momentum ({mom_score:.0f}/100)")
+        if qual_score >= 60:
+            agent_summary.append(f"quality ({qual_score:.0f}/100)")
+        if sent_score >= 60:
+            agent_summary.append(f"sentiment ({sent_score:.0f}/100)")
+        if flow_score >= 60:
+            agent_summary.append(f"institutional flow ({flow_score:.0f}/100)")
 
-        # Add momentum commentary
-        if mom_score >= 70:
-            thesis += "Technical momentum indicators are positive, suggesting favorable price trends. "
-        elif mom_score >= 50:
-            thesis += "Technical indicators show neutral momentum with balanced risk. "
-        else:
-            thesis += "Technical analysis reveals weak momentum and adverse price trends. "
+        weak_agents = []
+        if fund_score < 45:
+            weak_agents.append(f"fundamentals ({fund_score:.0f}/100)")
+        if mom_score < 45:
+            weak_agents.append(f"momentum ({mom_score:.0f}/100)")
+        if qual_score < 45:
+            weak_agents.append(f"quality ({qual_score:.0f}/100)")
 
-        # Add quality commentary
-        if qual_score >= 70:
-            thesis += "The stock exhibits high quality characteristics with stable performance and manageable risk."
-        elif qual_score >= 50:
-            thesis += "Quality metrics are adequate with moderate volatility and acceptable stability."
-        else:
-            thesis += "Quality assessment indicates elevated volatility and inconsistent performance."
+        if agent_summary:
+            para1 += f"The stock scores well on {', '.join(agent_summary)}. "
+        if weak_agents:
+            para1 += f"Weakness is evident in {', '.join(weak_agents)}. "
 
-        return thesis
+        # --- Paragraph 2: Fundamentals deep-dive ---
+        para2_parts = []
+        roe = fund_metrics.get('roe')
+        pe = fund_metrics.get('pe_ratio')
+        pb = fund_metrics.get('pb_ratio')
+        de = fund_metrics.get('debt_to_equity')
+        rev_growth = fund_metrics.get('revenue_growth')
+        promoter = fund_metrics.get('promoter_holding')
 
-    def _extract_strengths(self, agent_scores: Dict) -> List[str]:
-        """Extract key strengths from agent scores"""
+        if roe is not None:
+            if roe >= 18:
+                para2_parts.append(f"ROE of {roe:.1f}% signals high capital efficiency")
+            elif roe >= 12:
+                para2_parts.append(f"ROE of {roe:.1f}% is adequate")
+            else:
+                para2_parts.append(f"ROE of {roe:.1f}% is below par, raising profitability concerns")
+
+        if pe is not None and pe > 0:
+            if pe < 15:
+                para2_parts.append(f"P/E of {pe:.1f}x appears undervalued")
+            elif pe < 25:
+                para2_parts.append(f"P/E of {pe:.1f}x is fairly valued")
+            else:
+                para2_parts.append(f"P/E of {pe:.1f}x prices in significant growth expectations")
+
+        if rev_growth is not None:
+            if rev_growth >= 20:
+                para2_parts.append(f"strong revenue growth of {rev_growth:.1f}%")
+            elif rev_growth >= 10:
+                para2_parts.append(f"steady revenue growth of {rev_growth:.1f}%")
+            elif rev_growth < 0:
+                para2_parts.append(f"revenue contraction of {rev_growth:.1f}% is a concern")
+
+        if de is not None:
+            if de < 0.3:
+                para2_parts.append(f"near-zero leverage (D/E: {de:.2f})")
+            elif de < 1.0:
+                para2_parts.append(f"manageable debt (D/E: {de:.2f})")
+            else:
+                para2_parts.append(f"elevated leverage (D/E: {de:.2f}) warrants monitoring")
+
+        if promoter is not None:
+            if promoter >= 60:
+                para2_parts.append(f"high promoter confidence at {promoter:.1f}% holding")
+            elif promoter < 30:
+                para2_parts.append(f"low promoter holding of {promoter:.1f}%")
+
+        para2 = ""
+        if para2_parts:
+            para2 = "On the fundamentals front, " + "; ".join(para2_parts) + ". "
+
+        # --- Paragraph 3: Technical & flow ---
+        para3_parts = []
+        rsi = mom_metrics.get('rsi')
+        trend = mom_metrics.get('trend', '')
+        ret_3m = mom_metrics.get('3m_return')
+        ret_1y = mom_metrics.get('1y_return')
+        volatility = qual_metrics.get('volatility')
+        max_dd = qual_metrics.get('max_drawdown')
+        analyst_rec = sent_metrics.get('recommendation_mean')
+        upside = sent_metrics.get('upside_percent')
+        fii_net = flow_metrics.get('fii_net_30d')
+        fii_trend = flow_metrics.get('fii_trend', '')
+
+        if rsi is not None:
+            if rsi < 35:
+                para3_parts.append(f"RSI of {rsi:.0f} indicates oversold conditions")
+            elif rsi > 70:
+                para3_parts.append(f"RSI of {rsi:.0f} signals overbought territory")
+            else:
+                para3_parts.append(f"RSI of {rsi:.0f} is in neutral territory")
+
+        if trend:
+            para3_parts.append(f"price trend is {trend.lower()}")
+
+        if ret_3m is not None:
+            sign = "+" if ret_3m >= 0 else ""
+            para3_parts.append(f"3M return of {sign}{ret_3m:.1f}%")
+
+        if ret_1y is not None:
+            sign = "+" if ret_1y >= 0 else ""
+            para3_parts.append(f"1Y return of {sign}{ret_1y:.1f}%")
+
+        if volatility is not None:
+            if volatility < 20:
+                para3_parts.append(f"low volatility of {volatility:.1f}%")
+            elif volatility > 40:
+                para3_parts.append(f"high volatility of {volatility:.1f}%")
+
+        if max_dd is not None and max_dd < -15:
+            para3_parts.append(f"max drawdown of {max_dd:.1f}%")
+
+        if upside is not None and upside > 5:
+            para3_parts.append(f"analyst consensus implies {upside:.1f}% upside")
+
+        if fii_net is not None and fii_net != 0:
+            direction = "net buying" if fii_net > 0 else "net selling"
+            para3_parts.append(f"FII {direction} of ₹{abs(fii_net):,.0f}Cr over 30 days")
+        elif fii_trend == 'buying':
+            para3_parts.append("FIIs have been accumulating in recent sessions")
+        elif fii_trend == 'selling':
+            para3_parts.append("FIIs have been distributing in recent sessions")
+
+        para3 = ""
+        if para3_parts:
+            para3 = "Technically, " + "; ".join(para3_parts) + "."
+
+        return (para1 + para2 + para3).strip()
+
+    def _extract_strengths_from_metrics(
+        self,
+        fund_data: Dict,
+        mom_data: Dict,
+        qual_data: Dict,
+        sent_data: Dict,
+        flow_data: Dict
+    ) -> List[str]:
+        """Extract specific, metric-backed strengths."""
         strengths = []
 
-        # Check each agent for strengths
-        for agent_name, result in agent_scores.items():
-            score = result.get('score', 50)
-            if score >= 65:  # Strong performance
-                reasoning = result.get('reasoning', '')
-                if reasoning:
-                    strengths.append(f"{agent_name.replace('_', ' ').title()}: {reasoning}")
+        fund_metrics = fund_data.get('metrics', {})
+        mom_metrics = mom_data.get('metrics', {})
+        qual_metrics = qual_data.get('metrics', {})
+        sent_metrics = sent_data.get('metrics', {})
+        flow_metrics = flow_data.get('metrics', {})
 
-        # If no strengths, add generic ones
+        # Fundamentals strengths
+        roe = fund_metrics.get('roe')
+        if roe is not None and roe >= 15:
+            strengths.append(f"Strong return on equity ({roe:.1f}%) indicates efficient capital deployment")
+
+        pe = fund_metrics.get('pe_ratio')
+        if pe is not None and 0 < pe < 18:
+            strengths.append(f"Attractive valuation at P/E of {pe:.1f}x — potential margin of safety")
+
+        rev_growth = fund_metrics.get('revenue_growth')
+        if rev_growth is not None and rev_growth >= 15:
+            strengths.append(f"Robust revenue growth of {rev_growth:.1f}% reflects strong business momentum")
+
+        de = fund_metrics.get('debt_to_equity')
+        if de is not None and de < 0.4:
+            strengths.append(f"Clean balance sheet with low leverage (D/E: {de:.2f})")
+
+        promoter = fund_metrics.get('promoter_holding')
+        if promoter is not None and promoter >= 55:
+            strengths.append(f"High promoter confidence — {promoter:.1f}% holding signals alignment with minority shareholders")
+
+        # Momentum strengths
+        rsi = mom_metrics.get('rsi')
+        if rsi is not None and 40 <= rsi <= 65:
+            strengths.append(f"RSI of {rsi:.0f} — healthy momentum without being overbought")
+
+        ret_3m = mom_metrics.get('3m_return')
+        if ret_3m is not None and ret_3m >= 10:
+            strengths.append(f"Strong 3-month price performance of +{ret_3m:.1f}%, outpacing broader market")
+
+        # Quality strengths
+        volatility = qual_metrics.get('volatility')
+        if volatility is not None and volatility < 22:
+            strengths.append(f"Low annualised volatility of {volatility:.1f}% — suitable for risk-conscious investors")
+
+        max_dd = qual_metrics.get('max_drawdown')
+        if max_dd is not None and max_dd > -15:
+            strengths.append(f"Limited max drawdown of {max_dd:.1f}% demonstrates price resilience")
+
+        # Sentiment strengths
+        upside = sent_metrics.get('upside_percent')
+        if upside is not None and upside >= 15:
+            strengths.append(f"Analyst consensus target implies {upside:.1f}% upside from current levels")
+
+        analyst_count = sent_metrics.get('number_of_analyst_opinions')
+        if analyst_count is not None and analyst_count >= 8:
+            strengths.append(f"Well-covered by {analyst_count} analysts, indicating strong institutional interest")
+
+        # Institutional flow strengths
+        fii_net = flow_metrics.get('fii_net_30d')
+        if fii_net is not None and fii_net > 2000:
+            strengths.append(f"FII net buying of ₹{fii_net:,.0f}Cr over 30 days signals foreign institutional accumulation")
+
+        mfi = flow_metrics.get('mfi')
+        if mfi is not None and mfi > 60:
+            strengths.append(f"Money Flow Index of {mfi:.0f} indicates sustained buying pressure")
+
+        # Fallback if nothing specific found
         if not strengths:
-            strengths = ["Comprehensive quantitative analysis completed"]
+            for agent_name, data in [('Fundamentals', fund_data), ('Momentum', mom_data),
+                                      ('Quality', qual_data), ('Sentiment', sent_data),
+                                      ('Institutional Flow', flow_data)]:
+                if data.get('score', 50) >= 60:
+                    strengths.append(f"{agent_name} score of {data['score']:.0f}/100 — above-average performance")
 
         return strengths[:5]
 
-    def _extract_risks(self, agent_scores: Dict) -> List[str]:
-        """Extract key risks from agent scores"""
+    def _extract_risks_from_metrics(
+        self,
+        fund_data: Dict,
+        mom_data: Dict,
+        qual_data: Dict,
+        sent_data: Dict,
+        flow_data: Dict
+    ) -> List[str]:
+        """Extract specific, metric-backed risks."""
         risks = []
 
-        # Check each agent for risks
-        for agent_name, result in agent_scores.items():
-            score = result.get('score', 50)
-            if score <= 40:  # Weak performance
-                reasoning = result.get('reasoning', '')
-                if reasoning:
-                    risks.append(f"{agent_name.replace('_', ' ').title()}: {reasoning}")
+        fund_metrics = fund_data.get('metrics', {})
+        mom_metrics = mom_data.get('metrics', {})
+        qual_metrics = qual_data.get('metrics', {})
+        sent_metrics = sent_data.get('metrics', {})
+        flow_metrics = flow_data.get('metrics', {})
 
-        # If no specific risks, add generic ones
+        # Fundamentals risks
+        roe = fund_metrics.get('roe')
+        if roe is not None and roe < 10:
+            risks.append(f"Weak ROE of {roe:.1f}% raises questions about management's capital efficiency")
+
+        pe = fund_metrics.get('pe_ratio')
+        if pe is not None and pe > 40:
+            risks.append(f"Elevated P/E of {pe:.1f}x leaves little room for earnings disappointment")
+
+        de = fund_metrics.get('debt_to_equity')
+        if de is not None and de > 1.5:
+            risks.append(f"High leverage (D/E: {de:.2f}) increases vulnerability in rising rate environment")
+
+        rev_growth = fund_metrics.get('revenue_growth')
+        if rev_growth is not None and rev_growth < 0:
+            risks.append(f"Revenue contraction of {rev_growth:.1f}% signals deteriorating business fundamentals")
+
+        # Momentum risks
+        rsi = mom_metrics.get('rsi')
+        if rsi is not None and rsi > 72:
+            risks.append(f"Overbought RSI of {rsi:.0f} — short-term pullback risk is elevated")
+        elif rsi is not None and rsi < 30:
+            risks.append(f"RSI of {rsi:.0f} in oversold territory; trend reversal yet to materialise")
+
+        ret_3m = mom_metrics.get('3m_return')
+        if ret_3m is not None and ret_3m < -10:
+            risks.append(f"3-month decline of {ret_3m:.1f}% indicates sustained selling pressure")
+
+        # Quality risks
+        volatility = qual_metrics.get('volatility')
+        if volatility is not None and volatility > 40:
+            risks.append(f"High annualised volatility of {volatility:.1f}% — significant price swings likely")
+
+        max_dd = qual_metrics.get('max_drawdown')
+        if max_dd is not None and max_dd < -30:
+            risks.append(f"Historical max drawdown of {max_dd:.1f}% highlights downside risk in adverse conditions")
+
+        current_dd = qual_metrics.get('current_drawdown')
+        if current_dd is not None and current_dd < -20:
+            risks.append(f"Currently {current_dd:.1f}% below its recent peak — recovery timeline uncertain")
+
+        # Sentiment risks
+        upside = sent_metrics.get('upside_percent')
+        if upside is not None and upside < -5:
+            risks.append(f"Analyst consensus implies {upside:.1f}% downside — sell-side is negative")
+
+        # Flow risks
+        fii_net = flow_metrics.get('fii_net_30d')
+        if fii_net is not None and fii_net < -5000:
+            risks.append(f"FII net selling of ₹{abs(fii_net):,.0f}Cr over 30 days — foreign outflows pose headwind")
+
+        fii_trend = flow_metrics.get('fii_trend', '')
+        dii_trend = flow_metrics.get('dii_trend', '')
+        if fii_trend == 'selling' and dii_trend == 'selling':
+            risks.append("Both FII and DII have been net sellers recently — broad institutional distribution signal")
+
+        # Fallback
         if not risks:
-            risks = ["Market volatility and general investment risks apply"]
+            risks.append("General market risks apply; position sizing should reflect portfolio risk tolerance")
+            for agent_name, data in [('Fundamentals', fund_data), ('Momentum', mom_data),
+                                      ('Quality', qual_data)]:
+                if data.get('score', 50) < 45:
+                    risks.append(f"{agent_name} score of {data['score']:.0f}/100 below threshold — warrants caution")
+                    break
 
         return risks[:5]
+
+    def _build_summary(
+        self,
+        company_name: str,
+        symbol: str,
+        composite_score: float,
+        recommendation: str,
+        fund_data: Dict,
+        mom_data: Dict,
+        qual_data: Dict
+    ) -> str:
+        """Build a one-sentence summary with the most relevant data point."""
+        fund_metrics = fund_data.get('metrics', {})
+        mom_metrics = mom_data.get('metrics', {})
+
+        pe = fund_metrics.get('pe_ratio')
+        rsi = mom_metrics.get('rsi')
+        ret_3m = mom_metrics.get('3m_return')
+
+        detail = ""
+        if pe is not None and 0 < pe < 50:
+            detail = f" (P/E: {pe:.1f}x"
+            if rsi is not None:
+                detail += f", RSI: {rsi:.0f}"
+            detail += ")"
+        elif ret_3m is not None:
+            sign = "+" if ret_3m >= 0 else ""
+            detail = f" (3M return: {sign}{ret_3m:.1f}%)"
+
+        return (
+            f"{recommendation}: {company_name} ({symbol}) scores {composite_score:.1f}/100{detail} — "
+            f"generated by rule-based analysis across five quantitative agents."
+        )
 
 
 # Example usage

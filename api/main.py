@@ -73,7 +73,7 @@ app.add_middleware(
     allow_origins=allowed_origins,  # Specific origins only
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization", "Accept"],
+    allow_headers=["Content-Type", "Authorization", "Accept", "X-API-Key"],
     max_age=600
 )
 
@@ -204,13 +204,14 @@ class AnalyzeRequest(BaseModel):
 
         return v.upper()
 
-    class Config:
-        schema_extra = {
+    model_config = {
+        "json_schema_extra": {
             "example": {
                 "symbol": "TCS",
                 "include_narrative": True
             }
         }
+    }
 
 
 class BatchAnalyzeRequest(BaseModel):
@@ -236,14 +237,15 @@ class BatchAnalyzeRequest(BaseModel):
             raise ValueError(f"sort_by must be one of: {allowed}")
         return v
 
-    class Config:
-        schema_extra = {
+    model_config = {
+        "json_schema_extra": {
             "example": {
                 "symbols": ["TCS", "INFY", "WIPRO"],
                 "include_narrative": False,
                 "sort_by": "score"
             }
         }
+    }
 
 
 class AgentScore(BaseModel):
@@ -642,7 +644,9 @@ async def analyze_stock(body: AnalyzeRequest, request: Request):
                     recommendation=result['recommendation'],
                     stock_info={}  # Can pass additional info if needed
                 )
-                response_data['narrative'] = NarrativeResponse(**narrative)
+                response_data['narrative'] = NarrativeResponse(
+                        **{**narrative, 'provider': narrative.get('generated_by', narrative.get('provider', 'rule_based'))}
+                    )
             except Exception as e:
                 logger.warning(f"Narrative generation failed: {e}")
                 # Continue without narrative
@@ -754,7 +758,9 @@ async def analyze_batch(body: BatchAnalyzeRequest, request: Request):
                             recommendation=result['recommendation'],
                             stock_info={}
                         )
-                        response_data['narrative'] = NarrativeResponse(**narrative)
+                        response_data['narrative'] = NarrativeResponse(
+                        **{**narrative, 'provider': narrative.get('generated_by', narrative.get('provider', 'rule_based'))}
+                    )
                     except Exception as e:
                         logger.warning(f"Narrative generation failed for {result['symbol']}: {e}")
 
@@ -873,7 +879,9 @@ async def get_top_picks(
                             recommendation=result['recommendation'],
                             stock_info={}
                         )
-                        response_data['narrative'] = NarrativeResponse(**narrative)
+                        response_data['narrative'] = NarrativeResponse(
+                        **{**narrative, 'provider': narrative.get('generated_by', narrative.get('provider', 'rule_based'))}
+                    )
                     except Exception as e:
                         logger.warning(f"Narrative generation failed for {result['symbol']}: {e}")
 

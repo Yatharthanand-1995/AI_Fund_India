@@ -77,6 +77,11 @@ export interface SentimentMetrics {
   upside_percent?: number;
   number_of_analyst_opinions?: number;
   recommendation_trend?: any;
+  // News sentiment (Yahoo Finance RSS)
+  news_sentiment_score?: number;
+  news_headline_count?: number;
+  news_bullish_count?: number;
+  news_bearish_count?: number;
 }
 
 export interface InstitutionalFlowMetrics {
@@ -90,6 +95,20 @@ export interface InstitutionalFlowMetrics {
   vwap_position?: string;
   volume_trend?: number;
   pv_divergence?: string;
+  pv_trend_reversal?: boolean;
+  // FII/DII flows (NSE India public API)
+  fii_net_30d?: number;
+  dii_net_30d?: number;
+  fii_trend?: string;
+  dii_trend?: string;
+  // NSE delivery volume
+  delivery_pct?: number;
+  delivery_change_pct?: number;
+  // Block/bulk deals
+  bulk_buy_count?: number;
+  bulk_sell_count?: number;
+  block_buy_count?: number;
+  block_sell_count?: number;
 }
 
 // Base AgentScore with generic metrics

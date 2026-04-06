@@ -207,6 +207,20 @@ class StockUniverse:
     # Metadata & Statistics
     # ========================================================================
 
+    def get_stock_list(self, index: str = 'ALL') -> List[str]:
+        """
+        Get flat list of stock symbols for data collection.
+
+        Args:
+            index: Index name, or 'ALL' for all unique symbols across all indices
+
+        Returns:
+            Sorted list of unique stock symbols
+        """
+        if index.upper() == 'ALL':
+            return sorted(self._symbol_to_indices.keys())
+        return self.get_symbols(index=index)
+
     def get_available_indices(self) -> List[str]:
         """Get list of available indices"""
         return list(self.indices.keys())

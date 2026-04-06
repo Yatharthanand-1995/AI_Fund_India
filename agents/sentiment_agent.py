@@ -5,7 +5,7 @@ Analyzes:
 - Analyst Recommendations (from yfinance)
 - Target Price vs Current Price (upside potential)
 - Number of Analysts (coverage indicates institutional interest)
-- Optional: News Sentiment (LLM-powered, if enabled)
+- News Sentiment (Yahoo Finance RSS — free, no API key required)
 
 Scoring: 0-100 with confidence level
 """
@@ -15,6 +15,7 @@ from typing import Dict, Optional
 
 from utils.metric_extraction import MetricExtractor
 from core.exceptions import DataValidationException, InsufficientDataException, CalculationException
+from data.news_sentiment_provider import get_news_sentiment, score_to_adjustment
 
 logger = logging.getLogger(__name__)
 
@@ -51,12 +52,12 @@ class SentimentAgent:
         'low': 5,
     }
 
-    def __init__(self, enable_news_sentiment: bool = False):
+    def __init__(self, enable_news_sentiment: bool = True):
         """
         Initialize Sentiment Agent
 
         Args:
-            enable_news_sentiment: Enable LLM-powered news sentiment (default: False)
+            enable_news_sentiment: Enable Yahoo RSS news sentiment (default: True, free)
         """
         self.agent_name = "SentimentAgent"
         self.weight = 0.09  # 9% of total score
@@ -115,8 +116,31 @@ class SentimentAgent:
             target_price_score = self._score_target_price(metrics)
             coverage_score = self._score_analyst_coverage(metrics)
 
-            # Calculate total score
-            total_score = recommendation_score + target_price_score + coverage_score
+            # News sentiment adjustment (Yahoo RSS — free, no API key)
+            news_adjustment = 0.0
+            news_data: Dict = {}
+            if self.enable_news_sentiment:
+                try:
+                    news_data = get_news_sentiment(symbol)
+                    news_adjustment = score_to_adjustment(
+                        news_data.get('sentiment_score', 0.0),
+                        max_adjustment=8.0
+                    )
+                    metrics['news_sentiment_score'] = news_data.get('sentiment_score')
+                    metrics['news_headline_count'] = news_data.get('headline_count', 0)
+                    metrics['news_bullish_count'] = news_data.get('bullish_count', 0)
+                    metrics['news_bearish_count'] = news_data.get('bearish_count', 0)
+                    logger.debug(
+                        f"News sentiment for {symbol}: {news_data.get('sentiment_score', 0):+.2f} "
+                        f"→ adjustment {news_adjustment:+.1f}"
+                    )
+                except Exception as _news_err:
+                    logger.debug(f"News sentiment unavailable for {symbol}: {_news_err}")
+
+            # Calculate total score (clamped to 0–100)
+            total_score = max(0.0, min(100.0,
+                recommendation_score + target_price_score + coverage_score + news_adjustment
+            ))
 
             # Calculate confidence
             confidence = self._calculate_confidence(metrics)
@@ -125,7 +149,8 @@ class SentimentAgent:
             reasoning = self._generate_reasoning(metrics, {
                 'recommendation': recommendation_score,
                 'target_price': target_price_score,
-                'coverage': coverage_score
+                'coverage': coverage_score,
+                'news': news_adjustment,
             })
 
             return {
@@ -136,7 +161,8 @@ class SentimentAgent:
                 'breakdown': {
                     'recommendation_score': round(recommendation_score, 2),
                     'target_price_score': round(target_price_score, 2),
-                    'coverage_score': round(coverage_score, 2)
+                    'coverage_score': round(coverage_score, 2),
+                    'news_adjustment': round(news_adjustment, 2),
                 },
                 'status': 'success',
                 'agent': self.agent_name
@@ -365,6 +391,19 @@ class SentimentAgent:
                 reasons.append(f"{num_analysts} analysts covering")
             elif num_analysts < 3:
                 reasons.append(f"Limited coverage ({num_analysts} analysts)")
+
+        # News sentiment
+        news_score = metrics.get('news_sentiment_score')
+        headline_count = metrics.get('news_headline_count', 0)
+        if news_score is not None and headline_count > 0:
+            bull = metrics.get('news_bullish_count', 0)
+            bear = metrics.get('news_bearish_count', 0)
+            if news_score >= 0.2:
+                reasons.append(f"Positive news flow ({bull}B/{bear}Be of {headline_count})")
+            elif news_score <= -0.2:
+                reasons.append(f"Negative news flow ({bull}B/{bear}Be of {headline_count})")
+            else:
+                reasons.append(f"Neutral news ({headline_count} headlines)")
 
         if not reasons:
             reasons.append("Limited analyst data")

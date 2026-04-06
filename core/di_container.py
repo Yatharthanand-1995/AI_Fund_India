@@ -61,9 +61,10 @@ class ServiceContainer:
             )
             logger.info("Stock scorer initialized")
 
-            # Narrative engine
-            self._services['narrative_engine'] = InvestmentNarrativeEngine()
-            logger.info("Narrative engine initialized")
+            # Narrative engine — read LLM_PROVIDER from env (defaults to 'groq' if set, else 'rule_based')
+            llm_provider = os.getenv('LLM_PROVIDER', 'rule_based')
+            self._services['narrative_engine'] = InvestmentNarrativeEngine(llm_provider=llm_provider)
+            logger.info(f"Narrative engine initialized with provider: {llm_provider}")
 
             self._initialized = True
             logger.info("Service container initialized successfully")
