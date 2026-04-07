@@ -1,7 +1,7 @@
 /**
  * API Client for AI Hedge Fund Backend
  *
- * Communicates with FastAPI backend at http://localhost:8000
+ * Communicates with FastAPI backend at http://localhost:8010
  * All requests go through /api proxy in development
  */
 
@@ -249,6 +249,27 @@ class APIClient {
   }
 
   // ========================================================================
+  // Alerts Endpoints
+  // ========================================================================
+
+  async getAlerts(unreadOnly = false, limit = 50): Promise<any> {
+    const response = await this.client.get('/alerts', {
+      params: { unread_only: unreadOnly, limit },
+    });
+    return response.data;
+  }
+
+  async markAlertRead(alertId: number): Promise<any> {
+    const response = await this.client.post(`/alerts/${alertId}/read`);
+    return response.data;
+  }
+
+  async markAllAlertsRead(): Promise<any> {
+    const response = await this.client.post('/alerts/read-all');
+    return response.data;
+  }
+
+  // ========================================================================
   // Backtest Endpoints
   // ========================================================================
 
@@ -270,7 +291,7 @@ class APIClient {
       end_date: config.end_date,
       frequency: config.frequency || 'monthly',
       include_narrative: config.include_narrative || false
-    });
+    }, { timeout: 600000 }); // 10-minute timeout for backtests
     return response.data;
   }
 

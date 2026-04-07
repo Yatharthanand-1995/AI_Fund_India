@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Play, History, TrendingUp, AlertCircle } from 'lucide-react';
 import BacktestConfigForm from '@/components/backtest/BacktestConfigForm';
@@ -19,6 +19,8 @@ export default function Backtest() {
   const [viewMode, setViewMode] = useState<ViewMode>('new');
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [isRunning, setIsRunning] = useState(false);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [runs, setRuns] = useState<BacktestRun[]>([]);
   const [isLoadingRuns, setIsLoadingRuns] = useState(false);
 
@@ -58,16 +60,29 @@ export default function Backtest() {
     }
   };
 
+  const startTimer = () => {
+    setElapsedSeconds(0);
+    timerRef.current = setInterval(() => setElapsedSeconds(s => s + 1), 1000);
+  };
+
+  const stopTimer = () => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+  };
+
   const handleRunBacktest = async (config: any) => {
     try {
       setIsRunning(true);
+      startTimer();
       addToast({ type: 'info', message: 'Starting backtest... This may take a few minutes.' });
 
       const result = await api.runBacktest(config);
 
       addToast({
         type: 'success',
-        message: `Backtest completed! Analyzed ${result.metrics.total_signals} signals.`
+        message: `Backtest completed! Analyzed ${result.total_signals} signals.`
       });
 
       // Switch to results view
@@ -84,6 +99,7 @@ export default function Backtest() {
         message: error instanceof Error ? error.message : 'Failed to run backtest'
       });
     } finally {
+      stopTimer();
       setIsRunning(false);
     }
   };
@@ -194,10 +210,15 @@ export default function Backtest() {
 
                 {isRunning ? (
                   <div className="text-center py-12">
-                    <Loading size="lg" text="Running backtest... This may take several minutes." />
+                    <Loading size="lg" text={`Running backtest... ${elapsedSeconds}s elapsed`} />
                     <p className="mt-4 text-sm text-gray-600">
                       Analyzing historical data and calculating forward returns
                     </p>
+                    {elapsedSeconds >= 90 && (
+                      <div className="mt-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-sm text-yellow-800">
+                        ⚠️ This is taking longer than usual. Large symbol sets or long date ranges can take 3-5 minutes. Please wait.
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <BacktestConfigForm onSubmit={handleRunBacktest} />

@@ -150,7 +150,32 @@ class HistoricalDatabase:
                     symbol TEXT NOT NULL,
                     added_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     notes TEXT,
+                    entry_price REAL DEFAULT NULL,
+                    quantity REAL DEFAULT NULL,
                     UNIQUE(user_id, symbol)
+                )
+            """)
+
+            # Migrate existing watchlist table to add entry_price/quantity if missing
+            try:
+                cursor.execute("ALTER TABLE watchlist ADD COLUMN entry_price REAL DEFAULT NULL")
+            except Exception:
+                pass  # Column already exists
+            try:
+                cursor.execute("ALTER TABLE watchlist ADD COLUMN quantity REAL DEFAULT NULL")
+            except Exception:
+                pass  # Column already exists
+
+            # Alerts table — triggered when stop-loss hit, score threshold crossed, or regime changes
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS alerts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    symbol TEXT NOT NULL,
+                    alert_type TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    severity TEXT NOT NULL DEFAULT 'info',
+                    triggered_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    is_read INTEGER NOT NULL DEFAULT 0
                 )
             """)
 
@@ -530,7 +555,9 @@ class HistoricalDatabase:
         self,
         symbol: str,
         notes: Optional[str] = None,
-        user_id: str = 'default'
+        user_id: str = 'default',
+        entry_price: Optional[float] = None,
+        quantity: Optional[float] = None,
     ) -> bool:
         """
         Add stock to watchlist
@@ -539,6 +566,8 @@ class HistoricalDatabase:
             symbol: Stock symbol
             notes: Optional notes
             user_id: User identifier
+            entry_price: Optional purchase price for P&L tracking
+            quantity: Optional number of shares for P&L tracking
 
         Returns:
             True if added, False if already exists
@@ -547,9 +576,9 @@ class HistoricalDatabase:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
-                    INSERT INTO watchlist (user_id, symbol, notes)
-                    VALUES (?, ?, ?)
-                """, (user_id, symbol.upper(), notes))
+                    INSERT INTO watchlist (user_id, symbol, notes, entry_price, quantity)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (user_id, symbol.upper(), notes, entry_price, quantity))
                 return True
         except (sqlite3.IntegrityError, DatabaseException):
             logger.warning(f"Stock {symbol} already in watchlist for user {user_id}")
@@ -602,7 +631,9 @@ class HistoricalDatabase:
                 'id': row['id'],
                 'symbol': row['symbol'],
                 'added_at': row['added_at'],
-                'notes': row['notes']
+                'notes': row['notes'],
+                'entry_price': row['entry_price'] if 'entry_price' in row.keys() else None,
+                'quantity': row['quantity'] if 'quantity' in row.keys() else None,
             } for row in rows]
 
     def is_in_watchlist(
@@ -652,6 +683,81 @@ class HistoricalDatabase:
                 LIMIT ?
             """, (user_id, limit))
             return [row['symbol'] for row in cursor.fetchall()]
+
+    # ========================================================================
+    # Alerts
+    # ========================================================================
+
+    def save_alert(
+        self,
+        symbol: str,
+        alert_type: str,
+        message: str,
+        severity: str = 'info',
+    ) -> int:
+        """
+        Save an alert.
+
+        Args:
+            symbol: Stock symbol (or 'MARKET' for market-wide alerts)
+            alert_type: e.g. 'stop_loss', 'score_drop', 'regime_change'
+            message: Human-readable description
+            severity: 'info' | 'warning' | 'critical'
+
+        Returns:
+            Row id of the new alert
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO alerts (symbol, alert_type, message, severity)
+                VALUES (?, ?, ?, ?)
+            """, (symbol.upper(), alert_type, message, severity))
+            return cursor.lastrowid
+
+    def get_alerts(
+        self,
+        unread_only: bool = False,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """Return recent alerts, newest first."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            if unread_only:
+                cursor.execute("""
+                    SELECT id, symbol, alert_type, message, severity,
+                           triggered_at, is_read
+                    FROM alerts
+                    WHERE is_read = 0
+                    ORDER BY triggered_at DESC
+                    LIMIT ?
+                """, (limit,))
+            else:
+                cursor.execute("""
+                    SELECT id, symbol, alert_type, message, severity,
+                           triggered_at, is_read
+                    FROM alerts
+                    ORDER BY triggered_at DESC
+                    LIMIT ?
+                """, (limit,))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def mark_alert_read(self, alert_id: int) -> bool:
+        """Mark a single alert as read. Returns True if found."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE alerts SET is_read = 1 WHERE id = ?",
+                (alert_id,)
+            )
+            return cursor.rowcount > 0
+
+    def mark_all_alerts_read(self) -> int:
+        """Mark all alerts as read. Returns count updated."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE alerts SET is_read = 1 WHERE is_read = 0")
+            return cursor.rowcount
 
     # ========================================================================
     # Data Maintenance

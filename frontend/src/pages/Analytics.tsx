@@ -9,9 +9,10 @@
  * - System health metrics
  */
 
-import { useState } from 'react';
+import { useState, Suspense } from 'react';
 import { BarChart3, Activity, PieChart, Settings, TrendingUp } from 'lucide-react';
 import Card from '@/components/ui/Card';
+import Loading from '@/components/ui/Loading';
 import PortfolioAnalytics from '@/components/analytics/PortfolioAnalytics';
 import AgentPerformanceAnalytics from '@/components/analytics/AgentPerformanceAnalytics';
 import SectorPerformanceAnalytics from '@/components/analytics/SectorPerformanceAnalytics';
@@ -67,12 +68,14 @@ export default function Analytics() {
       </Card>
 
       {/* Tab Content */}
-      <div>
-        {activeTab === 'portfolio' && <PortfolioAnalytics />}
-        {activeTab === 'agents' && <AgentPerformanceAnalytics />}
-        {activeTab === 'sectors' && <SectorPerformanceAnalytics />}
-        {activeTab === 'system' && <PerformanceMetrics />}
-      </div>
+      <Suspense fallback={<div className="py-12"><Loading size="lg" text="Loading analytics..." /></div>}>
+        <div>
+          {activeTab === 'portfolio' && <PortfolioAnalytics />}
+          {activeTab === 'agents' && <AgentPerformanceAnalytics />}
+          {activeTab === 'sectors' && <SectorPerformanceAnalytics />}
+          {activeTab === 'system' && <PerformanceMetrics />}
+        </div>
+      </Suspense>
 
       {/* Info Panel */}
       <Card className="bg-blue-50 border-blue-200">

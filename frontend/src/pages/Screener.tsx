@@ -98,10 +98,16 @@ export default function Screener() {
     refresh();
   }, []);
 
+  // Auto-apply filters when they change (after stocks are loaded)
+  useEffect(() => {
+    if (totalCount > 0) {
+      applyFilters(filters);
+    }
+  }, [filters]);
+
   const handleApplyFilters = (newFilters: ScreenerFilters) => {
     setFilters(newFilters);
     setUrlFilters(newFilters);
-    applyFilters(newFilters);
   };
 
   const handleLoadPreset = (preset: any) => {

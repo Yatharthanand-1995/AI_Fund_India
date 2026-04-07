@@ -181,6 +181,27 @@ const SectorAnalysis: React.FC = () => {
     }
   };
 
+  // Empty state — fresh install with no historical data
+  if (!loading && !error && sectors.length === 0) {
+    return (
+      <div className="flex items-center justify-center min-h-96">
+        <div className="text-center max-w-md">
+          <AlertCircle className="w-12 h-12 text-blue-400 mx-auto mb-4" />
+          <h3 className="text-lg font-semibold text-gray-800 mb-2">No Sector Data Yet</h3>
+          <p className="text-gray-500 mb-4">
+            Sector analysis is built from historical stock analyses. Run your first stock analysis on the Dashboard to start populating this view.
+          </p>
+          <button
+            onClick={() => refetch()}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+          >
+            Refresh
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   // Transform sectors for heatmap (with null checks and type safety)
   const heatmapData = sectors.map(sector => {
     const avgScore = typeof sector.avg_score === 'number' && !isNaN(sector.avg_score)

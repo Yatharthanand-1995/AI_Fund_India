@@ -359,12 +359,13 @@ class BacktestDatabase:
         finally:
             conn.close()
 
-    def list_backtest_runs(self, limit: int = 100) -> List[Dict]:
+    def list_backtest_runs(self, limit: int = 100, offset: int = 0) -> List[Dict]:
         """
         List all backtest runs (summary only)
 
         Args:
             limit: Maximum number of runs to return
+            offset: Number of runs to skip (for pagination)
 
         Returns:
             List of run summaries (without individual signals)
@@ -378,8 +379,8 @@ class BacktestDatabase:
                        created_at, total_signals, summary
                 FROM backtest_runs
                 ORDER BY created_at DESC
-                LIMIT ?
-            """, (limit,))
+                LIMIT ? OFFSET ?
+            """, (limit, offset))
 
             runs = []
             for row in cursor.fetchall():

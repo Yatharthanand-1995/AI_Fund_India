@@ -23,13 +23,15 @@ export interface WatchlistItem {
   notes?: string;
   latest_score?: number;
   latest_recommendation?: string;
+  entry_price?: number | null;
+  quantity?: number | null;
 }
 
 export interface UseWatchlistReturn {
   watchlist: WatchlistItem[];
   loading: boolean;
   error: Error | null;
-  add: (symbol: string, notes?: string) => Promise<boolean>;
+  add: (symbol: string, notes?: string, entry_price?: number, quantity?: number) => Promise<boolean>;
   remove: (symbol: string) => Promise<boolean>;
   refresh: () => Promise<void>;
   isInWatchlist: (symbol: string) => boolean;
@@ -72,18 +74,20 @@ export const useWatchlist = (): UseWatchlistReturn => {
   }, [fetchWatchlist]);
 
   // Add to watchlist
-  const add = useCallback(async (symbol: string, notes?: string): Promise<boolean> => {
+  const add = useCallback(async (symbol: string, notes?: string, entry_price?: number, quantity?: number): Promise<boolean> => {
     try {
       // Optimistic update
       const newItem: WatchlistItem = {
         symbol: symbol.toUpperCase(),
         added_at: Date.now(),
-        notes
+        notes,
+        entry_price: entry_price ?? null,
+        quantity: quantity ?? null,
       };
       setWatchlist(prev => [newItem, ...prev]);
 
       // API call
-      const response = await api.post('/watchlist', { symbol, notes });
+      const response = await api.post('/watchlist', { symbol, notes, entry_price, quantity });
 
       // Refresh to get latest data
       await fetchWatchlist();
@@ -115,13 +119,13 @@ export const useWatchlist = (): UseWatchlistReturn => {
     } catch (err: any) {
       console.error('Failed to remove from watchlist:', err);
 
-      // Revert optimistic update on error
-      setWatchlist(watchlist);
+      // Revert optimistic update by re-fetching server state
+      await fetchWatchlist();
       setError(err);
 
       return false;
     }
-  }, [watchlist]);
+  }, [fetchWatchlist]);
 
   // Check if symbol is in watchlist
   const isInWatchlist = useCallback((symbol: string): boolean => {

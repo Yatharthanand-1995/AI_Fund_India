@@ -77,6 +77,16 @@ class InstitutionalFlowAgent:
         self.agent_name = "InstitutionalFlowAgent"
         self.weight = 0.10  # 10% of total score
 
+        # Initialize providers once as singletons (avoids re-instantiation on every analyze call)
+        try:
+            self._fii_dii_provider = get_fii_dii_provider()
+        except Exception:
+            self._fii_dii_provider = None
+        try:
+            self._delivery_provider = get_delivery_provider()
+        except Exception:
+            self._delivery_provider = None
+
     def analyze(
         self,
         symbol: str,
@@ -136,7 +146,7 @@ class InstitutionalFlowAgent:
 
             # FII/DII net flow adjustment (India-specific, ±15 points)
             try:
-                fii_dii = get_fii_dii_provider()
+                fii_dii = self._fii_dii_provider or get_fii_dii_provider()
                 flow_data = fii_dii.get_flow_data()
                 fii_dii_adjustment = fii_dii.score_flow(flow_data)
                 metrics['fii_net_30d'] = flow_data.get('fii_net_30d')
@@ -151,7 +161,7 @@ class InstitutionalFlowAgent:
             delivery_adjustment = 0.0
             deals_adjustment = 0.0
             try:
-                delivery_provider = get_delivery_provider()
+                delivery_provider = self._delivery_provider or get_delivery_provider()
                 delivery_data = delivery_provider.get_delivery_data(symbol)
                 delivery_adjustment = delivery_provider.score_delivery(symbol, delivery_data)
                 deals_data = delivery_provider.get_deals_for_symbol(symbol)

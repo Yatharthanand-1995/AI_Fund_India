@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import {
   TrendingUp,
@@ -13,16 +13,33 @@ import {
   Filter,
   Lightbulb,
   Menu,
-  X
+  X,
+  Bell,
 } from 'lucide-react';
 import { useStore } from '@/store/useStore';
 import { cn } from '@/lib/utils';
+import { useAlerts } from '@/hooks/useAlerts';
 
 export default function Header() {
   const location = useLocation();
   const marketRegime = useStore((state) => state.marketRegime);
   const watchlistCount = useStore((state) => state.watchlist.length);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [alertsOpen, setAlertsOpen] = useState(false);
+  const alertPanelRef = useRef<HTMLDivElement>(null);
+
+  const { alerts, unreadCount, markRead, markAllRead } = useAlerts(60_000);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (alertPanelRef.current && !alertPanelRef.current.contains(e.target as Node)) {
+        setAlertsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
 
   const navItems = [
     { path: '/', label: 'Dashboard', icon: BarChart3 },
@@ -37,6 +54,12 @@ export default function Header() {
     { path: '/system', label: 'System', icon: Settings },
     { path: '/about', label: 'About', icon: Info },
   ];
+
+  const severityColor = (severity: string) => {
+    if (severity === 'critical') return 'text-red-600';
+    if (severity === 'warning') return 'text-yellow-600';
+    return 'text-blue-600';
+  };
 
   return (
     <header className="bg-white border-b border-gray-200 shadow-sm relative">
@@ -82,7 +105,7 @@ export default function Header() {
             ))}
           </nav>
 
-          {/* Right section: Market Regime + Mobile Menu Button */}
+          {/* Right section: Market Regime + Alerts + Mobile Menu Button */}
           <div className="flex items-center gap-3">
             {/* Market Regime Badge */}
             {marketRegime && (
@@ -103,6 +126,72 @@ export default function Header() {
                 </div>
               </div>
             )}
+
+            {/* Alert Bell */}
+            <div className="relative" ref={alertPanelRef}>
+              <button
+                onClick={() => setAlertsOpen(prev => !prev)}
+                aria-label={`Alerts${unreadCount > 0 ? ` (${unreadCount} unread)` : ''}`}
+                className="relative p-2 rounded-md text-gray-600 hover:text-gray-900 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-primary-500"
+              >
+                <Bell className="h-5 w-5" />
+                {unreadCount > 0 && (
+                  <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full h-4 w-4 flex items-center justify-center font-bold">
+                    {unreadCount > 9 ? '9+' : unreadCount}
+                  </span>
+                )}
+              </button>
+
+              {/* Alerts dropdown */}
+              {alertsOpen && (
+                <div className="absolute right-0 top-10 w-80 bg-white border border-gray-200 rounded-lg shadow-xl z-50 overflow-hidden">
+                  <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
+                    <span className="text-sm font-semibold text-gray-900">
+                      Alerts {unreadCount > 0 && <span className="text-red-500">({unreadCount} new)</span>}
+                    </span>
+                    {unreadCount > 0 && (
+                      <button
+                        onClick={() => markAllRead()}
+                        className="text-xs text-blue-600 hover:underline"
+                      >
+                        Mark all read
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="max-h-72 overflow-y-auto divide-y divide-gray-50">
+                    {alerts.length === 0 ? (
+                      <p className="px-4 py-6 text-sm text-gray-500 text-center">No alerts</p>
+                    ) : (
+                      alerts.map(alert => (
+                        <div
+                          key={alert.id}
+                          className={cn(
+                            'px-4 py-3 flex items-start gap-2 cursor-pointer hover:bg-gray-50',
+                            !alert.is_read && 'bg-blue-50'
+                          )}
+                          onClick={() => !alert.is_read && markRead(alert.id)}
+                        >
+                          <Bell className={cn('h-4 w-4 mt-0.5 flex-shrink-0', severityColor(alert.severity))} />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-xs font-semibold text-gray-800">{alert.symbol}</p>
+                            <p className="text-xs text-gray-600 leading-snug">{alert.message}</p>
+                            <p className="text-xs text-gray-400 mt-0.5">
+                              {new Date(alert.triggered_at).toLocaleString('en-IN', {
+                                day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit',
+                              })}
+                            </p>
+                          </div>
+                          {!alert.is_read && (
+                            <span className="h-2 w-2 rounded-full bg-blue-500 mt-1 flex-shrink-0" />
+                          )}
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
 
             {/* Mobile menu button */}
             <button

@@ -7,6 +7,7 @@ Runs during market hours on a configurable schedule.
 
 import logging
 import os
+import time as time_module
 from datetime import datetime, time as dt_time
 from typing import Dict, Any, List
 import pytz
@@ -155,17 +156,23 @@ class HistoricalDataCollector:
             # Collect market regime first
             self._collect_market_regime()
 
-            # Analyze each stock
+            # Analyze each stock with a small delay between calls to avoid
+            # hitting Yahoo Finance / NSE rate limits (undocumented ~100 req/5min)
+            collection_delay = float(os.getenv('COLLECTION_DELAY_SECONDS', '1.5'))
             success_count = 0
             fail_count = 0
 
-            for symbol in stocks_to_analyze:
+            for i, symbol in enumerate(stocks_to_analyze):
                 try:
                     self._analyze_and_store_stock(symbol)
                     success_count += 1
                 except Exception as e:
                     logger.error(f"Failed to analyze {symbol}: {e}")
                     fail_count += 1
+
+                # Throttle between stocks (skip delay after last stock)
+                if i < len(stocks_to_analyze) - 1:
+                    time_module.sleep(collection_delay)
 
             # Update stats
             duration = (datetime.now() - start_time).total_seconds()
@@ -264,6 +271,41 @@ class HistoricalDataCollector:
             price=price,
             sector=sector
         )
+
+        # ---- Alert checks (only for watchlist stocks) ----------------------
+        try:
+            watchlist = self.db.get_watchlist()
+            watchlist_map = {item['symbol']: item for item in watchlist}
+            if symbol.upper() in watchlist_map:
+                item = watchlist_map[symbol.upper()]
+
+                # Score-drop alert: composite score fell below 40
+                if composite_score < 40:
+                    self.db.save_alert(
+                        symbol=symbol,
+                        alert_type='score_drop',
+                        message=(
+                            f"{symbol} composite score dropped to "
+                            f"{composite_score:.1f} — review position"
+                        ),
+                        severity='warning',
+                    )
+
+                # Stop-loss alert: current price ≤ entry_price × 0.93 (7% loss)
+                entry_price = item.get('entry_price')
+                if price and entry_price and price <= entry_price * 0.93:
+                    self.db.save_alert(
+                        symbol=symbol,
+                        alert_type='stop_loss',
+                        message=(
+                            f"{symbol} price ₹{price:.2f} has hit stop-loss "
+                            f"(entry ₹{entry_price:.2f}, −7%)"
+                        ),
+                        severity='critical',
+                    )
+        except Exception as alert_err:
+            logger.debug(f"Alert check failed for {symbol}: {alert_err}")
+        # ---- End alert checks ----------------------------------------------
 
         logger.debug(f"Saved analysis for {symbol}: {composite_score:.2f} ({recommendation})")
 

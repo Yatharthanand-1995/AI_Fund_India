@@ -106,6 +106,7 @@ class StockScorer:
 
         # Current weights (will be set to static or adaptive)
         self.current_weights = self.STATIC_WEIGHTS.copy()
+        self._custom_weights: dict | None = None  # Set via set_weights(); overrides adaptive/static
 
         # Stats tracking
         self.stats = {
@@ -117,6 +118,7 @@ class StockScorer:
                 'STRONG BUY': 0,
                 'BUY': 0,
                 'WEAK BUY': 0,
+                'HOLD+': 0,
                 'HOLD': 0,
                 'WEAK SELL': 0,
                 'SELL': 0
@@ -406,10 +408,12 @@ class StockScorer:
             logger.warning(f"Could not fetch NIFTY data: {e}")
             nifty_data = pd.DataFrame()
 
-        # Score stocks in parallel (conservative worker count — score_stock
-        # itself uses an inner ThreadPoolExecutor of 5 workers per stock)
-        max_workers = min(len(symbols), int(os.environ.get('BATCH_MAX_WORKERS', '8')))
-        logger.info(f"Scoring {len(symbols)} stocks with up to {max_workers} parallel workers...")
+        # Conservative outer worker count — score_stock itself spawns an inner
+        # ThreadPoolExecutor(5) per stock, so total threads = outer × 5.
+        # Cap at 4 outer workers → max 20 agent threads at a time to avoid exhaustion.
+        default_workers = min(4, len(symbols))
+        max_workers = min(len(symbols), int(os.environ.get('BATCH_MAX_WORKERS', str(default_workers))))
+        logger.info(f"Scoring {len(symbols)} stocks with up to {max_workers} parallel workers (max ~{max_workers * 5} agent threads)...")
 
         with ThreadPoolExecutor(max_workers=max_workers) as batch_executor:
             future_to_symbol = {
@@ -532,11 +536,10 @@ class StockScorer:
 
     def _get_current_weights(self) -> Dict:
         """
-        Get current weights (static or adaptive)
-
-        Returns:
-            Dict of agent weights
+        Get current weights: custom override > adaptive > static
         """
+        if self._custom_weights is not None:
+            return self._custom_weights.copy()
         if self.use_adaptive_weights and self.market_regime_service:
             try:
                 # Get current market regime
@@ -565,6 +568,7 @@ class StockScorer:
             raise ValueError(f"Weights must sum to 1.0, got {total}")
 
         self.current_weights = weights
+        self._custom_weights = weights.copy()
         logger.info(f"Custom weights set: {weights}")
 
     def _compute_trading_levels(

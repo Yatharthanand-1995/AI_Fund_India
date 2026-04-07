@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { TrendingUp, BarChart3, Star, Activity, PieChart, ArrowRight } from 'lucide-react';
+import { TrendingUp, BarChart3, Star, Activity, PieChart, ArrowRight } from 'lucide-react'; // PieChart used in market overview
 import { useNavigate } from 'react-router-dom';
 import { useStore } from '@/store/useStore';
 import api from '@/lib/api';
@@ -120,32 +120,28 @@ export default function Dashboard() {
         </p>
       </div>
 
-      {/* KPI Cards - Only show when no analysis */}
-      {!analysis && systemStats && (
+      {/* Market Overview — always visible when regime is available */}
+      {marketRegime && (
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
           {/* Current Market Regime */}
-          <div className="bg-white rounded-lg shadow p-6">
+          <div className={`rounded-lg shadow p-6 ${
+            marketRegime.trend === 'BULL' ? 'bg-green-50 border border-green-200' :
+            marketRegime.trend === 'BEAR' ? 'bg-red-50 border border-red-200' :
+            'bg-white'
+          }`}>
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-gray-600">Market Regime</p>
-                <p className="text-2xl font-bold text-gray-900 mt-1">
-                  {marketRegime?.trend || 'N/A'}
+                <p className={`text-2xl font-bold mt-1 ${
+                  marketRegime.trend === 'BULL' ? 'text-green-700' :
+                  marketRegime.trend === 'BEAR' ? 'text-red-700' :
+                  'text-gray-900'
+                }`}>
+                  {marketRegime.trend || 'N/A'}
                 </p>
+                <p className="text-xs text-gray-500 mt-1">{marketRegime.volatility || ''} volatility</p>
               </div>
               <Activity className="w-8 h-8 text-blue-500" />
-            </div>
-          </div>
-
-          {/* Total Requests */}
-          <div className="bg-white rounded-lg shadow p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-600">Total Analyses</p>
-                <p className="text-2xl font-bold text-gray-900 mt-1">
-                  {systemStats.total_requests?.toLocaleString() || '0'}
-                </p>
-              </div>
-              <BarChart3 className="w-8 h-8 text-green-500" />
             </div>
           </div>
 
@@ -154,13 +150,36 @@ export default function Dashboard() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-gray-600">Watchlist</p>
-                <p className="text-2xl font-bold text-gray-900 mt-1">
-                  {watchlist.length}
-                </p>
+                <p className="text-2xl font-bold text-gray-900 mt-1">{watchlist.length}</p>
+                <p className="text-xs text-gray-500 mt-1">stocks tracked</p>
               </div>
               <Star className="w-8 h-8 text-yellow-500" />
             </div>
           </div>
+
+          {/* Top Sectors */}
+          {topSectors.length > 0 ? (
+            <div className="bg-white rounded-lg shadow p-6">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-sm text-gray-600">Top Sector</p>
+                <PieChart className="w-6 h-6 text-indigo-500" />
+              </div>
+              <p className="text-lg font-bold text-gray-900">{topSectors[0]?.sector || 'N/A'}</p>
+              <p className="text-xs text-gray-500 mt-1">avg score {topSectors[0]?.avg_score?.toFixed(1) || '—'}</p>
+            </div>
+          ) : (
+            <div className="bg-white rounded-lg shadow p-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-gray-600">Total Analyses</p>
+                  <p className="text-2xl font-bold text-gray-900 mt-1">
+                    {systemStats?.total_requests?.toLocaleString() || '—'}
+                  </p>
+                </div>
+                <BarChart3 className="w-8 h-8 text-green-500" />
+              </div>
+            </div>
+          )}
 
           {/* Cache Hit Rate */}
           <div className="bg-white rounded-lg shadow p-6">
@@ -168,8 +187,9 @@ export default function Dashboard() {
               <div>
                 <p className="text-sm text-gray-600">Cache Hit Rate</p>
                 <p className="text-2xl font-bold text-gray-900 mt-1">
-                  {systemStats.cache_hit_rate?.toFixed(1) || '0'}%
+                  {systemStats?.cache_hit_rate?.toFixed(1) || '—'}%
                 </p>
+                <p className="text-xs text-gray-500 mt-1">API efficiency</p>
               </div>
               <TrendingUp className="w-8 h-8 text-purple-500" />
             </div>

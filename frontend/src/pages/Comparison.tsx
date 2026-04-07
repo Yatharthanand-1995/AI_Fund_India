@@ -1,7 +1,7 @@
 /**
  * Enhanced Stock Comparison Page
  *
- * Compare 2-5 stocks side-by-side with detailed analysis
+ * Compare 2-4 stocks side-by-side with detailed analysis
  * Features:
  * - Comprehensive metrics comparison
  * - Visual charts (agent scores, returns, radar)
@@ -107,7 +107,7 @@ export default function Comparison() {
             Stock Comparison
           </h1>
           <p className="text-gray-600 mt-1">
-            Compare 2-5 stocks side-by-side with detailed analysis
+            Compare 2-4 stocks side-by-side with detailed analysis
           </p>
         </div>
 
@@ -126,7 +126,7 @@ export default function Comparison() {
       <Card>
         <div className="p-6">
           <h2 className="text-lg font-semibold text-gray-900 mb-4">
-            Select Stocks to Compare ({comparisonStocks.length}/5)
+            Select Stocks to Compare ({comparisonStocks.length}/4)
           </h2>
 
           {/* Selected Stocks */}
@@ -270,7 +270,7 @@ export default function Comparison() {
               No stocks selected
             </h3>
             <p className="text-gray-600 mb-6">
-              Add 2-5 stocks above to start comparing them side-by-side
+              Add 2-4 stocks above to start comparing them side-by-side
             </p>
             <div className="max-w-md mx-auto text-left bg-blue-50 rounded-lg p-4">
               <p className="text-sm font-medium text-blue-900 mb-2">💡 Quick Tip:</p>

@@ -44,7 +44,7 @@ function InvestmentIdeaCard({ analysis, rank }: InvestmentIdeaCardProps) {
 
     // Fundamentals insights
     const fundamentals = agent_scores?.fundamentals;
-    if (fundamentals && fundamentals.score > 70) {
+    if (fundamentals && fundamentals.score > 55) {
       const metrics = fundamentals.metrics;
       if (metrics?.roe) {
         insights.push(`Strong fundamentals (ROE ${(metrics.roe as number).toFixed(1)}%)`);
@@ -55,25 +55,25 @@ function InvestmentIdeaCard({ analysis, rank }: InvestmentIdeaCardProps) {
 
     // Momentum insights
     const momentum = agent_scores?.momentum;
-    if (momentum && momentum.score > 70) {
+    if (momentum && momentum.score > 55) {
       insights.push(`Positive momentum (score ${momentum.score.toFixed(0)}/100)`);
     }
 
     // Quality insights
     const quality = agent_scores?.quality;
-    if (quality && quality.score > 80) {
+    if (quality && quality.score > 60) {
       insights.push(`High quality score (${quality.score.toFixed(0)}/100, top decile)`);
     }
 
     // Institutional flow
     const instFlow = agent_scores?.institutional_flow;
-    if (instFlow && instFlow.score > 70) {
+    if (instFlow && instFlow.score > 55) {
       insights.push(`Strong institutional interest (score ${instFlow.score.toFixed(0)}/100)`);
     }
 
     // Sentiment
     const sentiment = agent_scores?.sentiment;
-    if (sentiment && sentiment.score > 70) {
+    if (sentiment && sentiment.score > 55) {
       insights.push(`Positive market sentiment (score ${sentiment.score.toFixed(0)}/100)`);
     }
 
@@ -93,7 +93,7 @@ function InvestmentIdeaCard({ analysis, rank }: InvestmentIdeaCardProps) {
     });
 
     // Generic risks if no specific ones
-    if (risks.length === 0 && composite_score < 85) {
+    if (risks.length === 0 && composite_score < 45) {
       risks.push('Moderate volatility expected');
     }
 

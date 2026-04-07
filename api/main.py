@@ -16,7 +16,9 @@ import asyncio
 import functools
 import logging
 import os
+import re
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 
@@ -54,7 +56,7 @@ setup_logging(
 )
 logger = get_logger(__name__)
 
-# Initialize FastAPI app
+# Initialize FastAPI app (lifespan wired at bottom of file after all services are defined)
 app = FastAPI(
     title="AI Hedge Fund - Indian Stock Market",
     description="AI-powered stock analysis system for NSE/BSE with 5 specialized agents",
@@ -105,7 +107,7 @@ async def verify_api_key(api_key: Optional[str] = Security(_API_KEY_HEADER)) -> 
 # Async helper: run blocking sync functions without stalling the event loop
 async def run_in_thread(func, *args, **kwargs):
     """Offload a blocking synchronous call to a thread pool executor."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, functools.partial(func, *args, **kwargs))
 
 
@@ -179,7 +181,6 @@ class AnalyzeRequest(BaseModel):
     @validator('symbol')
     def validate_symbol(cls, v):
         """Validate symbol format with security checks"""
-        import re
 
         if not v or not isinstance(v, str):
             raise ValueError("Symbol must be a non-empty string")
@@ -421,6 +422,8 @@ class WatchlistItem(BaseModel):
     notes: Optional[str]
     latest_score: Optional[float]
     latest_recommendation: Optional[str]
+    entry_price: Optional[float] = None
+    quantity: Optional[float] = None
 
 
 class WatchlistResponse(BaseModel):
@@ -434,6 +437,8 @@ class AddToWatchlistRequest(BaseModel):
     """Request model for adding to watchlist"""
     symbol: str = Field(..., description="Stock symbol")
     notes: Optional[str] = Field(None, description="Optional notes")
+    entry_price: Optional[float] = Field(None, description="Purchase price for P&L tracking")
+    quantity: Optional[float] = Field(None, description="Number of shares for P&L tracking")
 
     @validator('symbol')
     def validate_symbol(cls, v):
@@ -472,7 +477,6 @@ class CompareRequest(BaseModel):
     @validator('symbols')
     def validate_symbols(cls, v):
         """Validate symbols list with security checks"""
-        import re
 
         if len(v) < 2:
             raise ValueError("At least 2 symbols required for comparison")
@@ -593,11 +597,14 @@ async def analyze_stock(body: AnalyzeRequest, request: Request):
         symbol = body.symbol
         logger.info(f"Analyzing stock: {symbol}")
 
-        # Check cache
-        cache_key = get_cache_key("analyze", f"{symbol}:{body.include_narrative}")
+        # Check cache — key is symbol only; narrative stripped from response if not requested
+        cache_key = get_cache_key("analyze", symbol)
         cached = get_from_cache(cache_key)
         if cached:
-            return StockAnalysisResponse(**{**cached, 'cached': True})
+            result_data = {**cached, 'cached': True}
+            if not body.include_narrative:
+                result_data.pop('narrative', None)
+            return StockAnalysisResponse(**result_data)
 
         # Fetch NIFTY data for market context (non-blocking)
         try:
@@ -637,16 +644,17 @@ async def analyze_stock(body: AnalyzeRequest, request: Request):
         # Generate narrative if requested
         if body.include_narrative:
             try:
-                narrative = narrative_engine.generate_narrative(
+                narrative = await run_in_thread(
+                    narrative_engine.generate_narrative,
                     symbol=symbol,
                     agent_scores=result['agent_scores'],
                     composite_score=result['composite_score'],
                     recommendation=result['recommendation'],
-                    stock_info={}  # Can pass additional info if needed
+                    stock_info={}
                 )
                 response_data['narrative'] = NarrativeResponse(
-                        **{**narrative, 'provider': narrative.get('generated_by', narrative.get('provider', 'rule_based'))}
-                    )
+                    **{**narrative, 'provider': narrative.get('generated_by', narrative.get('provider', 'rule_based'))}
+                )
             except Exception as e:
                 logger.warning(f"Narrative generation failed: {e}")
                 # Continue without narrative
@@ -751,7 +759,8 @@ async def analyze_batch(body: BatchAnalyzeRequest, request: Request):
                 # Generate narrative if requested
                 if body.include_narrative:
                     try:
-                        narrative = narrative_engine.generate_narrative(
+                        narrative = await run_in_thread(
+                            narrative_engine.generate_narrative,
                             symbol=result['symbol'],
                             agent_scores=result['agent_scores'],
                             composite_score=result['composite_score'],
@@ -759,8 +768,8 @@ async def analyze_batch(body: BatchAnalyzeRequest, request: Request):
                             stock_info={}
                         )
                         response_data['narrative'] = NarrativeResponse(
-                        **{**narrative, 'provider': narrative.get('generated_by', narrative.get('provider', 'rule_based'))}
-                    )
+                            **{**narrative, 'provider': narrative.get('generated_by', narrative.get('provider', 'rule_based'))}
+                        )
                     except Exception as e:
                         logger.warning(f"Narrative generation failed for {result['symbol']}: {e}")
 
@@ -872,7 +881,8 @@ async def get_top_picks(
                 # Generate narrative if requested
                 if include_narrative:
                     try:
-                        narrative = narrative_engine.generate_narrative(
+                        narrative = await run_in_thread(
+                            narrative_engine.generate_narrative,
                             symbol=result['symbol'],
                             agent_scores=result['agent_scores'],
                             composite_score=result['composite_score'],
@@ -880,8 +890,8 @@ async def get_top_picks(
                             stock_info={}
                         )
                         response_data['narrative'] = NarrativeResponse(
-                        **{**narrative, 'provider': narrative.get('generated_by', narrative.get('provider', 'rule_based'))}
-                    )
+                            **{**narrative, 'provider': narrative.get('generated_by', narrative.get('provider', 'rule_based'))}
+                        )
                     except Exception as e:
                         logger.warning(f"Narrative generation failed for {result['symbol']}: {e}")
 
@@ -978,16 +988,13 @@ async def health_check():
         components = {}
         overall_status = "healthy"
 
-        # Check data provider
+        # Check data provider — lightweight check via provider state (no live data fetch)
         try:
-            test_data = data_provider.get_comprehensive_data('TCS')
             components['data_provider'] = {
                 'status': 'healthy',
                 'nse_provider': 'available' if hasattr(data_provider, 'nse_available') and data_provider.nse_available else 'unavailable',
                 'yahoo_provider': 'available' if hasattr(data_provider, 'yahoo_available') and data_provider.yahoo_available else 'unavailable',
                 'prefer_provider': data_provider.prefer_provider if hasattr(data_provider, 'prefer_provider') else 'unknown',
-                'test_symbol': 'TCS',
-                'data_available': not test_data.get('historical_data', pd.DataFrame()).empty
             }
         except Exception as e:
             components['data_provider'] = {
@@ -1442,7 +1449,9 @@ async def add_to_watchlist(request: AddToWatchlistRequest):
         # Add to watchlist
         added = historical_db.add_to_watchlist(
             symbol=request.symbol,
-            notes=request.notes
+            notes=request.notes,
+            entry_price=request.entry_price,
+            quantity=request.quantity,
         )
 
         if added:
@@ -1487,7 +1496,9 @@ async def get_watchlist():
                 added_at=item['added_at'],
                 notes=item['notes'],
                 latest_score=latest['composite_score'] if latest else None,
-                latest_recommendation=latest['recommendation'] if latest else None
+                latest_recommendation=latest['recommendation'] if latest else None,
+                entry_price=item.get('entry_price'),
+                quantity=item.get('quantity'),
             )
             enriched_watchlist.append(enriched_item)
 
@@ -1532,8 +1543,178 @@ async def remove_from_watchlist(symbol: str):
 
 
 # ============================================================================
+# Alerts Endpoints
+# ============================================================================
+
+@app.get("/alerts", tags=["Alerts"])
+async def get_alerts(
+    unread_only: bool = Query(False, description="Return only unread alerts"),
+    limit: int = Query(50, ge=1, le=200),
+):
+    """
+    Return recent alerts (stop-loss hits, score drops, etc.)
+    """
+    try:
+        alerts = historical_db.get_alerts(unread_only=unread_only, limit=limit)
+        unread_count = sum(1 for a in alerts if not a['is_read'])
+        return {
+            'alerts': alerts,
+            'total': len(alerts),
+            'unread_count': unread_count,
+            'timestamp': datetime.now().isoformat(),
+        }
+    except Exception as e:
+        logger.error(f"Failed to fetch alerts: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/alerts/{alert_id}/read", tags=["Alerts"])
+async def mark_alert_read(alert_id: int):
+    """Mark a single alert as read."""
+    try:
+        found = historical_db.mark_alert_read(alert_id)
+        if not found:
+            raise HTTPException(status_code=404, detail=f"Alert {alert_id} not found")
+        return {'success': True, 'alert_id': alert_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to mark alert read: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/alerts/read-all", tags=["Alerts"])
+async def mark_all_alerts_read():
+    """Mark all alerts as read."""
+    try:
+        count = historical_db.mark_all_alerts_read()
+        return {'success': True, 'marked_read': count}
+    except Exception as e:
+        logger.error(f"Failed to mark all alerts read: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
 # Comparison Endpoint
 # ============================================================================
+
+@app.get("/screener", tags=["Analysis"], dependencies=[Depends(verify_api_key)])
+@limiter.limit("20/minute")
+async def screener(
+    request: Request,
+    score_min: Optional[float] = Query(None, ge=0, le=100, description="Minimum composite score"),
+    score_max: Optional[float] = Query(None, ge=0, le=100, description="Maximum composite score"),
+    sector: Optional[str] = Query(None, description="Sector name filter"),
+    recommendation: Optional[str] = Query(None, description="Recommendation filter (e.g. BUY, STRONG BUY)"),
+    rsi_min: Optional[float] = Query(None, ge=0, le=100, description="Minimum RSI"),
+    rsi_max: Optional[float] = Query(None, ge=0, le=100, description="Maximum RSI"),
+    trend: Optional[str] = Query(None, description="Trend filter (bullish/bearish/neutral)"),
+    fundamentals_min: Optional[float] = Query(None, ge=0, le=100),
+    momentum_min: Optional[float] = Query(None, ge=0, le=100),
+    quality_min: Optional[float] = Query(None, ge=0, le=100),
+    sentiment_min: Optional[float] = Query(None, ge=0, le=100),
+    institutional_min: Optional[float] = Query(None, ge=0, le=100),
+    limit: int = Query(default=50, ge=1, le=200, description="Max results to return"),
+    sort_by: str = Query(default='score', description="Sort by: score, confidence, symbol"),
+):
+    """
+    Server-side stock screener with multi-dimensional filtering.
+
+    Fetches NIFTY 50 universe, scores all stocks, then applies filters.
+    Results are sorted and limited for performance.
+    """
+    try:
+        cache_key = get_cache_key("screener", f"{score_min}:{score_max}:{sector}:{recommendation}:{rsi_min}:{rsi_max}:{trend}:{fundamentals_min}:{momentum_min}:{quality_min}:{sentiment_min}:{institutional_min}:{limit}:{sort_by}")
+        cached = get_from_cache(cache_key)
+        if cached:
+            return {**cached, 'cached': True}
+
+        # Score full NIFTY 50 universe
+        from data.stock_universe import get_universe
+        universe = get_universe()
+        all_symbols = universe.get_stock_list()
+
+        results = await run_in_thread(stock_scorer.score_stocks_batch, all_symbols)
+
+        # Apply filters
+        filtered = []
+        for r in results:
+            if r.get('error'):
+                continue
+
+            score = r.get('composite_score', 0)
+            if score_min is not None and score < score_min:
+                continue
+            if score_max is not None and score > score_max:
+                continue
+
+            if recommendation and r.get('recommendation') != recommendation:
+                continue
+
+            if sector:
+                r_sector = r.get('sector') or (r.get('agent_scores', {}).get('fundamentals', {}) or {}).get('metrics', {}).get('sector')
+                if not r_sector or sector.lower() not in r_sector.lower():
+                    continue
+
+            agent_scores = r.get('agent_scores', {})
+
+            if rsi_min is not None or rsi_max is not None:
+                rsi = (agent_scores.get('momentum') or {}).get('metrics', {}).get('rsi')
+                if rsi is None:
+                    continue
+                if rsi_min is not None and rsi < rsi_min:
+                    continue
+                if rsi_max is not None and rsi > rsi_max:
+                    continue
+
+            if trend:
+                r_trend = (agent_scores.get('momentum') or {}).get('metrics', {}).get('trend', '')
+                if trend.lower() not in r_trend.lower():
+                    continue
+
+            if fundamentals_min is not None and (agent_scores.get('fundamentals') or {}).get('score', 0) < fundamentals_min:
+                continue
+            if momentum_min is not None and (agent_scores.get('momentum') or {}).get('score', 0) < momentum_min:
+                continue
+            if quality_min is not None and (agent_scores.get('quality') or {}).get('score', 0) < quality_min:
+                continue
+            if sentiment_min is not None and (agent_scores.get('sentiment') or {}).get('score', 0) < sentiment_min:
+                continue
+            if institutional_min is not None and (agent_scores.get('institutional_flow') or {}).get('score', 0) < institutional_min:
+                continue
+
+            filtered.append(r)
+
+        # Sort
+        if sort_by == 'confidence':
+            filtered.sort(key=lambda x: x.get('composite_confidence', 0), reverse=True)
+        elif sort_by == 'symbol':
+            filtered.sort(key=lambda x: x.get('symbol', ''))
+        else:
+            filtered.sort(key=lambda x: x.get('composite_score', 0), reverse=True)
+
+        filtered = filtered[:limit]
+
+        response_data = {
+            'total_matched': len(filtered),
+            'total_universe': len(all_symbols),
+            'results': [format_agent_scores(r.get('agent_scores', {})) and r or r for r in filtered],
+            'filters_applied': {k: v for k, v in {
+                'score_min': score_min, 'score_max': score_max,
+                'sector': sector, 'recommendation': recommendation,
+                'rsi_min': rsi_min, 'rsi_max': rsi_max, 'trend': trend,
+            }.items() if v is not None},
+            'timestamp': datetime.now().isoformat(),
+            'cached': False,
+        }
+
+        save_to_cache(cache_key, response_data)
+        return response_data
+
+    except Exception as e:
+        logger.error(f"Screener failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Screener failed: {str(e)}")
+
 
 @app.post("/compare", response_model=ComparisonResponse, tags=["Analysis"],
           dependencies=[Depends(verify_api_key)])
@@ -1549,7 +1730,7 @@ async def compare_stocks(request: CompareRequest):
         # Analyze each stock
         for symbol in request.symbols:
             # Try to get from cache first
-            cache_key = get_cache_key('analyze', symbol)
+            cache_key = get_cache_key('analyze', f"{symbol}:False")
             cached = get_from_cache(cache_key)
 
             if cached:
@@ -1957,7 +2138,7 @@ async def run_backtest(backtest_request: BacktestRequest, background_tasks: Back
                 'avg_alpha_3m': summary.avg_alpha_3m,
                 'sharpe_ratio_3m': summary.sharpe_ratio_3m,
                 'total_return': summary.avg_return_3m,
-                'annualized_return': summary.avg_return_3m * 4  # Approximate annualized
+                'annualized_return': ((1 + summary.avg_return_3m / 100) ** 4 - 1) * 100  # Compound annualized from 3m
             },
             'config': config.to_dict(),
             'duration_seconds': round(duration_seconds, 2),
@@ -2114,11 +2295,14 @@ async def list_backtest_runs(
     Returns summary information for each run (without individual signals)
     """
     try:
-        runs = backtest_db.list_backtest_runs(limit=limit)
+        # For created_at sort, DB handles ordering + pagination natively
+        if sort_by == 'created_at':
+            runs = backtest_db.list_backtest_runs(limit=limit, offset=offset)
+            total = len(runs) + offset  # approximate; full count not stored
+        else:
+            # Fetch all for in-memory metric sort, then paginate
+            all_runs = backtest_db.list_backtest_runs(limit=10000, offset=0)
 
-        # Sort runs based on parameters
-        if sort_by != 'created_at':
-            # Sort by summary metrics
             def get_sort_key(run):
                 summary = run.get('summary', {})
                 if sort_by == 'hit_rate_3m':
@@ -2129,11 +2313,9 @@ async def list_backtest_runs(
                     return summary.get('sharpe_ratio_3m', 0)
                 return 0
 
-            runs.sort(key=get_sort_key, reverse=(order == 'desc'))
-
-        # Apply pagination
-        total = len(runs)
-        runs = runs[offset:offset + limit]
+            all_runs.sort(key=get_sort_key, reverse=(order == 'desc'))
+            total = len(all_runs)
+            runs = all_runs[offset:offset + limit]
 
         return {
             'runs': runs,
@@ -2463,12 +2645,13 @@ async def general_exception_handler(request, exc):
 
 
 # ============================================================================
-# Startup/Shutdown Events
+# Startup/Shutdown Lifespan
 # ============================================================================
 
-@app.on_event("startup")
-async def startup_event():
-    """Startup tasks"""
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Manage application startup and shutdown."""
+    # Startup
     logger.info("="*60)
     logger.info("AI Hedge Fund FastAPI Backend Starting...")
     logger.info("="*60)
@@ -2485,32 +2668,33 @@ async def startup_event():
         logger.info(f"Data Collector: {'Running' if collector_status['is_running'] else 'Disabled'}")
         if collector_status['is_running']:
             logger.info(f"Collection Interval: {collector_status['collection_interval_hours']}h")
+        else:
+            logger.warning("Data collector is disabled — historical DB will not be populated automatically")
     except Exception as e:
-        logger.warning(f"Data collector failed to start: {e}")
+        logger.error(f"Data collector failed to start: {e} — sector analysis and history endpoints will return empty data", exc_info=True)
 
     logger.info("="*60)
 
+    yield
 
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Shutdown tasks"""
+    # Shutdown
     logger.info("FastAPI backend shutting down...")
-
-    # Stop data collector
     try:
         stop_collector()
         logger.info("Data collector stopped")
     except Exception as e:
         logger.warning(f"Error stopping data collector: {e}")
 
-    # Cleanup tasks if needed
+
+# Wire lifespan after all services are defined (avoids NameError at module load)
+app.router.lifespan_context = lifespan
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    # Get port from environment or default to 8000
-    port = int(os.getenv('API_PORT', 8000))
+    # Get port from environment or default to 8010
+    port = int(os.getenv('API_PORT', 8010))
 
     logger.info(f"Starting FastAPI server on port {port}")
 

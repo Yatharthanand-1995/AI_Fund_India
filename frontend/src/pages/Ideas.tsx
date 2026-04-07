@@ -60,6 +60,8 @@ export default function Ideas() {
     urlFilters.recommendationFilter || 'All'
   );
   const [showFilters, setShowFilters] = useState(false);
+  const [page, setPage] = useState(1);
+  const PAGE_SIZE = 10;
 
   // Persist all filter changes to URL
   const persistFilters = (overrides: Partial<IdeasFilters> = {}) => {
@@ -78,7 +80,8 @@ export default function Ideas() {
   }, []);
 
   const loadIdeas = async (forceRefresh = false) => {
-    const cacheKey = `50:false`;
+    const fetchCount = Math.max(topCount, 50); // fetch at least 50 so filters have enough data
+    const cacheKey = `${fetchCount}:false`;
 
     if (!forceRefresh) {
       const cachedData = getCachedTopPicks(cacheKey);
@@ -94,7 +97,7 @@ export default function Ideas() {
     setCacheAge(null);
 
     try {
-      const result = await api.getTopPicks(50, false);
+      const result = await api.getTopPicks(fetchCount, false);
       const dataWithTimestamp = {
         ...result,
         cachedTimestamp: Date.now(),
@@ -123,7 +126,8 @@ export default function Ideas() {
     if (!data?.top_picks) return ['All'];
     const uniqueSectors = new Set<string>();
     data.top_picks.forEach(pick => {
-      const sector = pick.agent_scores?.fundamentals?.metrics?.sector ||
+      const sector = pick.sector ||
+                     pick.agent_scores?.fundamentals?.metrics?.sector ||
                      pick.agent_scores?.quality?.metrics?.sector;
       if (sector) uniqueSectors.add(sector);
     });
@@ -149,7 +153,8 @@ export default function Ideas() {
     // Apply sector filter
     if (sectorFilter !== 'All') {
       filtered = filtered.filter(pick => {
-        const sector = pick.agent_scores?.fundamentals?.metrics?.sector ||
+        const sector = pick.sector ||
+                       pick.agent_scores?.fundamentals?.metrics?.sector ||
                        pick.agent_scores?.quality?.metrics?.sector;
         return sector === sectorFilter;
       });
@@ -178,6 +183,9 @@ export default function Ideas() {
     return filtered.slice(0, topCount);
   }, [data, sectorFilter, recommendationFilter, sortBy, topCount]);
 
+  // Reset to page 1 whenever filters change
+  useEffect(() => { setPage(1); }, [sectorFilter, recommendationFilter, sortBy, topCount]);
+
   // Recommendation distribution — based on filtered + limited picks so chart matches what's shown
   const recommendationDistribution = useMemo(() => {
     if (!filteredPicks.length) return [];
@@ -199,9 +207,23 @@ export default function Ideas() {
 
     const headers = [
       'Symbol',
+      'Company Name',
+      'Sector',
       'Composite Score',
       'Recommendation',
       'Confidence',
+      'Current Price',
+      'Day Change %',
+      'Stop Loss',
+      'Entry',
+      'Target',
+      'Risk/Reward',
+      '52W High',
+      '52W Low',
+      'RSI',
+      'Trend',
+      'PE Ratio',
+      'Analyst Upside %',
       'Fundamentals',
       'Momentum',
       'Quality',
@@ -209,17 +231,37 @@ export default function Ideas() {
       'Institutional'
     ];
 
-    const rows = filteredPicks.map(pick => [
-      pick.symbol,
-      pick.composite_score.toFixed(2),
-      pick.recommendation,
-      pick.confidence.toFixed(2),
-      pick.agent_scores?.fundamentals?.score?.toFixed(2) || 'N/A',
-      pick.agent_scores?.momentum?.score?.toFixed(2) || 'N/A',
-      pick.agent_scores?.quality?.score?.toFixed(2) || 'N/A',
-      pick.agent_scores?.sentiment?.score?.toFixed(2) || 'N/A',
-      pick.agent_scores?.institutional_flow?.score?.toFixed(2) || 'N/A'
-    ]);
+    const rows = filteredPicks.map(pick => {
+      const momentum = pick.agent_scores?.momentum?.metrics as any;
+      const fundamentals = pick.agent_scores?.fundamentals?.metrics as any;
+      const sentiment = pick.agent_scores?.sentiment?.metrics as any;
+      const tl = pick.trading_levels as any;
+      return [
+        pick.symbol,
+        pick.company_name || 'N/A',
+        pick.sector || fundamentals?.sector || 'N/A',
+        pick.composite_score.toFixed(2),
+        pick.recommendation,
+        (pick.confidence * 100).toFixed(1) + '%',
+        pick.current_price?.toFixed(2) || 'N/A',
+        pick.price_change_percent?.toFixed(2) || 'N/A',
+        tl?.stop_loss?.toFixed(2) || 'N/A',
+        pick.current_price?.toFixed(2) || 'N/A',
+        tl?.target?.toFixed(2) || 'N/A',
+        tl?.risk_reward_ratio?.toFixed(2) || 'N/A',
+        pick.week_52_high?.toFixed(2) || 'N/A',
+        pick.week_52_low?.toFixed(2) || 'N/A',
+        momentum?.rsi?.toFixed(1) || 'N/A',
+        momentum?.trend || 'N/A',
+        fundamentals?.pe_ratio?.toFixed(1) || 'N/A',
+        sentiment?.analyst_upside_pct?.toFixed(1) || 'N/A',
+        pick.agent_scores?.fundamentals?.score?.toFixed(2) || 'N/A',
+        pick.agent_scores?.momentum?.score?.toFixed(2) || 'N/A',
+        pick.agent_scores?.quality?.score?.toFixed(2) || 'N/A',
+        pick.agent_scores?.sentiment?.score?.toFixed(2) || 'N/A',
+        pick.agent_scores?.institutional_flow?.score?.toFixed(2) || 'N/A'
+      ];
+    });
 
     const csvContent = [
       headers.join(','),
@@ -502,13 +544,35 @@ export default function Ideas() {
         <>
           {viewMode === 'cards' && (
             <div className="max-w-6xl mx-auto space-y-6">
-              {filteredPicks.map((pick, idx) => (
+              {filteredPicks.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE).map((pick, idx) => (
                 <InvestmentIdeaCard
                   key={pick.symbol}
                   analysis={pick}
-                  rank={idx + 1}
+                  rank={(page - 1) * PAGE_SIZE + idx + 1}
                 />
               ))}
+              {/* Pagination */}
+              {filteredPicks.length > PAGE_SIZE && (
+                <div className="flex justify-center items-center gap-3 pt-4">
+                  <button
+                    onClick={() => setPage(p => Math.max(1, p - 1))}
+                    disabled={page === 1}
+                    className="px-4 py-2 text-sm border border-gray-300 rounded-lg disabled:opacity-40 hover:bg-gray-50"
+                  >
+                    Previous
+                  </button>
+                  <span className="text-sm text-gray-600">
+                    Page {page} of {Math.ceil(filteredPicks.length / PAGE_SIZE)}
+                  </span>
+                  <button
+                    onClick={() => setPage(p => Math.min(Math.ceil(filteredPicks.length / PAGE_SIZE), p + 1))}
+                    disabled={page >= Math.ceil(filteredPicks.length / PAGE_SIZE)}
+                    className="px-4 py-2 text-sm border border-gray-300 rounded-lg disabled:opacity-40 hover:bg-gray-50"
+                  >
+                    Next
+                  </button>
+                </div>
+              )}
             </div>
           )}
 

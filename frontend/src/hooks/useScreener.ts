@@ -4,7 +4,7 @@
  * Manages screener state, filtering logic, and data fetching
  */
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import api from '@/lib/api';
 import type { StockAnalysis } from '@/types';
 import type { ScreenerFilters } from '@/pages/Screener';
@@ -35,6 +35,13 @@ export function useScreener(_initialFilters: ScreenerFilters = {}) {
     }
   }, []);
 
+  // Apply initial filters once stocks are loaded
+  useEffect(() => {
+    if (allStocks.length > 0 && Object.keys(_initialFilters).length > 0) {
+      applyFilters(_initialFilters);
+    }
+  }, [allStocks]);
+
   // Apply filters to stocks
   const applyFilters = useCallback((filters: ScreenerFilters) => {
     if (allStocks.length === 0) {
@@ -60,7 +67,9 @@ export function useScreener(_initialFilters: ScreenerFilters = {}) {
     // Sector filter
     if (filters.sectors && filters.sectors.length > 0) {
       filtered = filtered.filter(s => {
-        const sector = s.agent_scores.quality?.metrics?.sector;
+        const sector = s.sector ||
+                       s.agent_scores.fundamentals?.metrics?.sector ||
+                       s.agent_scores.quality?.metrics?.sector;
         return sector && filters.sectors!.includes(sector);
       });
     }
@@ -69,13 +78,13 @@ export function useScreener(_initialFilters: ScreenerFilters = {}) {
     if (filters.marketCapMin !== undefined) {
       filtered = filtered.filter(s => {
         const marketCap = s.agent_scores.quality?.metrics?.market_cap;
-        return marketCap && marketCap >= filters.marketCapMin! * 1e9; // Convert crores to actual value
+        return marketCap && marketCap >= filters.marketCapMin! * 1e7; // Convert crores to rupees (1 crore = 1e7)
       });
     }
     if (filters.marketCapMax !== undefined) {
       filtered = filtered.filter(s => {
         const marketCap = s.agent_scores.quality?.metrics?.market_cap;
-        return marketCap && marketCap <= filters.marketCapMax! * 1e9;
+        return marketCap && marketCap <= filters.marketCapMax! * 1e7;
       });
     }
 

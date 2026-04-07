@@ -39,6 +39,7 @@ export default function StockDetails() {
   const { isInWatchlist, add: addToWatchlist, remove: removeFromWatchlist } = useWatchlist();
 
   const [analysis, setAnalysis] = useState<StockAnalysis | null>(null);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabType>('overview');
   const [comparisonSymbols, setComparisonSymbols] = useState<string[]>([]);
   const [comparisonData, setComparisonData] = useState<any>(null);
@@ -59,6 +60,7 @@ export default function StockDetails() {
 
   const loadAnalysis = async (sym: string) => {
     setLoading('analyze', true);
+    setAnalysisError(null);
 
     try {
       const result = await api.analyzeStock({
@@ -68,11 +70,7 @@ export default function StockDetails() {
 
       setAnalysis(result);
     } catch (error: any) {
-      addToast({
-        type: 'error',
-        message: error.message || 'Failed to load stock analysis',
-      });
-      navigate('/');
+      setAnalysisError(error.message || 'Failed to load stock analysis');
     } finally {
       setLoading('analyze', false);
     }
@@ -119,6 +117,28 @@ export default function StockDetails() {
     return (
       <div className="py-20">
         <Loading size="lg" text={`Analyzing ${symbol}...`} />
+      </div>
+    );
+  }
+
+  if (analysisError) {
+    return (
+      <div className="py-20 text-center">
+        <p className="text-red-600 font-medium mb-4">{analysisError}</p>
+        <div className="flex gap-3 justify-center">
+          <button
+            onClick={() => symbol && loadAnalysis(symbol)}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+          >
+            Retry
+          </button>
+          <button
+            onClick={() => navigate('/')}
+            className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
+          >
+            Go Home
+          </button>
+        </div>
       </div>
     );
   }
