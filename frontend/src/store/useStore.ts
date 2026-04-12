@@ -58,7 +58,7 @@ interface AppState {
   setStockUniverse: (universe: StockUniverseResponse | null) => void;
 
   // Analysis cache
-  analysisCache: Map<string, StockAnalysis>;
+  analysisCache: Record<string, StockAnalysis>;
   cacheAnalysis: (symbol: string, analysis: StockAnalysis) => void;
   getCachedAnalysis: (symbol: string) => StockAnalysis | undefined;
   clearCache: () => void;
@@ -98,13 +98,13 @@ interface AppState {
   setWatchlist: (items: WatchlistItem[]) => void;
 
   // Historical data cache (with TTL)
-  historicalCache: Map<string, { data: HistoricalData; timestamp: number }>;
+  historicalCache: Record<string, { data: HistoricalData; timestamp: number }>;
   cacheHistoricalData: (symbol: string, data: HistoricalData) => void;
   getHistoricalData: (symbol: string, maxAge?: number) => HistoricalData | undefined;
   clearHistoricalCache: () => void;
 
   // Top picks cache (with TTL)
-  topPicksCache: Map<string, { data: TopPicksResponse; timestamp: number }>;
+  topPicksCache: Record<string, { data: TopPicksResponse; timestamp: number }>;
   cacheTopPicks: (key: string, data: TopPicksResponse) => void;
   getCachedTopPicks: (key: string, maxAge?: number) => TopPicksResponse | undefined;
   clearTopPicksCache: () => void;
@@ -139,16 +139,16 @@ export const useStore = create<AppState>()(
   setStockUniverse: (universe) => set({ stockUniverse: universe }),
 
   // Analysis cache
-  analysisCache: new Map(),
+  analysisCache: {},
   cacheAnalysis: (symbol, analysis) => {
-    const cache = new Map(get().analysisCache);
-    cache.set(symbol.toUpperCase(), analysis);
-    set({ analysisCache: cache });
+    set((state) => ({
+      analysisCache: { ...state.analysisCache, [symbol.toUpperCase()]: analysis },
+    }));
   },
   getCachedAnalysis: (symbol) => {
-    return get().analysisCache.get(symbol.toUpperCase());
+    return get().analysisCache[symbol.toUpperCase()];
   },
-  clearCache: () => set({ analysisCache: new Map() }),
+  clearCache: () => set({ analysisCache: {} }),
 
   // Loading states
   loading: {
@@ -241,69 +241,73 @@ export const useStore = create<AppState>()(
   // Historical Data Cache (with TTL)
   // ========================================================================
 
-  historicalCache: new Map(),
+  historicalCache: {},
 
   cacheHistoricalData: (symbol, data) => {
-    const cache = new Map(get().historicalCache);
-    cache.set(symbol.toUpperCase(), {
-      data,
-      timestamp: Date.now(),
-    });
-    set({ historicalCache: cache });
+    const key = symbol.toUpperCase();
+    set((state) => ({
+      historicalCache: {
+        ...state.historicalCache,
+        [key]: { data, timestamp: Date.now() },
+      },
+    }));
   },
 
   getHistoricalData: (symbol, maxAge = 900000) => {
     // Default maxAge: 15 minutes (900000ms)
-    const cached = get().historicalCache.get(symbol.toUpperCase());
+    const key = symbol.toUpperCase();
+    const cached = get().historicalCache[key];
     if (!cached) return undefined;
 
     const age = Date.now() - cached.timestamp;
     if (age > maxAge) {
       // Cache expired, remove it
-      const cache = new Map(get().historicalCache);
-      cache.delete(symbol.toUpperCase());
-      set({ historicalCache: cache });
+      set((state) => {
+        const { [key]: _removed, ...rest } = state.historicalCache;
+        return { historicalCache: rest };
+      });
       return undefined;
     }
 
     return cached.data;
   },
 
-  clearHistoricalCache: () => set({ historicalCache: new Map() }),
+  clearHistoricalCache: () => set({ historicalCache: {} }),
 
   // ========================================================================
   // Top Picks Cache (with TTL)
   // ========================================================================
 
-  topPicksCache: new Map(),
+  topPicksCache: {},
 
-  cacheTopPicks: (key, data) => {
-    const cache = new Map(get().topPicksCache);
-    cache.set(key, {
-      data,
-      timestamp: Date.now(),
-    });
-    set({ topPicksCache: cache });
+  cacheTopPicks: (cacheKey, data) => {
+    set((state) => ({
+      topPicksCache: {
+        ...state.topPicksCache,
+        [cacheKey]: { data, timestamp: Date.now() },
+      },
+    }));
   },
 
-  getCachedTopPicks: (key, maxAge = 900000) => {
+  getCachedTopPicks: (cacheKey, maxAge = 900000) => {
     // Default maxAge: 15 minutes (900000ms)
-    const cached = get().topPicksCache.get(key);
+    const cached = get().topPicksCache[cacheKey];
     if (!cached) return undefined;
 
     const age = Date.now() - cached.timestamp;
     if (age > maxAge) {
       // Cache expired, remove it
-      const cache = new Map(get().topPicksCache);
-      cache.delete(key);
-      set({ topPicksCache: cache });
+      set((state) => {
+        const { [cacheKey]: _removed, ...rest } = state.topPicksCache;
+        return { topPicksCache: rest };
+      });
       return undefined;
     }
 
     return cached.data;
   },
 
-  clearTopPicksCache: () => set({ topPicksCache: new Map() }),
+  clearTopPicksCache: () => set({ topPicksCache: {} }),
 
   // ========================================================================
   // Comparison State (2-4 stocks)
@@ -388,7 +392,7 @@ export const useStore = create<AppState>()(
     {
       name: 'indian-stock-fund-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 2, // Increment version for watchlist migration
+      version: 3, // v3: Maps converted to Records
       // Migration function to handle version upgrades
       migrate: (persistedState: any, version: number) => {
         if (version < 2) {

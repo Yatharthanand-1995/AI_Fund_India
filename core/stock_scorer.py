@@ -261,14 +261,15 @@ class StockScorer:
                         logger.info(f"  ✓ {agent_name.title()} Agent completed")
                     except Exception as e:
                         logger.error(f"  ✗ {agent_name.title()} Agent failed: {e}")
-                        # Return neutral result on failure
+                        # Mark as error — excluded from composite score calculation
                         agent_results[agent_name] = {
-                            'score': 50.0,
-                            'confidence': 0.1,
+                            'score': None,
+                            'confidence': 0.0,
                             'reasoning': f'Analysis failed: {str(e)}',
                             'metrics': {},
                             'breakdown': {},
                             'agent': f'{agent_name.title()}Agent',
+                            'status': 'error',
                             'error': str(e)
                         }
 
@@ -293,7 +294,7 @@ class StockScorer:
                 if _agent_multipliers:
                     for _agent_name, _result in agent_results.items():
                         _m = _agent_multipliers.get(_agent_name, 1.0)
-                        if _m != 1.0 and _result.get('status') != 'error' and 'score' in _result:
+                        if _m != 1.0 and _result.get('status') != 'error' and _result.get('score') is not None:
                             _result['score'] = round(min(100.0, max(0.0, _result['score'] * _m)), 2)
                     logger.info(f"  Applied agent-specific regime multipliers ({regime_trend})")
 
@@ -457,38 +458,46 @@ class StockScorer:
         Returns:
             (composite_score, composite_confidence)
         """
-        # Extract scores
-        fund_score = fundamentals_result.get('score', 50.0)
-        mom_score = momentum_result.get('score', 50.0)
-        qual_score = quality_result.get('score', 50.0)
-        sent_score = sentiment_result.get('score', 50.0)
-        flow_score = flow_result.get('score', 50.0)
+        # Map agent results to their weight keys
+        agent_map = {
+            'fundamentals': fundamentals_result,
+            'momentum': momentum_result,
+            'quality': quality_result,
+            'sentiment': sentiment_result,
+            'institutional_flow': flow_result,
+        }
 
-        # Extract confidence levels
-        fund_conf = fundamentals_result.get('confidence', 0.5)
-        mom_conf = momentum_result.get('confidence', 0.5)
-        qual_conf = quality_result.get('confidence', 0.5)
-        sent_conf = sentiment_result.get('confidence', 0.5)
-        flow_conf = flow_result.get('confidence', 0.5)
+        # Separate successful and failed agents
+        successful_agents = {
+            name: result for name, result in agent_map.items()
+            if result.get('status') != 'error' and result.get('score') is not None
+        }
+        error_count = len(agent_map) - len(successful_agents)
 
-        # Guard: count failed agents — penalize confidence when majority failed
-        agent_results_list = [fundamentals_result, momentum_result, quality_result, sentiment_result, flow_result]
-        error_count = sum(1 for r in agent_results_list if r.get('status') == 'error')
         if error_count > 0:
-            logger.warning(f"  {error_count}/5 agents failed — composite score reliability reduced")
+            logger.warning(f"  {error_count}/5 agents failed — excluding from composite, renormalizing weights")
 
-        # Calculate weighted composite score
-        composite_score = (
-            weights['fundamentals'] * fund_score +
-            weights['momentum'] * mom_score +
-            weights['quality'] * qual_score +
-            weights['sentiment'] * sent_score +
-            weights['institutional_flow'] * flow_score
+        if not successful_agents:
+            # All agents failed — return floor score with zero confidence
+            logger.error("  All 5 agents failed — cannot produce reliable score")
+            return 35.0, 0.0
+
+        # Renormalize weights to only include successful agents
+        raw_weight_sum = sum(weights[name] for name in successful_agents)
+        normalized_weights = {
+            name: weights[name] / raw_weight_sum for name in successful_agents
+        }
+
+        # Calculate weighted composite score from successful agents only
+        composite_score = sum(
+            normalized_weights[name] * result['score']
+            for name, result in successful_agents.items()
         )
 
-        # Calculate composite confidence using equal-weight mean
-        # (independent of score weights so low-weighted agents don't under-count data quality)
-        composite_confidence = (fund_conf + mom_conf + qual_conf + sent_conf + flow_conf) / 5.0
+        # Calculate composite confidence (equal-weight mean across successful agents only)
+        composite_confidence = sum(
+            result.get('confidence', 0.5) for result in successful_agents.values()
+        ) / len(successful_agents)
 
         # Penalize confidence proportionally when agents have failed
         if error_count >= 3:

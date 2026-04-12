@@ -16,6 +16,21 @@ import type {
   MarketRegime,
   HealthResponse,
   StockUniverseResponse,
+  StockHistoryResponse,
+  RegimeHistoryResponse,
+  SystemAnalyticsResponse,
+  SectorAnalysisResponse,
+  AgentAnalyticsResponse,
+  WatchlistResponse,
+  CollectorStatus,
+  AlertsResponse,
+  Alert,
+  BacktestResults,
+  BacktestRunResult,
+  BacktestRunsResponse,
+  BacktestAnalysis,
+  CompareStocksResponse,
+  BacktestConfig,
 } from '@/types';
 
 const BASE_URL = import.meta.env.VITE_API_URL || '/api';
@@ -43,6 +58,11 @@ class APIClient {
     this.client.interceptors.response.use(
       (response) => response,
       (error: AxiosError) => {
+        // Pass through AbortController / axios cancel errors unchanged so
+        // callers can detect them via err.name === 'CanceledError' or axios.isCancel()
+        if (axios.isCancel(error)) {
+          throw error;
+        }
         if (error.response) {
           // Server responded with error
           const message = (error.response.data as any)?.error || error.message;
@@ -111,8 +131,8 @@ class APIClient {
   /**
    * Get API root info
    */
-  async getRoot(): Promise<any> {
-    const response = await this.client.get('/');
+  async getRoot(): Promise<{ service: string; version: string; status: string }> {
+    const response = await this.client.get<{ service: string; version: string; status: string }>('/');
     return response.data;
   }
 
@@ -123,8 +143,8 @@ class APIClient {
   /**
    * Get historical analysis for a stock
    */
-  async getStockHistory(symbol: string, days: number = 30, includePrice: boolean = true): Promise<any> {
-    const response = await this.client.get(`/history/stock/${symbol}`, {
+  async getStockHistory(symbol: string, days: number = 30, includePrice: boolean = true): Promise<StockHistoryResponse> {
+    const response = await this.client.get<StockHistoryResponse>(`/history/stock/${symbol}`, {
       params: { days, include_price: includePrice }
     });
     return response.data;
@@ -133,8 +153,8 @@ class APIClient {
   /**
    * Get market regime history
    */
-  async getRegimeHistory(days: number = 30): Promise<any> {
-    const response = await this.client.get('/history/regime', {
+  async getRegimeHistory(days: number = 30): Promise<RegimeHistoryResponse> {
+    const response = await this.client.get<RegimeHistoryResponse>('/history/regime', {
       params: { days }
     });
     return response.data;
@@ -147,16 +167,16 @@ class APIClient {
   /**
    * Get system analytics and performance metrics
    */
-  async getSystemAnalytics(): Promise<any> {
-    const response = await this.client.get('/analytics/system');
+  async getSystemAnalytics(): Promise<SystemAnalyticsResponse> {
+    const response = await this.client.get<SystemAnalyticsResponse>('/analytics/system');
     return response.data;
   }
 
   /**
    * Get sector analysis
    */
-  async getSectorAnalysis(days: number = 7): Promise<any> {
-    const response = await this.client.get('/analytics/sectors', {
+  async getSectorAnalysis(days: number = 7): Promise<SectorAnalysisResponse> {
+    const response = await this.client.get<SectorAnalysisResponse>('/analytics/sectors', {
       params: { days }
     });
     return response.data;
@@ -165,8 +185,8 @@ class APIClient {
   /**
    * Get agent performance analytics
    */
-  async getAgentAnalytics(): Promise<any> {
-    const response = await this.client.get('/analytics/agents');
+  async getAgentAnalytics(): Promise<AgentAnalyticsResponse> {
+    const response = await this.client.get<AgentAnalyticsResponse>('/analytics/agents');
     return response.data;
   }
 
@@ -177,24 +197,24 @@ class APIClient {
   /**
    * Get user's watchlist
    */
-  async getWatchlist(): Promise<any> {
-    const response = await this.client.get('/watchlist');
+  async getWatchlist(): Promise<WatchlistResponse> {
+    const response = await this.client.get<WatchlistResponse>('/watchlist');
     return response.data;
   }
 
   /**
    * Add stock to watchlist
    */
-  async addToWatchlist(symbol: string, notes?: string): Promise<any> {
-    const response = await this.client.post('/watchlist', { symbol, notes });
+  async addToWatchlist(symbol: string, notes?: string): Promise<{ message: string; symbol: string }> {
+    const response = await this.client.post<{ message: string; symbol: string }>('/watchlist', { symbol, notes });
     return response.data;
   }
 
   /**
    * Remove stock from watchlist
    */
-  async removeFromWatchlist(symbol: string): Promise<any> {
-    const response = await this.client.delete(`/watchlist/${symbol}`);
+  async removeFromWatchlist(symbol: string): Promise<{ message: string }> {
+    const response = await this.client.delete<{ message: string }>(`/watchlist/${symbol}`);
     return response.data;
   }
 
@@ -205,8 +225,8 @@ class APIClient {
   /**
    * Compare multiple stocks side-by-side
    */
-  async compareStocks(symbols: string[], includeHistory: boolean = false): Promise<any> {
-    const response = await this.client.post('/compare', {
+  async compareStocks(symbols: string[], includeHistory: boolean = false): Promise<CompareStocksResponse> {
+    const response = await this.client.post<CompareStocksResponse>('/compare', {
       symbols,
       include_history: includeHistory
     });
@@ -220,8 +240,8 @@ class APIClient {
   /**
    * Export stock analysis data
    */
-  async exportAnalysis(symbol: string, format: 'json' | 'csv' = 'json'): Promise<any> {
-    const response = await this.client.get(`/export/analysis/${symbol}`, {
+  async exportAnalysis(symbol: string, format: 'json' | 'csv' = 'json'): Promise<StockAnalysis | Blob> {
+    const response = await this.client.get<StockAnalysis | Blob>(`/export/analysis/${symbol}`, {
       params: { format },
       responseType: format === 'csv' ? 'blob' : 'json'
     });
@@ -235,16 +255,16 @@ class APIClient {
   /**
    * Get data collector status
    */
-  async getCollectorStatus(): Promise<any> {
-    const response = await this.client.get('/collector/status');
+  async getCollectorStatus(): Promise<CollectorStatus> {
+    const response = await this.client.get<CollectorStatus>('/collector/status');
     return response.data;
   }
 
   /**
    * Trigger manual data collection
    */
-  async triggerCollection(): Promise<any> {
-    const response = await this.client.post('/collector/collect');
+  async triggerCollection(): Promise<{ message: string; status: string }> {
+    const response = await this.client.post<{ message: string; status: string }>('/collector/collect');
     return response.data;
   }
 
@@ -252,20 +272,20 @@ class APIClient {
   // Alerts Endpoints
   // ========================================================================
 
-  async getAlerts(unreadOnly = false, limit = 50): Promise<any> {
-    const response = await this.client.get('/alerts', {
+  async getAlerts(unreadOnly = false, limit = 50): Promise<AlertsResponse> {
+    const response = await this.client.get<AlertsResponse>('/alerts', {
       params: { unread_only: unreadOnly, limit },
     });
     return response.data;
   }
 
-  async markAlertRead(alertId: number): Promise<any> {
-    const response = await this.client.post(`/alerts/${alertId}/read`);
+  async markAlertRead(alertId: number): Promise<Alert> {
+    const response = await this.client.post<Alert>(`/alerts/${alertId}/read`);
     return response.data;
   }
 
-  async markAllAlertsRead(): Promise<any> {
-    const response = await this.client.post('/alerts/read-all');
+  async markAllAlertsRead(): Promise<{ message: string; updated_count: number }> {
+    const response = await this.client.post<{ message: string; updated_count: number }>('/alerts/read-all');
     return response.data;
   }
 
@@ -276,15 +296,8 @@ class APIClient {
   /**
    * Run a new backtest
    */
-  async runBacktest(config: {
-    name?: string;
-    symbols?: string[] | null;
-    start_date: string;
-    end_date: string;
-    frequency?: string;
-    include_narrative?: boolean;
-  }): Promise<any> {
-    const response = await this.client.post('/backtest/run', {
+  async runBacktest(config: BacktestConfig): Promise<BacktestRunResult> {
+    const response = await this.client.post<BacktestRunResult>('/backtest/run', {
       name: config.name,
       symbols: config.symbols,
       start_date: config.start_date,
@@ -298,8 +311,8 @@ class APIClient {
   /**
    * Re-run a previous backtest with saved configuration
    */
-  async rerunBacktest(runId: string, updateDates: boolean = true): Promise<any> {
-    const response = await this.client.post(`/backtest/rerun/${runId}`, null, {
+  async rerunBacktest(runId: string, updateDates: boolean = true): Promise<BacktestRunResult> {
+    const response = await this.client.post<BacktestRunResult>(`/backtest/rerun/${runId}`, null, {
       params: { update_dates: updateDates }
     });
     return response.data;
@@ -313,8 +326,8 @@ class APIClient {
     offset?: number;
     sort_by?: string;
     order?: string;
-  }): Promise<any> {
-    const response = await this.client.get('/backtest/runs', { params });
+  }): Promise<BacktestRunsResponse> {
+    const response = await this.client.get<BacktestRunsResponse>('/backtest/runs', { params });
     return response.data;
   }
 
@@ -325,8 +338,8 @@ class APIClient {
     runId: string,
     includeEquityCurve: boolean = true,
     includeSignals: boolean = true
-  ): Promise<any> {
-    const response = await this.client.get(`/backtest/results/${runId}`, {
+  ): Promise<BacktestResults> {
+    const response = await this.client.get<BacktestResults>(`/backtest/results/${runId}`, {
       params: {
         include_equity_curve: includeEquityCurve,
         include_signals: includeSignals
@@ -338,8 +351,8 @@ class APIClient {
   /**
    * Compare multiple backtest runs
    */
-  async compareBacktests(runIds: string[]): Promise<any> {
-    const response = await this.client.get('/backtest/comparison', {
+  async compareBacktests(runIds: string[]): Promise<BacktestResults[]> {
+    const response = await this.client.get<BacktestResults[]>('/backtest/comparison', {
       params: { run_ids: runIds.join(',') }
     });
     return response.data;
@@ -348,16 +361,16 @@ class APIClient {
   /**
    * Delete a backtest run
    */
-  async deleteBacktest(runId: string): Promise<any> {
-    const response = await this.client.delete(`/backtest/results/${runId}`);
+  async deleteBacktest(runId: string): Promise<{ message: string }> {
+    const response = await this.client.delete<{ message: string }>(`/backtest/results/${runId}`);
     return response.data;
   }
 
   /**
    * Get backtest analysis
    */
-  async getBacktestAnalysis(runId: string): Promise<any> {
-    const response = await this.client.get(`/backtest/analysis/${runId}`);
+  async getBacktestAnalysis(runId: string): Promise<BacktestAnalysis> {
+    const response = await this.client.get<BacktestAnalysis>(`/backtest/analysis/${runId}`);
     return response.data;
   }
 

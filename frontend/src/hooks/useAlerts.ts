@@ -1,15 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '../lib/api';
+import type { Alert } from '@/types';
 
-export interface Alert {
-  id: number;
-  symbol: string;
-  alert_type: string;
-  message: string;
-  severity: 'info' | 'warning' | 'critical';
-  triggered_at: string;
-  is_read: number; // 0 | 1 (SQLite boolean)
-}
+export type { Alert };
 
 export interface UseAlertsReturn {
   alerts: Alert[];

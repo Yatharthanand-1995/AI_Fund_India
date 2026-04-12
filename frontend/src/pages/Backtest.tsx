@@ -8,7 +8,7 @@ import Loading from '@/components/ui/Loading';
 import Card from '@/components/ui/Card';
 import api from '@/lib/api';
 import { useStore } from '@/store/useStore';
-import type { BacktestRun } from '@/types';
+import type { BacktestRun, BacktestConfig } from '@/types';
 
 type ViewMode = 'new' | 'history' | 'results';
 
@@ -72,7 +72,7 @@ export default function Backtest() {
     }
   };
 
-  const handleRunBacktest = async (config: any) => {
+  const handleRunBacktest = async (config: BacktestConfig) => {
     try {
       setIsRunning(true);
       startTimer();

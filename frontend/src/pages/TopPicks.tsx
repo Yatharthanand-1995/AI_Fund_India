@@ -330,9 +330,6 @@ export default function TopPicks() {
       {/* Recommendation Distribution Chart */}
       {!loading.topPicks && recommendationDistribution.length > 0 && (
         <div className="max-w-4xl mx-auto bg-white rounded-lg shadow p-6">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">
-            Recommendation Distribution
-          </h3>
           <RecommendationPie
             data={recommendationDistribution}
             height={300}

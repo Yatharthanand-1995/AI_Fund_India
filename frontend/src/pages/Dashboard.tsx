@@ -43,7 +43,9 @@ export default function Dashboard() {
       // Load system stats
       const statsData = await api.getSystemAnalytics();
       setSystemStats(statsData);
-    } catch (_err) {
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn('[Dashboard] loadDashboardData failed:', message);
       addToast({
         type: 'info',
         message: 'Some dashboard metrics could not be loaded. The page will still function.',

@@ -361,3 +361,151 @@ export interface BacktestAnalysis {
   };
   recommendations: string[];
 }
+
+// ============================================================================
+// API Response Types for previously-untyped endpoints
+// ============================================================================
+
+export interface HistoricalDataPoint {
+  timestamp: string;
+  composite_score: number;
+  recommendation: string;
+  confidence: number;
+  price?: number;
+}
+
+export interface StockHistoryResponse {
+  symbol: string;
+  history: HistoricalDataPoint[];
+  trend: {
+    direction: string;
+    slope: number;
+    strength: string;
+  } | null;
+  statistics: {
+    avg_score: number;
+    max_score: number;
+    min_score: number;
+    std_dev: number;
+  } | null;
+  timestamp: string;
+}
+
+export interface RegimeHistoryPoint {
+  timestamp: string;
+  regime: string;
+  trend: string;
+  volatility: string;
+}
+
+export interface RegimeHistoryResponse {
+  history: RegimeHistoryPoint[];
+  timestamp: string;
+}
+
+export interface SystemAnalyticsResponse {
+  total_analyses: number;
+  successful_analyses: number;
+  failed_analyses: number;
+  success_rate: number;
+  average_score: number;
+  recommendation_distribution: Record<string, number>;
+  data_providers: Record<string, number>;
+  timestamp: string;
+}
+
+export interface SectorAnalyticsEntry {
+  sector: string;
+  avg_score: number;
+  stock_count: number;
+  top_stock: string | null;
+  recommendation_distribution: Record<string, number>;
+}
+
+export interface SectorAnalysisResponse {
+  sectors: SectorAnalyticsEntry[];
+  period_days: number;
+  timestamp: string;
+}
+
+export interface AgentAnalyticsEntry {
+  agent: string;
+  avg_score: number;
+  avg_confidence: number;
+  error_rate: number;
+  total_analyses: number;
+}
+
+export interface AgentAnalyticsResponse {
+  agents: AgentAnalyticsEntry[];
+  timestamp: string;
+}
+
+export interface WatchlistEntry {
+  symbol: string;
+  notes?: string;
+  added_at: string;
+  latest_score?: number;
+  latest_recommendation?: string;
+}
+
+export interface WatchlistResponse {
+  watchlist: WatchlistEntry[];
+  count: number;
+}
+
+export interface CollectorStatus {
+  running: boolean;
+  last_collection?: string;
+  next_collection?: string;
+  stocks_tracked: number;
+  errors: number;
+}
+
+export interface Alert {
+  id: number;
+  symbol: string;
+  alert_type: string;
+  message: string;
+  severity: 'info' | 'warning' | 'critical';
+  is_read: number; // 0 | 1 (SQLite boolean)
+  triggered_at: string;
+  created_at?: string;
+}
+
+export interface AlertsResponse {
+  alerts: Alert[];
+  unread_count: number;
+  total: number;
+}
+
+export interface BacktestRunsResponse {
+  runs: BacktestRun[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface CompareStocksResponse {
+  comparisons: StockAnalysis[];
+  total_stocks: number;
+  timestamp: string;
+}
+
+/** Response from POST /backtest/run */
+export interface BacktestRunResult {
+  success: boolean;
+  run_id: string;
+  name: string;
+  total_signals: number;
+  summary: {
+    hit_rate_3m: number;
+    avg_alpha_3m: number;
+    sharpe_ratio_3m: number;
+    total_return: number;
+    annualized_return: number;
+  };
+  config: BacktestConfig;
+  duration_seconds: number;
+  timestamp: string;
+}
