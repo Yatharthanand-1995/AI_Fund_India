@@ -5,7 +5,7 @@
  * All requests go through /api proxy in development
  */
 
-import axios, { AxiosInstance, AxiosError } from 'axios';
+import axios, { AxiosInstance, AxiosError, InternalAxiosRequestConfig } from 'axios';
 import { logger } from './logger';
 import type {
   AnalyzeRequest,
@@ -36,6 +36,13 @@ import type {
 const BASE_URL = import.meta.env.VITE_API_URL || '/api';
 const API_KEY = import.meta.env.VITE_API_KEY || '';
 
+const MAX_RETRIES = 3;
+const RETRY_DELAY_MS = 800; // doubles each attempt: 800ms, 1.6s, 3.2s
+
+interface RetryConfig extends InternalAxiosRequestConfig {
+  _retryCount?: number;
+}
+
 class APIClient {
   private client: AxiosInstance;
 
@@ -54,24 +61,36 @@ class APIClient {
     });
     logger.log('[APIClient] Axios baseURL:', this.client.defaults.baseURL);
 
-    // Response interceptor for error handling
+    // Response interceptor: retry 5xx errors with exponential backoff, then surface readable messages
     this.client.interceptors.response.use(
       (response) => response,
-      (error: AxiosError) => {
-        // Pass through AbortController / axios cancel errors unchanged so
-        // callers can detect them via err.name === 'CanceledError' or axios.isCancel()
-        if (axios.isCancel(error)) {
-          throw error;
+      async (error: AxiosError) => {
+        // Pass through AbortController / axios cancel errors unchanged
+        if (axios.isCancel(error)) throw error;
+
+        const config = error.config as RetryConfig | undefined;
+        const status = error.response?.status;
+
+        // Retry on 5xx (server-side transient errors) or network failures (no response)
+        const isRetryable = !status || (status >= 500 && status < 600);
+        if (isRetryable && config) {
+          config._retryCount = (config._retryCount ?? 0) + 1;
+          if (config._retryCount <= MAX_RETRIES) {
+            const delay = RETRY_DELAY_MS * Math.pow(2, config._retryCount - 1);
+            logger.log(`[APIClient] Retrying request (attempt ${config._retryCount}/${MAX_RETRIES}) after ${delay}ms`);
+            await new Promise((resolve) => setTimeout(resolve, delay));
+            return this.client(config);
+          }
         }
+
         if (error.response) {
-          // Server responded with error
-          const message = (error.response.data as any)?.error || error.message;
+          // Server responded with error — FastAPI uses "detail", others use "error" or "message"
+          const data = error.response.data as Record<string, unknown>;
+          const message = (data?.detail as string) || (data?.error as string) || (data?.message as string) || error.message;
           throw new Error(message);
         } else if (error.request) {
-          // Request made but no response
           throw new Error('No response from server. Please check if the API is running.');
         } else {
-          // Something else happened
           throw new Error(error.message);
         }
       }

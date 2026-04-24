@@ -32,6 +32,14 @@ export default function Dashboard() {
   // Load initial data
   useEffect(() => {
     loadDashboardData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Clean up pending debounce on unmount
+  useEffect(() => {
+    return () => {
+      if (analyzeDebounceRef.current) clearTimeout(analyzeDebounceRef.current);
+    };
   }, []);
 
   const loadDashboardData = async () => {
@@ -105,7 +113,7 @@ export default function Dashboard() {
   const topSectors = getTopSectors(3);
 
   // Get historical data for analyzed stock
-  const { data: historicalData } = useStockHistory(
+  const { data: historicalData, loading: historyLoading } = useStockHistory(
     analysis?.symbol || '',
     { days: 180, enabled: !!analysis }
   );
@@ -396,7 +404,13 @@ export default function Dashboard() {
           </div>
 
           {/* Charts Row */}
-          {historicalData && historicalData.history.length > 0 && (
+          {historyLoading && (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <ChartSkeleton />
+              <ChartSkeleton />
+            </div>
+          )}
+          {!historyLoading && historicalData && historicalData.history.length > 0 && (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               {/* Price & Score Chart */}
               <div className="bg-white rounded-lg shadow p-6">

@@ -23,6 +23,7 @@ import { useWatchlist } from '@/hooks/useWatchlist';
 import { useStockHistory } from '@/hooks/useStockHistory';
 import api from '@/lib/api';
 import Loading from '@/components/ui/Loading';
+import { ChartSkeleton } from '@/components/ui/SkeletonLoader';
 import StockCard from '@/components/StockCard';
 import { StockPriceChart } from '@/components/charts/StockPriceChart';
 import { AgentScoresRadar } from '@/components/charts/AgentScoresRadar';
@@ -56,6 +57,7 @@ export default function StockDetails() {
     if (symbol) {
       loadAnalysis(symbol);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symbol]);
 
   const loadAnalysis = async (sym: string) => {
@@ -236,7 +238,10 @@ export default function StockDetails() {
           {activeTab === 'historical' && (
             <div className="space-y-6">
               {historyLoading ? (
-                <Loading text="Loading historical data..." />
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  <ChartSkeleton />
+                  <ChartSkeleton />
+                </div>
               ) : historicalData && historicalData.history.length > 0 ? (
                 <>
                   {/* Price & Score Chart */}

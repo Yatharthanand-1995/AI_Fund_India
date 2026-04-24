@@ -14,7 +14,7 @@ interface PortfolioScoreHistoryProps {
   watchlist: WatchlistItem[];
 }
 
-export default function PortfolioScoreHistory({}: PortfolioScoreHistoryProps) {
+export default function PortfolioScoreHistory(_props: PortfolioScoreHistoryProps) {
   // For now, we'll create a placeholder since we don't have historical data yet
   // In a real implementation, this would fetch historical score data from the API
 

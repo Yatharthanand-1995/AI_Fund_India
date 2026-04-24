@@ -100,6 +100,7 @@ export default function TopPicks() {
 
   useEffect(() => {
     loadTopPicks();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const loadTopPicks = async (forceRefresh = false) => {

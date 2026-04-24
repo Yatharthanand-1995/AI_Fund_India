@@ -26,6 +26,7 @@ export default function PortfolioAnalytics() {
     } else {
       setLoading(false);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [watchlist]);
 
   const loadAnalytics = async () => {

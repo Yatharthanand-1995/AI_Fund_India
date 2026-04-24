@@ -10,6 +10,7 @@ import type {
   ToastMessage,
   StockUniverseResponse,
   TopPicksResponse,
+  WatchlistItem,
 } from '@/types';
 import { generateId } from '@/lib/utils';
 
@@ -40,13 +41,6 @@ export interface TopPicksFilters {
   recommendation: string;
 }
 
-export interface WatchlistItem {
-  symbol: string;
-  added_at: number;
-  latest_score?: number;
-  latest_recommendation?: string;
-  latest_sector?: string;
-}
 
 interface AppState {
   // Market regime

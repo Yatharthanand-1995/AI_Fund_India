@@ -479,6 +479,15 @@ export interface AlertsResponse {
   total: number;
 }
 
+// Local watchlist item (stored in Zustand, added_at is ms timestamp)
+export interface WatchlistItem {
+  symbol: string;
+  added_at: number;
+  latest_score?: number;
+  latest_recommendation?: string;
+  latest_sector?: string;
+}
+
 export interface BacktestRunsResponse {
   runs: BacktestRun[];
   total: number;

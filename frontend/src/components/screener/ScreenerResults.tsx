@@ -50,11 +50,12 @@ export default function ScreenerResults({ stocks, viewMode }: ScreenerResultsPro
         aVal = a.composite_score;
         bVal = b.composite_score;
         break;
-      case 'recommendation':
+      case 'recommendation': {
         const recOrder = { 'STRONG BUY': 0, 'BUY': 1, 'HOLD': 2, 'SELL': 3, 'STRONG SELL': 4 };
         aVal = recOrder[a.recommendation as keyof typeof recOrder] ?? 5;
         bVal = recOrder[b.recommendation as keyof typeof recOrder] ?? 5;
         break;
+      }
       case 'sector':
         aVal = a.agent_scores.quality?.metrics?.sector || '';
         bVal = b.agent_scores.quality?.metrics?.sector || '';

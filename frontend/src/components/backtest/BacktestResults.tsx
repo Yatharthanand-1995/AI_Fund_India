@@ -24,6 +24,7 @@ export default function BacktestResults({ runId, onBack }: BacktestResultsProps)
 
   useEffect(() => {
     loadResults();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId]);
 
   const loadResults = async () => {
