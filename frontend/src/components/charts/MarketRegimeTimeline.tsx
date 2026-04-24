@@ -128,6 +128,16 @@ export const MarketRegimeTimeline: React.FC<MarketRegimeTimelineProps> = ({
       .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
   }, [data]);
 
+  // Count regime occurrences — must stay above early return to satisfy rules-of-hooks
+  const regimeCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    chartData.forEach(item => {
+      const regime = item.regime.split('_')[0]; // Get base regime (BULL, BEAR, SIDEWAYS)
+      counts[regime] = (counts[regime] || 0) + 1;
+    });
+    return counts;
+  }, [chartData]);
+
   if (!chartData.length) {
     return (
       <div className={`flex items-center justify-center ${className}`} style={{ height }}>
@@ -138,16 +148,6 @@ export const MarketRegimeTimeline: React.FC<MarketRegimeTimelineProps> = ({
 
   // Get current regime
   const currentRegime = chartData[chartData.length - 1];
-
-  // Count regime occurrences
-  const regimeCounts = useMemo(() => {
-    const counts: Record<string, number> = {};
-    chartData.forEach(item => {
-      const regime = item.regime.split('_')[0]; // Get base regime (BULL, BEAR, SIDEWAYS)
-      counts[regime] = (counts[regime] || 0) + 1;
-    });
-    return counts;
-  }, [chartData]);
 
   return (
     <div className={className}>

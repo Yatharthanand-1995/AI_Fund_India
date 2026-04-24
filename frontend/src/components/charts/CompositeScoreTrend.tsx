@@ -150,15 +150,7 @@ export const CompositeScoreTrend: React.FC<CompositeScoreTrendProps> = ({
     };
   }, [data]);
 
-  if (!chartData.length) {
-    return (
-      <div className={`flex items-center justify-center ${className}`} style={{ height }}>
-        <p className="text-gray-500">No score data available</p>
-      </div>
-    );
-  }
-
-  // Calculate statistics
+  // Calculate statistics — must stay above any early return to satisfy rules-of-hooks
   const stats = useMemo(() => {
     const scores = chartData.map(d => d.score);
     const current = scores[scores.length - 1];
@@ -176,6 +168,14 @@ export const CompositeScoreTrend: React.FC<CompositeScoreTrendProps> = ({
       avg: scores.reduce((a, b) => a + b, 0) / scores.length
     };
   }, [chartData]);
+
+  if (!chartData.length) {
+    return (
+      <div className={`flex items-center justify-center ${className}`} style={{ height }}>
+        <p className="text-gray-500">No score data available</p>
+      </div>
+    );
+  }
 
   // Get trend icon and color
   const getTrendDisplay = () => {

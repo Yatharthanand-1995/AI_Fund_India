@@ -96,6 +96,7 @@ export default function Screener() {
 
   useEffect(() => {
     refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Auto-apply filters when they change (after stocks are loaded)
@@ -103,6 +104,7 @@ export default function Screener() {
     if (totalCount > 0) {
       applyFilters(filters);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filters]);
 
   const handleApplyFilters = (newFilters: ScreenerFilters) => {

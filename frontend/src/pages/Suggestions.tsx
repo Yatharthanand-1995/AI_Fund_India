@@ -45,6 +45,7 @@ export default function Suggestions() {
 
   useEffect(() => {
     loadSuggestions();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [watchlist]);
 
   const loadSuggestions = async () => {

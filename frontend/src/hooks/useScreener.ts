@@ -40,7 +40,8 @@ export function useScreener(_initialFilters: ScreenerFilters = {}) {
     if (allStocks.length > 0 && Object.keys(_initialFilters).length > 0) {
       applyFilters(_initialFilters);
     }
-  }, [allStocks]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allStocks]); // _initialFilters is stable (passed once); applyFilters is memoized
 
   // Apply filters to stocks
   const applyFilters = useCallback((filters: ScreenerFilters) => {

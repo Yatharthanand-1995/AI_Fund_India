@@ -122,7 +122,7 @@ export const AgentScoresBar: React.FC<AgentScoresBarProps> = ({
       institutional_flow: 'Institutional'
     };
 
-    let data = Object.entries(agentScores).map(([key, scoreData]) => ({
+    const data = Object.entries(agentScores).map(([key, scoreData]) => ({
       agent: agentNames[key] || key,
       agentKey: key,
       score: scoreData?.score ?? 0,

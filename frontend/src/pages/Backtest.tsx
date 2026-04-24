@@ -37,11 +37,17 @@ export default function Backtest() {
     }
   }, [searchParams]);
 
+  // Clean up interval timer on unmount
+  useEffect(() => {
+    return () => stopTimer();
+  }, []);
+
   // Load backtest runs when switching to history view
   useEffect(() => {
     if (viewMode === 'history') {
       loadBacktestRuns();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewMode]);
 
   const loadBacktestRuns = async () => {
