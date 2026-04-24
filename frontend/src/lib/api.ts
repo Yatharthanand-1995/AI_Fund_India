@@ -71,8 +71,9 @@ class APIClient {
         const config = error.config as RetryConfig | undefined;
         const status = error.response?.status;
 
-        // Retry on 5xx (server-side transient errors) or network failures (no response)
-        const isRetryable = !status || (status >= 500 && status < 600);
+        // Retry ONLY on 5xx (server running but temporarily failing).
+        // Do NOT retry on network/connection errors — backend is down, fail fast.
+        const isRetryable = status !== undefined && status >= 500 && status < 600;
         if (isRetryable && config) {
           config._retryCount = (config._retryCount ?? 0) + 1;
           if (config._retryCount <= MAX_RETRIES) {
