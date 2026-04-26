@@ -163,10 +163,10 @@ function StockCard({ analysis, detailed = false }: StockCardProps) {
                 <p className="text-xs text-gray-500">Trend</p>
                 <p className={cn(
                   'text-xs font-bold',
-                  trend === 'UPTREND' ? 'text-green-600' :
-                  trend === 'DOWNTREND' ? 'text-red-600' : 'text-yellow-600'
+                  (trend === 'uptrend' || trend === 'strong_uptrend') ? 'text-green-600' :
+                  (trend === 'downtrend' || trend === 'strong_downtrend') ? 'text-red-600' : 'text-yellow-600'
                 )}>
-                  {trend === 'UPTREND' ? '↑ UP' : trend === 'DOWNTREND' ? '↓ DOWN' : '→ FLAT'}
+                  {(trend === 'uptrend' || trend === 'strong_uptrend') ? '↑ UP' : (trend === 'downtrend' || trend === 'strong_downtrend') ? '↓ DOWN' : '→ FLAT'}
                 </p>
               </div>
             )}

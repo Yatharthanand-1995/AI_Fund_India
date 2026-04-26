@@ -203,7 +203,7 @@ class HistoricalDataCollector:
     def _collect_market_regime(self):
         """Collect and store current market regime"""
         try:
-            regime_data = self.market_regime_service.get_market_regime()
+            regime_data = self.market_regime_service.get_current_regime()
 
             self.db.save_market_regime(
                 regime=regime_data['regime'],

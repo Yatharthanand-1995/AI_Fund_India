@@ -1,7 +1,10 @@
 /**
  * Stock Screener Hook
  *
- * Manages screener state, filtering logic, and data fetching
+ * Fetches from the backend /screener endpoint for server-side filtering,
+ * then applies any remaining client-side filters for fields the backend
+ * doesn't support (market cap, return ranges, volatility, analyst count,
+ * multi-value sector/recommendation/trend arrays).
  */
 
 import { useState, useCallback, useEffect } from 'react';
@@ -15,18 +18,37 @@ export function useScreener(_initialFilters: ScreenerFilters = {}) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Fetch all stocks
-  const refresh = useCallback(async () => {
+  // Fetch from backend /screener with server-side filters applied
+  const refresh = useCallback(async (filters: ScreenerFilters = {}) => {
     setLoading(true);
     setError(null);
 
     try {
-      // Fetch a large batch of stocks for screening (backend max is 50)
-      const response = await api.getTopPicks(50, false);
-      const stocks = response.top_picks || [];
+      // Map ScreenerFilters → backend query params.
+      // Backend accepts single-value strings for sector/recommendation/trend,
+      // so only pass them when there's exactly one value selected.
+      const params: Record<string, string | number> = { limit: 200 };
+
+      if (filters.scoreMin !== undefined) params.score_min = filters.scoreMin;
+      if (filters.scoreMax !== undefined) params.score_max = filters.scoreMax;
+      if (filters.sectors?.length === 1) params.sector = filters.sectors[0];
+      if (filters.recommendations?.length === 1) params.recommendation = filters.recommendations[0];
+      if (filters.rsiMin !== undefined) params.rsi_min = filters.rsiMin;
+      if (filters.rsiMax !== undefined) params.rsi_max = filters.rsiMax;
+      if (filters.trends?.length === 1) params.trend = filters.trends[0];
+      if (filters.fundamentalsMin !== undefined) params.fundamentals_min = filters.fundamentalsMin;
+      if (filters.momentumMin !== undefined) params.momentum_min = filters.momentumMin;
+      if (filters.qualityMin !== undefined) params.quality_min = filters.qualityMin;
+      if (filters.sentimentMin !== undefined) params.sentiment_min = filters.sentimentMin;
+      if (filters.institutionalFlowMin !== undefined) params.institutional_min = filters.institutionalFlowMin;
+
+      const response = await api.get('/screener', { params });
+      const stocks: StockAnalysis[] = (response as any).results || [];
 
       setAllStocks(stocks);
-      setFilteredStocks(stocks);
+
+      // Apply client-side filters for fields not handled server-side
+      setFilteredStocks(applyClientFilters(stocks, filters));
     } catch (err) {
       console.error('Failed to fetch stocks for screener:', err);
       setError(err instanceof Error ? err.message : 'Failed to load stocks');
@@ -35,173 +57,21 @@ export function useScreener(_initialFilters: ScreenerFilters = {}) {
     }
   }, []);
 
-  // Apply initial filters once stocks are loaded
+  // Apply initial filters once on mount
   useEffect(() => {
-    if (allStocks.length > 0 && Object.keys(_initialFilters).length > 0) {
-      applyFilters(_initialFilters);
+    if (Object.keys(_initialFilters).length > 0) {
+      refresh(_initialFilters);
+    } else {
+      refresh();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allStocks]); // _initialFilters is stable (passed once); applyFilters is memoized
+  }, []); // run once on mount
 
-  // Apply filters to stocks
+  // Re-filter client-side when filters change (without re-fetching)
   const applyFilters = useCallback((filters: ScreenerFilters) => {
-    if (allStocks.length === 0) {
-      setFilteredStocks([]);
-      return;
-    }
-
-    let filtered = [...allStocks];
-
-    // Score range filter
-    if (filters.scoreMin !== undefined) {
-      filtered = filtered.filter(s => s.composite_score >= filters.scoreMin!);
-    }
-    if (filters.scoreMax !== undefined) {
-      filtered = filtered.filter(s => s.composite_score <= filters.scoreMax!);
-    }
-
-    // Recommendation filter
-    if (filters.recommendations && filters.recommendations.length > 0) {
-      filtered = filtered.filter(s => filters.recommendations!.includes(s.recommendation));
-    }
-
-    // Sector filter
-    if (filters.sectors && filters.sectors.length > 0) {
-      filtered = filtered.filter(s => {
-        const sector = s.sector ||
-                       s.agent_scores.fundamentals?.metrics?.sector ||
-                       s.agent_scores.quality?.metrics?.sector;
-        return sector && filters.sectors!.includes(sector);
-      });
-    }
-
-    // Market cap filter
-    if (filters.marketCapMin !== undefined) {
-      filtered = filtered.filter(s => {
-        const marketCap = s.agent_scores.quality?.metrics?.market_cap;
-        return marketCap && marketCap >= filters.marketCapMin! * 1e7; // Convert crores to rupees (1 crore = 1e7)
-      });
-    }
-    if (filters.marketCapMax !== undefined) {
-      filtered = filtered.filter(s => {
-        const marketCap = s.agent_scores.quality?.metrics?.market_cap;
-        return marketCap && marketCap <= filters.marketCapMax! * 1e7;
-      });
-    }
-
-    // Returns filters
-    if (filters.return1mMin !== undefined) {
-      filtered = filtered.filter(s => {
-        const ret = s.agent_scores.momentum?.metrics?.['1m_return'];
-        return ret !== undefined && ret >= filters.return1mMin!;
-      });
-    }
-    if (filters.return1mMax !== undefined) {
-      filtered = filtered.filter(s => {
-        const ret = s.agent_scores.momentum?.metrics?.['1m_return'];
-        return ret !== undefined && ret <= filters.return1mMax!;
-      });
-    }
-    if (filters.return3mMin !== undefined) {
-      filtered = filtered.filter(s => {
-        const ret = s.agent_scores.momentum?.metrics?.['3m_return'];
-        return ret !== undefined && ret >= filters.return3mMin!;
-      });
-    }
-    if (filters.return3mMax !== undefined) {
-      filtered = filtered.filter(s => {
-        const ret = s.agent_scores.momentum?.metrics?.['3m_return'];
-        return ret !== undefined && ret <= filters.return3mMax!;
-      });
-    }
-    if (filters.return6mMin !== undefined) {
-      filtered = filtered.filter(s => {
-        const ret = s.agent_scores.momentum?.metrics?.['6m_return'];
-        return ret !== undefined && ret >= filters.return6mMin!;
-      });
-    }
-    if (filters.return6mMax !== undefined) {
-      filtered = filtered.filter(s => {
-        const ret = s.agent_scores.momentum?.metrics?.['6m_return'];
-        return ret !== undefined && ret <= filters.return6mMax!;
-      });
-    }
-    if (filters.return1yMin !== undefined) {
-      filtered = filtered.filter(s => {
-        const ret = s.agent_scores.momentum?.metrics?.['1y_return'];
-        return ret !== undefined && ret >= filters.return1yMin!;
-      });
-    }
-    if (filters.return1yMax !== undefined) {
-      filtered = filtered.filter(s => {
-        const ret = s.agent_scores.momentum?.metrics?.['1y_return'];
-        return ret !== undefined && ret <= filters.return1yMax!;
-      });
-    }
-
-    // RSI filter
-    if (filters.rsiMin !== undefined) {
-      filtered = filtered.filter(s => {
-        const rsi = s.agent_scores.momentum?.metrics?.rsi;
-        return rsi !== undefined && rsi >= filters.rsiMin!;
-      });
-    }
-    if (filters.rsiMax !== undefined) {
-      filtered = filtered.filter(s => {
-        const rsi = s.agent_scores.momentum?.metrics?.rsi;
-        return rsi !== undefined && rsi <= filters.rsiMax!;
-      });
-    }
-
-    // Trend filter
-    if (filters.trends && filters.trends.length > 0) {
-      filtered = filtered.filter(s => {
-        const trend = s.agent_scores.momentum?.metrics?.trend;
-        return trend && filters.trends!.includes(trend);
-      });
-    }
-
-    // Volatility filter
-    if (filters.volatilityMin !== undefined) {
-      filtered = filtered.filter(s => {
-        const vol = s.agent_scores.quality?.metrics?.volatility;
-        return vol !== undefined && vol >= filters.volatilityMin!;
-      });
-    }
-    if (filters.volatilityMax !== undefined) {
-      filtered = filtered.filter(s => {
-        const vol = s.agent_scores.quality?.metrics?.volatility;
-        return vol !== undefined && vol <= filters.volatilityMax!;
-      });
-    }
-
-    // Agent score filters
-    if (filters.fundamentalsMin !== undefined) {
-      filtered = filtered.filter(s => (s.agent_scores.fundamentals?.score ?? 0) >= filters.fundamentalsMin!);
-    }
-    if (filters.momentumMin !== undefined) {
-      filtered = filtered.filter(s => (s.agent_scores.momentum?.score ?? 0) >= filters.momentumMin!);
-    }
-    if (filters.qualityMin !== undefined) {
-      filtered = filtered.filter(s => (s.agent_scores.quality?.score ?? 0) >= filters.qualityMin!);
-    }
-    if (filters.sentimentMin !== undefined) {
-      filtered = filtered.filter(s => (s.agent_scores.sentiment?.score ?? 0) >= filters.sentimentMin!);
-    }
-    if (filters.institutionalFlowMin !== undefined) {
-      filtered = filtered.filter(s => (s.agent_scores.institutional_flow?.score ?? 0) >= filters.institutionalFlowMin!);
-    }
-
-    // Analyst coverage filter
-    if (filters.analystCountMin !== undefined) {
-      filtered = filtered.filter(s => {
-        const count = s.agent_scores.sentiment?.metrics?.number_of_analyst_opinions;
-        return count !== undefined && count >= filters.analystCountMin!;
-      });
-    }
-
-    setFilteredStocks(filtered);
-  }, [allStocks]);
+    // Re-fetch with new server-side params — this also re-applies client filters
+    refresh(filters);
+  }, [refresh]);
 
   return {
     stocks: filteredStocks,
@@ -210,6 +80,84 @@ export function useScreener(_initialFilters: ScreenerFilters = {}) {
     filteredCount: filteredStocks.length,
     totalCount: allStocks.length,
     applyFilters,
-    refresh,
+    refresh: () => refresh(),
   };
+}
+
+function applyClientFilters(stocks: StockAnalysis[], filters: ScreenerFilters): StockAnalysis[] {
+  let result = stocks;
+
+  // Multi-value arrays (when >1 value selected, backend skipped these)
+  if (filters.sectors && filters.sectors.length > 1) {
+    result = result.filter(s => {
+      const sector = s.sector ||
+                     s.agent_scores.fundamentals?.metrics?.sector ||
+                     s.agent_scores.quality?.metrics?.sector;
+      return sector && filters.sectors!.includes(sector);
+    });
+  }
+  if (filters.recommendations && filters.recommendations.length > 1) {
+    result = result.filter(s => filters.recommendations!.includes(s.recommendation));
+  }
+  if (filters.trends && filters.trends.length > 1) {
+    result = result.filter(s => {
+      const trend = s.agent_scores.momentum?.metrics?.trend;
+      return trend && filters.trends!.includes(trend);
+    });
+  }
+
+  // Market cap (in crores → rupees)
+  if (filters.marketCapMin !== undefined) {
+    result = result.filter(s => {
+      const mc = s.agent_scores.quality?.metrics?.market_cap;
+      return mc && mc >= filters.marketCapMin! * 1e7;
+    });
+  }
+  if (filters.marketCapMax !== undefined) {
+    result = result.filter(s => {
+      const mc = s.agent_scores.quality?.metrics?.market_cap;
+      return mc && mc <= filters.marketCapMax! * 1e7;
+    });
+  }
+
+  // Return filters
+  const returnFilters: Array<[keyof ScreenerFilters, string, 'min' | 'max']> = [
+    ['return1mMin', '1m_return', 'min'], ['return1mMax', '1m_return', 'max'],
+    ['return3mMin', '3m_return', 'min'], ['return3mMax', '3m_return', 'max'],
+    ['return6mMin', '6m_return', 'min'], ['return6mMax', '6m_return', 'max'],
+    ['return1yMin', '1y_return', 'min'], ['return1yMax', '1y_return', 'max'],
+  ];
+  for (const [filterKey, metricKey, dir] of returnFilters) {
+    const val = filters[filterKey] as number | undefined;
+    if (val !== undefined) {
+      result = result.filter(s => {
+        const ret = (s.agent_scores.momentum?.metrics as any)?.[metricKey];
+        return ret !== undefined && (dir === 'min' ? ret >= val : ret <= val);
+      });
+    }
+  }
+
+  // Volatility
+  if (filters.volatilityMin !== undefined) {
+    result = result.filter(s => {
+      const vol = s.agent_scores.quality?.metrics?.volatility;
+      return vol !== undefined && vol >= filters.volatilityMin!;
+    });
+  }
+  if (filters.volatilityMax !== undefined) {
+    result = result.filter(s => {
+      const vol = s.agent_scores.quality?.metrics?.volatility;
+      return vol !== undefined && vol <= filters.volatilityMax!;
+    });
+  }
+
+  // Analyst coverage
+  if (filters.analystCountMin !== undefined) {
+    result = result.filter(s => {
+      const count = s.agent_scores.sentiment?.metrics?.number_of_analyst_opinions;
+      return count !== undefined && count >= filters.analystCountMin!;
+    });
+  }
+
+  return result;
 }

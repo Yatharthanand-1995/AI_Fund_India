@@ -26,7 +26,7 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks, Query, Request, Dep
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 import pandas as pd
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -178,7 +178,8 @@ class AnalyzeRequest(BaseModel):
     symbol: str = Field(..., description="Stock symbol (e.g., TCS, RELIANCE)")
     include_narrative: bool = Field(default=True, description="Include LLM-generated narrative")
 
-    @validator('symbol')
+    @field_validator('symbol')
+    @classmethod
     def validate_symbol(cls, v):
         """Validate symbol format with security checks"""
 
@@ -217,11 +218,12 @@ class AnalyzeRequest(BaseModel):
 
 class BatchAnalyzeRequest(BaseModel):
     """Request model for batch stock analysis"""
-    symbols: List[str] = Field(..., description="List of stock symbols", min_items=1, max_items=50)
+    symbols: List[str] = Field(..., description="List of stock symbols", min_length=1, max_length=50)
     include_narrative: bool = Field(default=False, description="Include narratives (slower)")
     sort_by: str = Field(default="score", description="Sort by: score, confidence, symbol")
 
-    @validator('symbols')
+    @field_validator('symbols')
+    @classmethod
     def validate_symbols(cls, v):
         """Validate symbols list"""
         if not v:
@@ -230,7 +232,8 @@ class BatchAnalyzeRequest(BaseModel):
             raise ValueError("Maximum 50 symbols allowed per batch")
         return [s.strip().upper() for s in v]
 
-    @validator('sort_by')
+    @field_validator('sort_by')
+    @classmethod
     def validate_sort_by(cls, v):
         """Validate sort_by field"""
         allowed = ['score', 'confidence', 'symbol']
@@ -440,11 +443,10 @@ class AddToWatchlistRequest(BaseModel):
     entry_price: Optional[float] = Field(None, description="Purchase price for P&L tracking")
     quantity: Optional[float] = Field(None, description="Number of shares for P&L tracking")
 
-    @validator('symbol')
+    @field_validator('symbol')
+    @classmethod
     def validate_symbol(cls, v):
         """Validate symbol format with security checks (same as AnalyzeRequest)"""
-        import re
-
         if not v or not isinstance(v, str):
             raise ValueError("Symbol must be a non-empty string")
 
@@ -471,10 +473,11 @@ class AddToWatchlistRequest(BaseModel):
 
 class CompareRequest(BaseModel):
     """Request model for stock comparison"""
-    symbols: List[str] = Field(..., min_items=2, max_items=4)
+    symbols: List[str] = Field(..., min_length=2, max_length=4)
     include_history: bool = Field(default=False)
 
-    @validator('symbols')
+    @field_validator('symbols')
+    @classmethod
     def validate_symbols(cls, v):
         """Validate symbols list with security checks"""
 
@@ -1698,7 +1701,7 @@ async def screener(
         response_data = {
             'total_matched': len(filtered),
             'total_universe': len(all_symbols),
-            'results': [format_agent_scores(r.get('agent_scores', {})) and r or r for r in filtered],
+            'results': filtered,
             'filters_applied': {k: v for k, v in {
                 'score_min': score_min, 'score_max': score_max,
                 'sector': sector, 'recommendation': recommendation,
@@ -2268,7 +2271,7 @@ async def rerun_backtest(run_id: str, update_dates: bool = Query(default=True), 
                 'avg_alpha_3m': summary.avg_alpha_3m,
                 'sharpe_ratio_3m': summary.sharpe_ratio_3m,
                 'total_return': summary.avg_return_3m,
-                'annualized_return': summary.avg_return_3m * 4
+                'annualized_return': ((1 + summary.avg_return_3m / 100) ** 4 - 1) * 100
             },
             'config': config.to_dict(),
             'duration_seconds': round(duration_seconds, 2),
@@ -2684,6 +2687,13 @@ async def lifespan(_app: FastAPI):
         logger.info("Data collector stopped")
     except Exception as e:
         logger.warning(f"Error stopping data collector: {e}")
+
+    try:
+        if hasattr(data_provider, 'shutdown'):
+            data_provider.shutdown()
+            logger.info("Data provider thread pool shut down")
+    except Exception as e:
+        logger.warning(f"Error shutting down data provider: {e}")
 
 
 # Wire lifespan after all services are defined (avoids NameError at module load)

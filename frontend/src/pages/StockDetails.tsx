@@ -501,7 +501,7 @@ export default function StockDetails() {
                           <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                             Metric
                           </th>
-                          {comparisonData.stocks?.map((stock: any) => (
+                          {comparisonData.comparisons?.map((stock: any) => (
                             <th key={stock.symbol} className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
                               {stock.symbol}
                             </th>
@@ -513,7 +513,7 @@ export default function StockDetails() {
                           <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
                             Composite Score
                           </td>
-                          {comparisonData.stocks?.map((stock: any) => (
+                          {comparisonData.comparisons?.map((stock: any) => (
                             <td key={stock.symbol} className="px-6 py-4 whitespace-nowrap text-center text-sm font-bold text-gray-900">
                               {stock.composite_score?.toFixed(1) || 'N/A'}
                             </td>
@@ -523,7 +523,7 @@ export default function StockDetails() {
                           <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
                             Recommendation
                           </td>
-                          {comparisonData.stocks?.map((stock: any) => (
+                          {comparisonData.comparisons?.map((stock: any) => (
                             <td key={stock.symbol} className="px-6 py-4 whitespace-nowrap text-center">
                               <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
                                 {stock.recommendation || 'N/A'}
@@ -535,7 +535,7 @@ export default function StockDetails() {
                           <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
                             Confidence
                           </td>
-                          {comparisonData.stocks?.map((stock: any) => (
+                          {comparisonData.comparisons?.map((stock: any) => (
                             <td key={stock.symbol} className="px-6 py-4 whitespace-nowrap text-center text-sm text-gray-900">
                               {stock.confidence?.toFixed(1) || 'N/A'}%
                             </td>
@@ -547,7 +547,7 @@ export default function StockDetails() {
                             <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 capitalize">
                               {agent.replace('_', ' ')}
                             </td>
-                            {comparisonData.stocks?.map((stock: any) => (
+                            {comparisonData.comparisons?.map((stock: any) => (
                               <td key={stock.symbol} className="px-6 py-4 whitespace-nowrap text-center text-sm text-gray-900">
                                 {stock.agent_scores?.[agent]?.score?.toFixed(1) || 'N/A'}
                               </td>

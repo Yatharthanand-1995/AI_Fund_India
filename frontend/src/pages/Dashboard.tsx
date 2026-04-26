@@ -9,6 +9,7 @@ import StockCard from '@/components/StockCard';
 import MarketRegimeCard from '@/components/MarketRegimeCard';
 import { StockPriceChart } from '@/components/charts/StockPriceChart';
 import { AgentScoresRadar } from '@/components/charts/AgentScoresRadar';
+import ChartErrorBoundary from '@/components/charts/ChartErrorBoundary';
 import { MarketRegimeTimeline } from '@/components/charts/MarketRegimeTimeline';
 import { useWatchlist } from '@/hooks/useWatchlist';
 import { useStockHistory } from '@/hooks/useStockHistory';
@@ -414,21 +415,25 @@ export default function Dashboard() {
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               {/* Price & Score Chart */}
               <div className="bg-white rounded-lg shadow p-6">
-                <StockPriceChart
-                  symbol={analysis.symbol}
-                  data={historicalData.history}
-                  height={300}
-                  defaultTimeRange="6M"
-                />
+                <ChartErrorBoundary>
+                  <StockPriceChart
+                    symbol={analysis.symbol}
+                    data={historicalData.history}
+                    height={300}
+                    defaultTimeRange="6M"
+                  />
+                </ChartErrorBoundary>
               </div>
 
               {/* Agent Scores Radar */}
               <div className="bg-white rounded-lg shadow p-6">
-                <AgentScoresRadar
-                  agentScores={analysis.agent_scores}
-                  height={300}
-                  showHistorical={false}
-                />
+                <ChartErrorBoundary>
+                  <AgentScoresRadar
+                    agentScores={analysis.agent_scores}
+                    height={300}
+                    showHistorical={false}
+                  />
+                </ChartErrorBoundary>
               </div>
             </div>
           )}

@@ -88,7 +88,7 @@ export default function Ideas() {
       const cachedData = getCachedTopPicks(cacheKey);
       if (cachedData) {
         setData(cachedData);
-        const age = Date.now() - (cachedData as any).cachedTimestamp || 0;
+        const age = Date.now() - ((cachedData as any).cachedTimestamp || 0);
         setCacheAge(age);
         return;
       }
@@ -248,7 +248,7 @@ export default function Ideas() {
         pick.price_change_percent?.toFixed(2) || 'N/A',
         tl?.stop_loss?.toFixed(2) || 'N/A',
         pick.current_price?.toFixed(2) || 'N/A',
-        tl?.target?.toFixed(2) || 'N/A',
+        tl?.target_price?.toFixed(2) || 'N/A',
         tl?.risk_reward_ratio?.toFixed(2) || 'N/A',
         pick.week_52_high?.toFixed(2) || 'N/A',
         pick.week_52_low?.toFixed(2) || 'N/A',

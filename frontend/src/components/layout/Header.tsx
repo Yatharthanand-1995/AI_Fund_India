@@ -19,11 +19,13 @@ import {
 import { useStore } from '@/store/useStore';
 import { cn } from '@/lib/utils';
 import { useAlerts } from '@/hooks/useAlerts';
+import { useWatchlist } from '@/hooks/useWatchlist';
 
 export default function Header() {
   const location = useLocation();
   const marketRegime = useStore((state) => state.marketRegime);
-  const watchlistCount = useStore((state) => state.watchlist.length);
+  const { watchlist } = useWatchlist();
+  const watchlistCount = watchlist.length;
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [alertsOpen, setAlertsOpen] = useState(false);
   const alertPanelRef = useRef<HTMLDivElement>(null);

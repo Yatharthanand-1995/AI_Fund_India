@@ -295,7 +295,7 @@ class StockScorer:
                     for _agent_name, _result in agent_results.items():
                         _m = _agent_multipliers.get(_agent_name, 1.0)
                         if _m != 1.0 and _result.get('status') != 'error' and _result.get('score') is not None:
-                            _result['score'] = round(min(100.0, max(0.0, _result['score'] * _m)), 2)
+                            _result['regime_adjusted_score'] = round(min(100.0, max(0.0, _result['score'] * _m)), 2)
                     logger.info(f"  Applied agent-specific regime multipliers ({regime_trend})")
 
             # Extract results (maintain backward compatibility)
@@ -489,8 +489,10 @@ class StockScorer:
         }
 
         # Calculate weighted composite score from successful agents only
+        # Use regime_adjusted_score when present (set by regime multiplier path),
+        # keeping result['score'] intact so breakdown values remain consistent.
         composite_score = sum(
-            normalized_weights[name] * result['score']
+            normalized_weights[name] * result.get('regime_adjusted_score', result['score'])
             for name, result in successful_agents.items()
         )
 
