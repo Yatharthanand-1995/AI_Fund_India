@@ -172,7 +172,31 @@ def fetch_prices(symbols: List[str], years: int = 2) -> Dict[str, pd.Series]:
 # Part 1: Cross-sectional IC (current scores vs historical returns)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_cross_sectional_ic(symbols: List[str], prices: Dict[str, pd.Series]) -> pd.DataFrame:
+def detect_and_print_regime() -> str:
+    """Detect current market regime and print it. Returns regime string."""
+    from core.market_regime_service import MarketRegimeService
+    from data.hybrid_provider import HybridDataProvider
+    svc = MarketRegimeService()
+    try:
+        provider = HybridDataProvider()
+        regime_info = svc.get_current_regime(data_provider=provider)
+        regime  = regime_info['regime']
+        trend   = regime_info['trend']
+        vol     = regime_info['volatility']
+        weights = regime_info['weights']
+        print(f"\n  Current Market Regime: {regime}  (trend={trend}, vol={vol})")
+        print(f"  Adaptive weights: F={weights['fundamentals']:.0%}  "
+              f"M={weights['momentum']:.0%}  "
+              f"Q={weights['quality']:.0%}  "
+              f"S={weights['sentiment']:.0%}  "
+              f"I={weights['institutional_flow']:.0%}")
+        return regime
+    except Exception as e:
+        print(f"\n  Regime detection failed ({e}) — using SIDEWAYS_NORMAL")
+        return 'SIDEWAYS_NORMAL'
+
+
+def run_cross_sectional_ic(symbols: List[str], prices: Dict[str, pd.Series], adaptive: bool = True) -> pd.DataFrame:
     """
     Score all stocks today with the full composite scorer, then correlate
     each agent score and the composite with historical 1M/3M/6M returns.
@@ -180,11 +204,12 @@ def run_cross_sectional_ic(symbols: List[str], prices: Dict[str, pd.Series]) -> 
     from core.stock_scorer import StockScorer
 
     print("\n" + "="*60)
-    print("PART 1 — Cross-sectional IC (current scores vs past returns)")
+    mode = "adaptive weights" if adaptive else "static weights"
+    print(f"PART 1 — Cross-sectional IC (current scores vs past returns, {mode})")
     print("="*60)
     print(f"Scoring {len(symbols)} stocks …")
 
-    scorer = StockScorer()
+    scorer = StockScorer(use_adaptive_weights=adaptive)
     results = scorer.score_stocks_batch(symbols)
 
     rows = []
@@ -445,9 +470,10 @@ def _print_interpretation(df: pd.DataFrame) -> None:
 
 def main():
     parser = argparse.ArgumentParser(description='IC Validation for AI Hedge Fund scoring system')
-    parser.add_argument('--stocks',  type=int, default=30,  help='Number of NIFTY50 stocks to use (default: 30)')
-    parser.add_argument('--months',  type=int, default=6,   help='Rolling IC periods in months (default: 6)')
-    parser.add_argument('--no-batch',action='store_true',   help='Skip cross-sectional batch scoring (faster)')
+    parser.add_argument('--stocks',      type=int, default=50, help='Number of NIFTY50 stocks (default: 50)')
+    parser.add_argument('--months',      type=int, default=6,  help='Rolling IC periods in months (default: 6)')
+    parser.add_argument('--no-batch',    action='store_true',  help='Skip cross-sectional batch scoring')
+    parser.add_argument('--static-only', action='store_true',  help='Only run static weights (no adaptive comparison)')
     args = parser.parse_args()
 
     symbols = NIFTY50[:args.stocks]
@@ -459,21 +485,46 @@ def main():
     print("="*60)
     print("""
   IC = Spearman rank correlation between factor score and forward return
-  Good IC: 0.02-0.05 | Strong IC: >0.05 | ICIR > 0.4 = consistent signal
-  Reference: NSE Momentum 30 IC ≈ 0.03-0.06; MSCI Quality IC ≈ 0.02-0.04
+  Good IC: 0.02–0.05 | Strong IC: >0.05 | ICIR > 0.4 = consistent signal
+  Reference: NSE Momentum 30 IC ≈ 0.03–0.06; MSCI Quality IC ≈ 0.02–0.04
 """)
 
-    # Fetch all price data once (shared between parts)
+    # Detect and print current market regime
+    detect_and_print_regime()
+
+    # Fetch all price data once (shared between all parts)
     prices = fetch_prices(symbols, years=2)
+    available_symbols = list(prices.keys())
 
     if not args.no_batch:
-        df = run_cross_sectional_ic(list(prices.keys()), prices)
-        run_agent_ic_summary(df)
-        _print_interpretation(df)
-    else:
-        df = None
+        # Run with adaptive weights (IC-calibrated)
+        df_adaptive = run_cross_sectional_ic(available_symbols, prices, adaptive=True)
+        run_agent_ic_summary(df_adaptive)
+        _print_interpretation(df_adaptive)
 
-    run_rolling_ic(list(prices.keys()), prices, n_months=args.months)
+        if not args.static_only:
+            # Compare: re-run with static weights to show the improvement
+            print("\n" + "="*60)
+            print("COMPARISON — Static weights vs Adaptive weights (composite IC only)")
+            print("="*60)
+            df_static = run_cross_sectional_ic(available_symbols, prices, adaptive=False)
+            for window, col in [('1M', 'ret_1m'), ('3M', 'ret_3m'), ('6M', 'ret_6m')]:
+                ic_a = spearman_ic(
+                    df_adaptive['composite'].values.astype(float),
+                    df_adaptive[col].values.astype(float)
+                )
+                ic_s = spearman_ic(
+                    df_static['composite'].values.astype(float),
+                    df_static[col].values.astype(float)
+                )
+                delta = (ic_a or 0) - (ic_s or 0)
+                sign_a = '+' if (ic_a or 0) > 0 else ''
+                sign_s = '+' if (ic_s or 0) > 0 else ''
+                sign_d = '+' if delta > 0 else ''
+                print(f"  IC({window}):  adaptive={sign_a}{ic_a:.4f}  static={sign_s}{ic_s:.4f}  "
+                      f"delta={sign_d}{delta:.4f} {'✓' if delta > 0 else '✗'}")
+
+    run_rolling_ic(available_symbols, prices, n_months=args.months)
 
     print("\n" + "="*60)
     print("  VALIDATION COMPLETE")
