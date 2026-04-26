@@ -1,14 +1,17 @@
 """
-Quality Agent - Business Quality & Stability Analysis (18% weight)
+Quality Agent - Business Quality Analysis (18% weight)
 
-Analyzes:
-- Volatility (lower = better quality)
-- Price Stability & Consistency
-- Long-term Trend (1-year performance)
-- Maximum Drawdown
-- Sector Quality Indicators
+Scoring methodology aligned with NSE Quality 30 Index:
+  - Return on Equity (ROE): 40 pts — primary quality signal
+  - Debt/Equity leverage:   35 pts — balance sheet health
+  - Earnings stability:     25 pts — EPS growth variability (σ)
 
-Scoring: 0-100 with confidence level
+No base-50 fallback. Stocks without fundamental data return score=None
+and are excluded from the composite (weights renormalize to other agents).
+
+Price metrics (volatility, drawdown) are still computed and exposed in
+the metrics dict for screener filters and display, but do NOT contribute
+to the quality score — those are momentum/risk signals, not quality signals.
 """
 
 import pandas as pd
@@ -26,119 +29,65 @@ logger = logging.getLogger(__name__)
 
 class QualityAgent:
     """
-    Quality Agent for Indian stock market
+    Quality Agent for Indian stock market — NSE Quality 30 methodology.
 
-    Focuses on business quality and stability rather than growth or momentum.
-    High-quality companies typically have:
-    - Lower volatility (stable)
-    - Positive long-term trends
-    - Manageable drawdowns
-    - Consistent performance
-
-    Scoring breakdown (0-100):
-    - Volatility: 35 points (lower is better)
-    - Long-term Trend: 30 points (1-year performance)
-    - Drawdown: 25 points (smaller drawdowns = better)
-    - Consistency: 10 points
-
-    Base score: 50 (neutral)
+    Scoring breakdown (0–100, additive, no base offset):
+      ROE score:       0–40 pts  (returnOnEquity from yfinance, 0-1 scale)
+      Leverage score:  0–35 pts  (debtToEquity from yfinance, full ratio)
+      Stability score: 0–25 pts  (σ of EPS growth or profit margin)
     """
 
-    # Quality thresholds
-    THRESHOLDS = {
-        # Volatility (annualized %)
-        'volatility_excellent': 20,  # Very stable
-        'volatility_good': 30,
-        'volatility_fair': 40,
-        'volatility_poor': 50,
-
-        # 1-year return (%)
-        'return_excellent': 20,
-        'return_good': 10,
-        'return_fair': 0,
-
-        # Maximum drawdown (%)
-        'drawdown_excellent': -10,  # Small drawdown
-        'drawdown_good': -20,
-        'drawdown_fair': -30,
-        'drawdown_poor': -50,
-    }
-
     def __init__(self, sector_mapping: Optional[Dict] = None):
-        """
-        Initialize Quality Agent
-
-        Args:
-            sector_mapping: Dict mapping symbols to sectors for sector-based adjustments
-        """
         self.agent_name = "QualityAgent"
-        self.weight = 0.18  # 18% of total score
+        self.weight = 0.18
         self.sector_mapping = sector_mapping or {}
 
-    def analyze(self, symbol: str, price_data: pd.DataFrame, cached_data: Optional[Dict] = None, market_regime: Optional[str] = None) -> Dict:
+    def analyze(
+        self,
+        symbol: str,
+        price_data: pd.DataFrame,
+        cached_data: Optional[Dict] = None,
+        market_regime: Optional[str] = None
+    ) -> Dict:
         """
-        Analyze business quality and stability
+        Analyze business quality using fundamental metrics.
 
-        Args:
-            symbol: Stock symbol
-            price_data: Historical OHLCV DataFrame
-            cached_data: Pre-fetched comprehensive data (optional)
-
-        Returns:
-            {
-                'score': float (0-100),
-                'confidence': float (0-1),
-                'reasoning': str,
-                'metrics': {
-                    'volatility': float,
-                    '1y_return': float,
-                    'max_drawdown': float,
-                    'stability_score': float,
-                    ...
-                },
-                'breakdown': {
-                    'volatility_score': float,
-                    'trend_score': float,
-                    'drawdown_score': float,
-                    'consistency_score': float
-                }
-            }
+        Returns score=None with status='no_data' when fundamental data is absent,
+        causing the composite to renormalize weights rather than pull toward 50.
         """
         logger.info(f"Analyzing quality for {symbol}")
 
         try:
-            # Validate DataFrame schema
             validate_price_dataframe_schema(price_data, symbol)
 
-            # Calculate metrics
-            metrics = self._extract_metrics(symbol, price_data, cached_data)
+            info = (cached_data or {}).get('info', {})
+            metrics = self._extract_metrics(symbol, price_data, cached_data, info)
 
-            # Start with neutral base score of 50
-            base_score = 50
+            # Require at least one fundamental signal to produce a score
+            has_quality_data = any(
+                metrics.get(f) is not None
+                for f in ('roe', 'debt_to_equity_raw', 'eps_variability', 'profit_margin_stability')
+            )
+            if not has_quality_data:
+                logger.info(f"No fundamental quality data for {symbol} — excluding from composite")
+                return {
+                    'score': None,
+                    'confidence': 0.0,
+                    'status': 'no_data',
+                    'reasoning': 'No fundamental quality data available',
+                    'metrics': metrics,
+                    'breakdown': {},
+                    'agent': self.agent_name
+                }
 
-            # Calculate component scores (can add or subtract from base)
-            volatility_adjustment = self._score_volatility(metrics)
-            trend_adjustment = self._score_long_term_trend(metrics)
-            drawdown_adjustment = self._score_drawdown(metrics)
-            consistency_adjustment = self._score_consistency(metrics)
+            roe_score = self._score_roe(metrics)
+            leverage_score = self._score_leverage(metrics)
+            stability_score = self._score_earnings_stability(metrics)
 
-            # Calculate total score
-            total_score = base_score + volatility_adjustment + trend_adjustment + \
-                         drawdown_adjustment + consistency_adjustment
+            total_score = max(0.0, min(100.0, roe_score + leverage_score + stability_score))
 
-            # Clamp to 0-100
-            total_score = max(0, min(100, total_score))
-
-            # Calculate confidence
             confidence = self._calculate_confidence(price_data, metrics)
-
-            # Generate reasoning
-            reasoning = self._generate_reasoning(metrics, {
-                'volatility': volatility_adjustment,
-                'trend': trend_adjustment,
-                'drawdown': drawdown_adjustment,
-                'consistency': consistency_adjustment
-            })
+            reasoning = self._generate_reasoning(metrics, roe_score, leverage_score, stability_score)
 
             return {
                 'score': round(total_score, 2),
@@ -146,11 +95,9 @@ class QualityAgent:
                 'reasoning': reasoning,
                 'metrics': metrics,
                 'breakdown': {
-                    'base_score': 50,
-                    'volatility_adjustment': round(volatility_adjustment, 2),
-                    'trend_adjustment': round(trend_adjustment, 2),
-                    'drawdown_adjustment': round(drawdown_adjustment, 2),
-                    'consistency_adjustment': round(consistency_adjustment, 2)
+                    'roe_score': round(roe_score, 2),
+                    'leverage_score': round(leverage_score, 2),
+                    'stability_score': round(stability_score, 2),
                 },
                 'status': 'success',
                 'agent': self.agent_name
@@ -158,387 +105,288 @@ class QualityAgent:
 
         except DataValidationException as e:
             logger.warning(f"Data validation failed for {symbol}: {e}")
-            return {
-                'score': 50.0,
-                'confidence': 0.1,
-                'reasoning': f"Data validation failed: {str(e)}",
-                'metrics': {},
-                'breakdown': {},
-                'agent': self.agent_name,
-                'status': 'error',
-                'error': str(e),
-                'error_category': 'validation'
-            }
+            return self._error_result(symbol, str(e), 'validation')
 
         except InsufficientDataException as e:
             logger.info(f"Insufficient data for {symbol}: {e}")
-            return {
-                'score': 50.0,
-                'confidence': 0.2,
-                'reasoning': f"Insufficient data: {str(e)}",
-                'metrics': {},
-                'breakdown': {},
-                'agent': self.agent_name,
-                'status': 'error',
-                'error': str(e),
-                'error_category': 'insufficient_data'
-            }
+            return self._error_result(symbol, str(e), 'insufficient_data')
 
         except (ValueError, TypeError, KeyError) as e:
             logger.warning(f"Data format error for {symbol}: {e}")
-            return {
-                'score': 50.0,
-                'confidence': 0.15,
-                'reasoning': f"Data format error: {str(e)}",
-                'metrics': {},
-                'breakdown': {},
-                'agent': self.agent_name,
-                'status': 'error',
-                'error': str(e),
-                'error_category': 'data_format'
-            }
+            return self._error_result(symbol, str(e), 'data_format')
 
         except Exception as e:
             logger.error(f"Unexpected error analyzing {symbol}: {e}", exc_info=True)
-            return {
-                'score': 50.0,
-                'confidence': 0.1,
-                'reasoning': f"Analysis failed: {str(e)}",
-                'metrics': {},
-                'breakdown': {},
-                'agent': self.agent_name,
-                'status': 'error',
-                'error': str(e),
-                'error_category': 'unknown'
-            }
+            return self._error_result(symbol, str(e), 'unknown')
 
-    def _extract_metrics(self, symbol: str, price_data: pd.DataFrame, cached_data: Optional[Dict]) -> Dict:
-        """Extract quality-related metrics"""
-        metrics = {}
+    def _error_result(self, symbol: str, error: str, category: str) -> Dict:
+        return {
+            'score': None,
+            'confidence': 0.0,
+            'reasoning': f"Quality analysis failed: {error}",
+            'metrics': {},
+            'breakdown': {},
+            'agent': self.agent_name,
+            'status': 'error',
+            'error': error,
+            'error_category': category
+        }
 
-        # Get basic info
-        if cached_data:
-            info = cached_data.get('info', {})
-            raw_sector = info.get('sector', 'Unknown')
-            metrics['sector'] = raw_sector if raw_sector and raw_sector != 'None' else 'Unknown'
-            metrics['market_cap'] = info.get('marketCap')
+    # -------------------------------------------------------------------------
+    # Metric extraction
+    # -------------------------------------------------------------------------
 
-        # Calculate volatility (annualized)
+    def _extract_metrics(
+        self,
+        symbol: str,
+        price_data: pd.DataFrame,
+        cached_data: Optional[Dict],
+        info: Dict
+    ) -> Dict:
+        metrics: Dict = {}
+
+        # ---- Sector / market cap (display / screener) ----
+        raw_sector = info.get('sector', 'Unknown')
+        metrics['sector'] = raw_sector if raw_sector and raw_sector != 'None' else 'Unknown'
+        metrics['market_cap'] = info.get('marketCap')
+
+        # ---- NSE Quality 30 fundamental signals ----
+        roe = info.get('returnOnEquity')           # yfinance: 0-1 scale (e.g. 0.18 = 18%)
+        metrics['roe'] = float(roe) if roe is not None else None
+
+        dte = info.get('debtToEquity')             # yfinance: full ratio (e.g. 45.2 = 0.452x)
+        metrics['debt_to_equity_raw'] = float(dte) if dte is not None else None
+        # Actual ratio for display (divide by 100 as per yfinance convention)
+        metrics['debt_to_equity'] = round(float(dte) / 100, 3) if dte is not None else None
+
+        metrics['return_on_assets'] = info.get('returnOnAssets')
+        metrics['profit_margins'] = info.get('profitMargins')
+
+        # Earnings/margin stability from historical data
+        metrics['eps_variability'] = self._calc_eps_variability(cached_data)
+        metrics['profit_margin_stability'] = self._calc_margin_stability(cached_data)
+
+        # ---- Price metrics (for screener filters and display only — not scored) ----
         metrics['volatility'] = self._calculate_volatility(price_data)
-
-        # Calculate returns
-        metrics['1y_return'] = self._calculate_return(price_data, days=252)
-        metrics['6m_return'] = self._calculate_return(price_data, days=126)
-
-        # Calculate drawdown
         metrics['max_drawdown'] = self._calculate_max_drawdown(price_data)
         metrics['current_drawdown'] = self._calculate_current_drawdown(price_data)
-
-        # Calculate consistency (coefficient of variation of returns)
         metrics['return_consistency'] = self._calculate_return_consistency(price_data)
-
-        # Price range analysis
+        metrics['1y_return'] = self._calculate_return(price_data, days=252)
+        metrics['6m_return'] = self._calculate_return(price_data, days=126)
         metrics['price_range_52w'] = self._calculate_52w_range(price_data)
 
-        logger.debug(f"Extracted {len([v for v in metrics.values() if v is not None])} quality metrics")
+        logger.debug(f"Extracted {sum(1 for v in metrics.values() if v is not None)} quality metrics")
         return metrics
 
+    def _calc_eps_variability(self, cached_data: Optional[Dict]) -> Optional[float]:
+        """σ of YoY EPS growth from earnings history."""
+        try:
+            if not cached_data:
+                return None
+            earnings = cached_data.get('earnings')
+            if earnings is None or (isinstance(earnings, pd.DataFrame) and earnings.empty):
+                return None
+            if isinstance(earnings, pd.DataFrame):
+                eps_col = next((c for c in earnings.columns if 'earnings' in c.lower() or 'eps' in c.lower()), None)
+                if eps_col is None:
+                    return None
+                values = earnings[eps_col].dropna()
+            else:
+                return None
+            if len(values) < 3:
+                return None
+            growth = values.pct_change().dropna()
+            growth = growth[np.isfinite(growth)]
+            if len(growth) < 2:
+                return None
+            return float(growth.std())
+        except Exception:
+            return None
+
+    def _calc_margin_stability(self, cached_data: Optional[Dict]) -> Optional[float]:
+        """σ of profit margins over available financials."""
+        try:
+            if not cached_data:
+                return None
+            financials = cached_data.get('financials') or cached_data.get('income_stmt')
+            if financials is None or (isinstance(financials, pd.DataFrame) and financials.empty):
+                return None
+            if not isinstance(financials, pd.DataFrame):
+                return None
+            # Look for net income and revenue to compute margin
+            net_income_row = next(
+                (r for r in financials.index if 'net income' in str(r).lower()),
+                None
+            )
+            revenue_row = next(
+                (r for r in financials.index if 'total revenue' in str(r).lower() or 'revenue' in str(r).lower()),
+                None
+            )
+            if net_income_row is None or revenue_row is None:
+                return None
+            net_income = pd.to_numeric(financials.loc[net_income_row], errors='coerce').dropna()
+            revenue = pd.to_numeric(financials.loc[revenue_row], errors='coerce').dropna()
+            if len(net_income) < 2 or len(revenue) < 2:
+                return None
+            margins = (net_income / revenue).dropna()
+            margins = margins[np.isfinite(margins)]
+            if len(margins) < 2:
+                return None
+            return float(margins.std())
+        except Exception:
+            return None
+
+    # -------------------------------------------------------------------------
+    # NSE Quality 30 scoring functions — additive, 0-100 total, NO base-50
+    # -------------------------------------------------------------------------
+
+    def _score_roe(self, metrics: Dict) -> float:
+        """ROE score (0–40 pts). NSE Quality 30 primary metric."""
+        roe = metrics.get('roe')
+        if roe is None:
+            return 0
+        roe_pct = roe * 100
+        if roe_pct >= 25:  return 40   # Excellent (TCS, HDFC Bank territory)
+        if roe_pct >= 18:  return 32   # Good
+        if roe_pct >= 12:  return 22   # Above average
+        if roe_pct >= 8:   return 14   # Average
+        if roe_pct >= 0:   return 6    # Below average but profitable
+        return 0                        # Negative ROE
+
+    def _score_leverage(self, metrics: Dict) -> float:
+        """Leverage score (0–35 pts). Lower D/E = higher quality."""
+        dte_raw = metrics.get('debt_to_equity_raw')
+        if dte_raw is None:
+            return 18   # mid-point when unknown — not 0, not 35
+        actual_dte = dte_raw / 100      # convert yfinance format to real ratio
+        if actual_dte <= 0:    return 35   # Net cash
+        if actual_dte <= 0.25: return 30   # Very low debt
+        if actual_dte <= 0.5:  return 24   # Low debt
+        if actual_dte <= 1.0:  return 16   # Moderate
+        if actual_dte <= 2.0:  return 8    # High debt
+        return 2                            # Very high debt
+
+    def _score_earnings_stability(self, metrics: Dict) -> float:
+        """Earnings stability score (0–25 pts). Lower σ = more stable = higher quality."""
+        eps_var = metrics.get('eps_variability')
+        margin_stability = metrics.get('profit_margin_stability')
+
+        if eps_var is not None:
+            if eps_var < 0.10:  return 25   # Very stable
+            if eps_var < 0.20:  return 20   # Stable
+            if eps_var < 0.35:  return 13   # Moderate
+            if eps_var < 0.50:  return 7    # High variation
+            return 2                         # Very volatile
+
+        if margin_stability is not None:
+            if margin_stability < 0.02: return 25
+            if margin_stability < 0.04: return 18
+            if margin_stability < 0.07: return 11
+            return 4
+
+        return 10   # Unknown — neutral, not 0
+
+    # -------------------------------------------------------------------------
+    # Price metric helpers (kept for screener / display, not scored)
+    # -------------------------------------------------------------------------
+
     def _calculate_volatility(self, price_data: pd.DataFrame, window: int = 30) -> Optional[float]:
-        """Calculate 30-day annualized volatility (%)"""
         try:
             returns = price_data['Close'].pct_change()
-            volatility = returns.rolling(window=window).std().iloc[-1]
-            return float(volatility * np.sqrt(252) * 100)  # Annualized percentage
-        except Exception as e:
-            logger.debug(f"Failed to calculate volatility: {e}")
+            vol = returns.rolling(window=window).std().iloc[-1]
+            return float(vol * np.sqrt(252) * 100)
+        except Exception:
             return None
 
     def _calculate_return(self, price_data: pd.DataFrame, days: int) -> Optional[float]:
-        """Calculate percentage return over specified days"""
         try:
-            # Bounds checking FIRST
             if len(price_data) < days:
-                logger.debug(f"Insufficient data: {len(price_data)} rows < {days} days required")
                 return None
-
-            if len(price_data) < 1:
+            current = price_data['Close'].iloc[-1]
+            past = price_data['Close'].iloc[-days]
+            if pd.isna(current) or pd.isna(past) or past <= 0:
                 return None
-
-            # Safe index access
-            current_idx = len(price_data) - 1
-            past_idx = len(price_data) - days
-
-            current_price = price_data['Close'].iloc[current_idx]
-            past_price = price_data['Close'].iloc[past_idx]
-
-            # Validate values
-            if pd.isna(current_price) or pd.isna(past_price) or past_price <= 0:
-                return None
-
-            return ((current_price - past_price) / past_price) * 100
-
-        except Exception as e:
-            logger.debug(f"Failed to calculate {days}-day return: {e}")
+            return ((current - past) / past) * 100
+        except Exception:
             return None
 
     def _calculate_max_drawdown(self, price_data: pd.DataFrame) -> Optional[float]:
-        """
-        Calculate maximum drawdown (%)
-
-        Maximum peak-to-trough decline over the period
-        """
         try:
             prices = price_data['Close']
-            cummax = prices.cummax()
-            drawdown = (prices - cummax) / cummax * 100
+            drawdown = (prices - prices.cummax()) / prices.cummax() * 100
             return float(drawdown.min())
-
-        except Exception as e:
-            logger.debug(f"Failed to calculate max drawdown: {e}")
+        except Exception:
             return None
 
     def _calculate_current_drawdown(self, price_data: pd.DataFrame) -> Optional[float]:
-        """Calculate current drawdown from all-time high"""
         try:
             prices = price_data['Close']
-            all_time_high = prices.max()
-            current_price = prices.iloc[-1]
-            return ((current_price - all_time_high) / all_time_high) * 100
-
-        except Exception as e:
-            logger.debug(f"Failed to calculate current drawdown: {e}")
+            ath = prices.max()
+            return ((prices.iloc[-1] - ath) / ath) * 100
+        except Exception:
             return None
 
     def _calculate_return_consistency(self, price_data: pd.DataFrame) -> Optional[float]:
-        """
-        Calculate consistency of returns (coefficient of variation)
-
-        Lower CV = more consistent returns = better quality
-        """
         try:
             if not isinstance(price_data.index, pd.DatetimeIndex):
                 return None
-            monthly_returns = price_data['Close'].resample('M').last().pct_change().dropna()
-
-            if len(monthly_returns) < 6:
+            monthly = price_data['Close'].resample('M').last().pct_change().dropna()
+            if len(monthly) < 6:
                 return None
-
-            mean_return = monthly_returns.mean()
-            std_return = monthly_returns.std()
-
-            # Check for division by zero
-            if pd.isna(mean_return) or abs(mean_return) < 1e-10:
-                logger.debug("Mean return too small for CV calculation")
+            mean = monthly.mean()
+            if pd.isna(mean) or abs(mean) < 1e-10:
                 return None
-
-            if pd.isna(std_return) or std_return == 0:
-                return 0.0  # Perfect consistency
-
-            # Coefficient of variation - safe division
-            cv = safe_divide(abs(std_return), abs(mean_return), default=None)
+            std = monthly.std()
+            if pd.isna(std) or std == 0:
+                return 0.0
+            cv = safe_divide(abs(std), abs(mean), default=None)
             return float(cv) if cv is not None else None
-
-        except Exception as e:
-            logger.debug(f"Failed to calculate return consistency: {e}")
+        except Exception:
             return None
 
     def _calculate_52w_range(self, price_data: pd.DataFrame) -> Optional[float]:
-        """Calculate where current price is in 52-week range (0-100%)"""
         try:
             if len(price_data) < 252:
                 return None
-
-            recent_data = price_data.tail(252)
-            high_52w = recent_data['High'].max()
-            low_52w = recent_data['Low'].min()
-
-            # Bounds checking before access
-            if len(price_data) < 1:
+            recent = price_data.tail(252)
+            high = recent['High'].max()
+            low = recent['Low'].min()
+            current = price_data['Close'].iloc[-1]
+            diff = high - low
+            if pd.isna(diff) or abs(diff) < 1e-10:
                 return None
-
-            current_price = price_data['Close'].iloc[-1]
-
-            # Safe division - check for zero range
-            range_diff = high_52w - low_52w
-            if pd.isna(range_diff) or abs(range_diff) < 1e-10:
-                return None
-
-            range_pct = safe_divide(
-                current_price - low_52w,
-                range_diff,
-                default=None
-            )
-
-            return float(range_pct * 100) if range_pct is not None else None
-
-        except Exception as e:
-            logger.debug(f"Failed to calculate 52w range: {e}")
+            pct = safe_divide(current - low, diff, default=None)
+            return float(pct * 100) if pct is not None else None
+        except Exception:
             return None
 
-    def _score_volatility(self, metrics: Dict) -> float:
-        """
-        Score volatility (-20 to +20 adjustment)
-
-        Lower volatility = higher quality (positive adjustment)
-        Higher volatility = lower quality (negative adjustment)
-        """
-        volatility = metrics.get('volatility')
-
-        if volatility is None:
-            return 0
-
-        if volatility < self.THRESHOLDS['volatility_excellent']:
-            return 20  # Very stable - excellent quality
-        elif volatility < self.THRESHOLDS['volatility_good']:
-            return 12  # Stable - good quality
-        elif volatility < self.THRESHOLDS['volatility_fair']:
-            return 5   # Moderate volatility
-        elif volatility < self.THRESHOLDS['volatility_poor']:
-            return -5  # High volatility
-        else:
-            return -15  # Very high volatility - poor quality
-
-    def _score_long_term_trend(self, metrics: Dict) -> float:
-        """
-        Score 1-year trend (-15 to +15 adjustment)
-
-        Positive long-term trend indicates quality and resilience
-        """
-        return_1y = metrics.get('1y_return')
-
-        if return_1y is None:
-            return 0
-
-        if return_1y >= self.THRESHOLDS['return_excellent']:
-            return 15  # Excellent long-term performance
-        elif return_1y >= self.THRESHOLDS['return_good']:
-            return 10  # Good performance
-        elif return_1y >= self.THRESHOLDS['return_fair']:
-            return 5   # Stable
-        elif return_1y >= -10:
-            return 0   # Slight decline
-        elif return_1y >= -20:
-            return -10  # Significant decline
-        else:
-            return -15  # Major decline - poor quality
-
-    def _score_drawdown(self, metrics: Dict) -> float:
-        """
-        Score maximum drawdown (-15 to +10 adjustment)
-
-        Smaller drawdowns = better quality (ability to preserve capital)
-        """
-        max_dd = metrics.get('max_drawdown')
-
-        if max_dd is None:
-            return 0
-
-        if max_dd >= self.THRESHOLDS['drawdown_excellent']:
-            return 10  # Very small drawdown
-        elif max_dd >= self.THRESHOLDS['drawdown_good']:
-            return 5   # Manageable drawdown
-        elif max_dd >= self.THRESHOLDS['drawdown_fair']:
-            return 0   # Moderate drawdown
-        elif max_dd >= self.THRESHOLDS['drawdown_poor']:
-            return -10  # Large drawdown
-        else:
-            return -15  # Severe drawdown - poor quality
-
-    def _score_consistency(self, metrics: Dict) -> float:
-        """
-        Score return consistency (-5 to +5 adjustment)
-
-        Lower coefficient of variation = more consistent = better quality
-        """
-        consistency = metrics.get('return_consistency')
-
-        if consistency is None:
-            return 0
-
-        if consistency < 1.0:
-            return 5   # Very consistent
-        elif consistency < 2.0:
-            return 3   # Consistent
-        elif consistency < 3.0:
-            return 0   # Moderate
-        else:
-            return -5  # Inconsistent
+    # -------------------------------------------------------------------------
+    # Confidence and reasoning
+    # -------------------------------------------------------------------------
 
     def _calculate_confidence(self, price_data: pd.DataFrame, metrics: Dict) -> float:
-        """Calculate confidence level (0-1)"""
-        confidence = 0.7  # Base confidence
-
-        # Has sufficient data (1+ year)
-        if len(price_data) >= 252:
+        confidence = 0.5  # base
+        if metrics.get('roe') is not None:
+            confidence += 0.2
+        if metrics.get('debt_to_equity_raw') is not None:
             confidence += 0.15
-
-        # Has key metrics
-        key_metrics = ['volatility', '1y_return', 'max_drawdown']
-        available = sum(1 for m in key_metrics if metrics.get(m) is not None)
-        if available == len(key_metrics):
+        if metrics.get('eps_variability') is not None or metrics.get('profit_margin_stability') is not None:
             confidence += 0.15
-
         return min(1.0, confidence)
 
-    def _generate_reasoning(self, metrics: Dict, adjustments: Dict) -> str:
-        """Generate human-readable reasoning"""
-        reasons = []
-
-        # Volatility
-        volatility = metrics.get('volatility')
-        if volatility is not None:
-            if volatility < self.THRESHOLDS['volatility_excellent']:
-                reasons.append(f"Low volatility: {volatility:.1f}%")
-            elif volatility > self.THRESHOLDS['volatility_poor']:
-                reasons.append(f"High volatility: {volatility:.1f}%")
-
-        # Long-term trend
-        return_1y = metrics.get('1y_return')
-        if return_1y is not None:
-            if return_1y >= 20:
-                reasons.append(f"Strong 1Y return: {return_1y:+.1f}%")
-            elif return_1y < -10:
-                reasons.append(f"Weak 1Y return: {return_1y:+.1f}%")
-
-        # Drawdown
-        max_dd = metrics.get('max_drawdown')
-        if max_dd is not None:
-            if max_dd >= -15:
-                reasons.append(f"Small drawdown: {max_dd:.1f}%")
-            elif max_dd < -40:
-                reasons.append(f"Large drawdown: {max_dd:.1f}%")
-
-        if not reasons:
-            reasons.append("Quality metrics available")
-
-        return " | ".join(reasons)
-
-
-# Example usage
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-
-    agent = QualityAgent()
-
-    # Create sample data
-    dates = pd.date_range(end=pd.Timestamp.now(), periods=400, freq='D')
-    np.random.seed(42)
-    prices = 100 + np.random.randn(400).cumsum() * 0.5
-    sample_data = pd.DataFrame({
-        'Close': prices,
-        'High': prices * 1.02,
-        'Low': prices * 0.98,
-        'Volume': np.random.randint(1000000, 10000000, 400)
-    }, index=dates)
-
-    result = agent.analyze("TCS", sample_data)
-
-    print(f"\n{'='*60}")
-    print(f"Quality Analysis")
-    print('='*60)
-    print(f"Score: {result['score']}/100")
-    print(f"Confidence: {result['confidence']:.0%}")
-    print(f"Reasoning: {result['reasoning']}")
-    print(f"\nBreakdown:")
-    for key, value in result['breakdown'].items():
-        print(f"  {key}: {value}")
+    def _generate_reasoning(
+        self, metrics: Dict, roe_score: float, leverage_score: float, stability_score: float
+    ) -> str:
+        parts = []
+        roe = metrics.get('roe')
+        if roe is not None:
+            parts.append(f"ROE {roe * 100:.1f}% → {roe_score:.0f}/40 pts")
+        dte = metrics.get('debt_to_equity')
+        if dte is not None:
+            parts.append(f"D/E {dte:.2f}x → {leverage_score:.0f}/35 pts")
+        eps_var = metrics.get('eps_variability')
+        if eps_var is not None:
+            parts.append(f"EPS σ {eps_var:.2f} → {stability_score:.0f}/25 pts")
+        elif metrics.get('profit_margin_stability') is not None:
+            parts.append(f"Margin σ {metrics['profit_margin_stability']:.3f} → {stability_score:.0f}/25 pts")
+        return " | ".join(parts) if parts else "Quality metrics computed"
