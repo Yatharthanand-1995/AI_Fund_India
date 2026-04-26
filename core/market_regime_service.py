@@ -142,6 +142,11 @@ class MarketRegimeService:
         },
     }
 
+    # How many % the SMA gap needs to be before we consider a trend "established".
+    # Below this we blend toward neutral to avoid reacting to fresh crossovers.
+    SMA_GAP_FULL_CONFIDENCE_PCT = 5.0   # 5% gap → 100% regime weights
+    PRICE_SMA_FULL_CONFIDENCE_PCT = 3.0  # 3% price vs SMA50 → 100% confidence
+
     def __init__(self, cache_duration_hours: int = 6):
         """
         Initialize Market Regime Service
@@ -154,6 +159,52 @@ class MarketRegimeService:
         self.cache_timestamp: Optional[datetime] = None
 
         logger.info(f"Market Regime Service initialized (cache: {cache_duration_hours}h)")
+
+    def _compute_regime_confidence(self, trend: str, trend_metrics: Dict) -> float:
+        """
+        How firmly established is the detected regime? Returns 0.0 – 1.0.
+
+        A freshly-crossed SMA (small gap) → low confidence → blend toward neutral.
+        A well-established trend (large SMA gap + price well above/below SMA50) → 1.0.
+
+        This is stateless — computed purely from current price data each call.
+        It solves the "early regime transition" problem where e.g. a brand-new
+        BEAR signal should not immediately slash momentum weights to 10%, because
+        momentum keeps working for 4-8 weeks after a SMA crossover.
+        """
+        if trend == 'SIDEWAYS':
+            return 0.6   # sideways is always somewhat certain (it's the null hypothesis)
+
+        sma_gap_pct  = abs(trend_metrics.get('sma50_vs_sma200_pct', 0))
+        price_gap_pct = abs(trend_metrics.get('price_vs_sma50_pct', 0))
+
+        # Each metric contributes to confidence; clamp 0–1
+        sma_conf   = min(1.0, sma_gap_pct  / self.SMA_GAP_FULL_CONFIDENCE_PCT)
+        price_conf = min(1.0, price_gap_pct / self.PRICE_SMA_FULL_CONFIDENCE_PCT)
+
+        # SMA gap is the primary signal; price vs SMA is secondary
+        confidence = 0.6 * sma_conf + 0.4 * price_conf
+        return round(float(confidence), 3)
+
+    def _blend_weights(self, regime_weights: Dict, alpha: float) -> Dict:
+        """
+        Blend regime weights toward neutral (SIDEWAYS_NORMAL) by alpha.
+
+        alpha = 1.0 → pure regime weights (fully confirmed trend)
+        alpha = 0.0 → pure SIDEWAYS_NORMAL (no regime signal at all)
+
+        Minimum alpha is clamped to 0.3 so we never go fully neutral —
+        even a borderline signal deserves some regime tilt.
+        """
+        alpha = max(0.3, min(1.0, alpha))
+        neutral = self.ADAPTIVE_WEIGHTS['SIDEWAYS_NORMAL']
+        blended = {
+            k: round(alpha * regime_weights[k] + (1.0 - alpha) * neutral[k], 4)
+            for k in regime_weights
+        }
+        # Normalise to ensure exact sum = 1.0 (float arithmetic safety)
+        total = sum(blended.values())
+        return {k: round(v / total, 4) for k, v in blended.items()}
 
     def get_current_regime(
         self,
@@ -212,12 +263,11 @@ class MarketRegimeService:
                         'trend': 'SIDEWAYS',
                         'volatility': 'NORMAL',
                         'weights': default_weights,
-                        'trend_strength': 0.5,
-                        'volatility_regime': 'NORMAL',
-                        'regime_confidence': 0.3,  # Low confidence when using default
+                        'base_weights': default_weights,
+                        'regime_confidence': 0.3,
                         'timestamp': datetime.now().isoformat(),
                         'description': 'Default regime (NIFTY data unavailable)',
-                        'indicators': {}
+                        'metrics': {}
                     }
 
             # Detect regime
@@ -227,8 +277,20 @@ class MarketRegimeService:
             # Combine regime
             regime = f"{trend}_{volatility}"
 
-            # Get adaptive weights
-            weights = self.ADAPTIVE_WEIGHTS.get(regime, self.ADAPTIVE_WEIGHTS['SIDEWAYS_NORMAL'])
+            # Get base regime weights
+            base_weights = self.ADAPTIVE_WEIGHTS.get(regime, self.ADAPTIVE_WEIGHTS['SIDEWAYS_NORMAL'])
+
+            # Compute confidence and blend toward neutral for uncertain/transitioning regimes
+            confidence = self._compute_regime_confidence(trend, trend_metrics)
+            weights = self._blend_weights(base_weights, alpha=confidence)
+
+            logger.info(f"   Regime confidence: {confidence:.2f} "
+                        f"({'established' if confidence >= 0.7 else 'transitioning' if confidence >= 0.4 else 'borderline'})")
+            if confidence < 1.0:
+                logger.info(f"   Blended weights (alpha={confidence:.2f}): "
+                            f"F={weights['fundamentals']:.0%} M={weights['momentum']:.0%} "
+                            f"Q={weights['quality']:.0%} S={weights['sentiment']:.0%} "
+                            f"I={weights['institutional_flow']:.0%}")
 
             # Assemble result
             result = {
@@ -236,6 +298,8 @@ class MarketRegimeService:
                 'trend': trend,
                 'volatility': volatility,
                 'weights': weights,
+                'base_weights': base_weights,  # unblended, for inspection
+                'regime_confidence': confidence,
                 'metrics': {
                     **trend_metrics,
                     **vol_metrics
@@ -248,7 +312,7 @@ class MarketRegimeService:
             self.cached_regime = result
             self.cache_timestamp = datetime.now()
 
-            logger.info(f"✅ Market Regime: {regime}")
+            logger.info(f"✅ Market Regime: {regime} (confidence: {confidence:.2f})")
             logger.info(f"   Trend: {trend}, Volatility: {volatility}")
 
             return result
@@ -257,11 +321,14 @@ class MarketRegimeService:
             logger.error(f"Failed to detect market regime: {e}", exc_info=True)
 
             # Return default regime on error
+            default_weights = self.ADAPTIVE_WEIGHTS['SIDEWAYS_NORMAL']
             return {
                 'regime': 'SIDEWAYS_NORMAL',
                 'trend': 'SIDEWAYS',
                 'volatility': 'NORMAL',
-                'weights': self.ADAPTIVE_WEIGHTS['SIDEWAYS_NORMAL'],
+                'weights': default_weights,
+                'base_weights': default_weights,
+                'regime_confidence': 0.3,
                 'metrics': {},
                 'timestamp': datetime.now().isoformat(),
                 'cached': False,

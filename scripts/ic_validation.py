@@ -173,23 +173,35 @@ def fetch_prices(symbols: List[str], years: int = 2) -> Dict[str, pd.Series]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def detect_and_print_regime() -> str:
-    """Detect current market regime and print it. Returns regime string."""
+    """Detect current market regime, show confidence and blended weights. Returns regime string."""
     from core.market_regime_service import MarketRegimeService
     from data.hybrid_provider import HybridDataProvider
     svc = MarketRegimeService()
     try:
         provider = HybridDataProvider()
         regime_info = svc.get_current_regime(data_provider=provider)
-        regime  = regime_info['regime']
-        trend   = regime_info['trend']
-        vol     = regime_info['volatility']
-        weights = regime_info['weights']
-        print(f"\n  Current Market Regime: {regime}  (trend={trend}, vol={vol})")
-        print(f"  Adaptive weights: F={weights['fundamentals']:.0%}  "
-              f"M={weights['momentum']:.0%}  "
-              f"Q={weights['quality']:.0%}  "
-              f"S={weights['sentiment']:.0%}  "
-              f"I={weights['institutional_flow']:.0%}")
+        regime     = regime_info['regime']
+        trend      = regime_info['trend']
+        vol        = regime_info['volatility']
+        weights    = regime_info['weights']          # blended (applied)
+        base_w     = regime_info.get('base_weights', weights)  # unblended
+        confidence = regime_info.get('regime_confidence', 1.0)
+        metrics    = regime_info.get('metrics', {})
+
+        conf_label = ('established' if confidence >= 0.7 else
+                      'transitioning' if confidence >= 0.4 else 'borderline')
+        print(f"\n  Current Market Regime : {regime}  (trend={trend}, vol={vol})")
+        print(f"  Regime confidence     : {confidence:.2f}  [{conf_label}]")
+        if metrics:
+            sma_gap   = metrics.get('sma50_vs_sma200_pct', 0)
+            price_gap = metrics.get('price_vs_sma50_pct', 0)
+            print(f"  SMA50 vs SMA200       : {sma_gap:+.2f}%  |  Price vs SMA50: {price_gap:+.2f}%")
+        print(f"  Base weights (target) : F={base_w['fundamentals']:.0%}  "
+              f"M={base_w['momentum']:.0%}  Q={base_w['quality']:.0%}  "
+              f"S={base_w['sentiment']:.0%}  I={base_w['institutional_flow']:.0%}")
+        print(f"  Applied weights       : F={weights['fundamentals']:.0%}  "
+              f"M={weights['momentum']:.0%}  Q={weights['quality']:.0%}  "
+              f"S={weights['sentiment']:.0%}  I={weights['institutional_flow']:.0%}")
         return regime
     except Exception as e:
         print(f"\n  Regime detection failed ({e}) — using SIDEWAYS_NORMAL")
