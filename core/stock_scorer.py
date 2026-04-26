@@ -563,6 +563,7 @@ class StockScorer:
             i for i, r in enumerate(results)
             if r.get('recommendation') != 'ERROR'
             and r.get('composite_score') is not None
+            and r.get('composite_confidence') is not None
         ]
         if len(valid_indices) < 5:
             logger.warning("Too few valid results for cross-sectional normalization — skipping")
@@ -588,7 +589,7 @@ class StockScorer:
             r = results[result_idx]
             r['raw_composite_score'] = round(r['composite_score'], 2)
             r['composite_score'] = round(float(percentile_scores[rank_idx]), 1)
-            r['recommendation'] = self._get_recommendation(r['composite_score'], r['confidence'])
+            r['recommendation'] = self._get_recommendation(r['composite_score'], r.get('composite_confidence', 0.5))
 
         logger.info(
             f"Cross-sectional normalization applied to {len(valid_indices)} stocks "

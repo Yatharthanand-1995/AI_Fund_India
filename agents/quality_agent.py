@@ -183,23 +183,33 @@ class QualityAgent:
         try:
             if not cached_data:
                 return None
+            # Try dedicated earnings DataFrame first
             earnings = cached_data.get('earnings')
-            if earnings is None or (isinstance(earnings, pd.DataFrame) and earnings.empty):
-                return None
-            if isinstance(earnings, pd.DataFrame):
+            if earnings is not None and isinstance(earnings, pd.DataFrame) and not earnings.empty:
                 eps_col = next((c for c in earnings.columns if 'earnings' in c.lower() or 'eps' in c.lower()), None)
-                if eps_col is None:
-                    return None
-                values = earnings[eps_col].dropna()
-            else:
-                return None
-            if len(values) < 3:
-                return None
-            growth = values.pct_change().dropna()
-            growth = growth[np.isfinite(growth)]
-            if len(growth) < 2:
-                return None
-            return float(growth.std())
+                if eps_col:
+                    values = earnings[eps_col].dropna()
+                    if len(values) >= 3:
+                        growth = values.pct_change().dropna()
+                        growth = growth[np.isfinite(growth)]
+                        if len(growth) >= 2:
+                            return float(growth.std())
+            # Fall back: extract EPS rows from annual financials (yfinance stores as rows)
+            financials = cached_data.get('financials')
+            if financials is not None and isinstance(financials, pd.DataFrame) and not financials.empty:
+                eps_row = next(
+                    (r for r in financials.index if 'diluted eps' in str(r).lower() or 'basic eps' in str(r).lower()),
+                    None
+                )
+                if eps_row:
+                    values = pd.to_numeric(financials.loc[eps_row], errors='coerce').dropna().sort_index()
+                    values = values[np.isfinite(values)]
+                    if len(values) >= 3:
+                        growth = values.pct_change().dropna()
+                        growth = growth[np.isfinite(growth)]
+                        if len(growth) >= 2:
+                            return float(growth.std())
+            return None
         except Exception:
             return None
 
