@@ -169,6 +169,7 @@ export interface AgentScores {
 export interface StockAnalysis {
   symbol: string;
   composite_score: number;
+  raw_composite_score?: number;  // pre-normalization score (batch only)
   recommendation: string;
   confidence: number;
   // Price data (from stock scorer)

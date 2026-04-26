@@ -16,6 +16,8 @@ import os
 from typing import Dict, Optional, List
 from datetime import datetime
 import pandas as pd
+import numpy as np
+from scipy import stats as scipy_stats
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from agents.fundamentals_agent import FundamentalsAgent
@@ -58,17 +60,18 @@ class StockScorer:
         'institutional_flow': 0.10
     }
 
-    # Recommendation thresholds
-    # ADJUSTED: Calibrated to achievable score range (39-59)
-    # Previous thresholds (80/68/58) were unreachable due to component constraints
+    # Recommendation thresholds — percentile-based after cross-sectional normalization.
+    # Single-stock /analyze uses absolute scores (no universe to compare against).
+    # Batch /score_stocks_batch normalizes to percentile [0, 100] before applying these.
+    # NIFTY 50 universe (~50 stocks): STRONG BUY ≈ top 5, BUY ≈ top 15, HOLD ≈ middle 20.
     RECOMMENDATION_THRESHOLDS = {
-        'STRONG BUY': 55,  # Top tier stocks (>= 55) - near max achievable ~59
-        'BUY': 50,         # Strong stocks (50-54)
-        'WEAK BUY': 45,    # Above average (45-49)
-        'HOLD_HIGH': 42,   # Neutral zone (42-44)
-        'HOLD_LOW': 38,    # Neutral zone (38-41)
-        'WEAK SELL': 35,   # Below average (35-37)
-        'SELL': 0          # Avoid (< 35) - near min achievable ~39
+        'STRONG BUY': 90,  # top 10% — always ~5 stocks in NIFTY 50
+        'BUY':        70,  # top 30% — always ~15 stocks
+        'WEAK BUY':   55,  # 55–70th percentile
+        'HOLD_HIGH':  45,  # 45–55th percentile
+        'HOLD_LOW':   30,  # 30–45th percentile
+        'WEAK SELL':  10,  # 10–30th percentile
+        'SELL':        0   # bottom 10%
     }
 
     def __init__(
@@ -440,6 +443,9 @@ class StockScorer:
         # Sort by composite score (descending)
         results.sort(key=lambda x: x.get('composite_score', 0), reverse=True)
 
+        # Apply cross-sectional percentile normalization (NSE/MSCI standard)
+        results = self._normalize_batch_scores(results)
+
         logger.info(f"\n✅ Batch analysis complete: {len(results)} stocks scored")
         return results
 
@@ -544,6 +550,55 @@ class StockScorer:
             return 'WEAK SELL'
         else:
             return 'SELL'
+
+    def _normalize_batch_scores(self, results: List[Dict]) -> List[Dict]:
+        """
+        Apply cross-sectional percentile normalization to composite scores.
+        NSE/MSCI standard: winsorize at 5th/95th pct → z-score → normal CDF percentile.
+
+        Preserves raw_composite_score for debugging. Only applied in batch context —
+        single-stock /analyze uses absolute scoring (no universe to compare against).
+        """
+        valid_indices = [
+            i for i, r in enumerate(results)
+            if r.get('recommendation') != 'ERROR'
+            and r.get('composite_score') is not None
+            and r.get('composite_confidence') is not None
+        ]
+        if len(valid_indices) < 5:
+            logger.warning("Too few valid results for cross-sectional normalization — skipping")
+            return results
+
+        raw_scores = np.array([results[i]['composite_score'] for i in valid_indices], dtype=float)
+
+        # Winsorize at 5th/95th pct (NSE uses 1/99 but 5/95 is more robust at <100 stocks)
+        p5, p95 = np.percentile(raw_scores, [5, 95])
+        winsorized = np.clip(raw_scores, p5, p95)
+
+        mu = np.mean(winsorized)
+        sigma = np.std(winsorized)
+        if sigma < 0.01:
+            logger.warning("Score standard deviation too small — skipping normalization")
+            return results
+        z_scores = (winsorized - mu) / sigma
+
+        # Map to [0, 100] percentile rank via normal CDF
+        percentile_scores = scipy_stats.norm.cdf(z_scores) * 100
+
+        for rank_idx, result_idx in enumerate(valid_indices):
+            r = results[result_idx]
+            r['raw_composite_score'] = round(r['composite_score'], 2)
+            r['composite_score'] = round(float(percentile_scores[rank_idx]), 1)
+            r['recommendation'] = self._get_recommendation(r['composite_score'], r.get('composite_confidence', 0.5))
+
+        logger.info(
+            f"Cross-sectional normalization applied to {len(valid_indices)} stocks "
+            f"(raw range: [{raw_scores.min():.1f}, {raw_scores.max():.1f}] → "
+            f"percentile range: [{percentile_scores.min():.1f}, {percentile_scores.max():.1f}])"
+        )
+
+        results.sort(key=lambda x: x.get('composite_score', 0), reverse=True)
+        return results
 
     def _get_current_weights(self) -> Dict:
         """

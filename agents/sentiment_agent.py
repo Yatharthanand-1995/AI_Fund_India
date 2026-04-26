@@ -106,13 +106,25 @@ class SentimentAgent:
             ]
             has_sentiment_data = any(info.get(k) is not None for k in SENTIMENT_KEYS)
             if not has_sentiment_data:
-                logger.info(f"No analyst/sentiment data available for {symbol} - using neutral defaults")
+                logger.info(f"No analyst data for {symbol} — excluding from composite")
+                return {
+                    'score': None,
+                    'confidence': 0.0,
+                    'status': 'no_data',
+                    'reasoning': 'No analyst data available for Indian stock',
+                    'metrics': {},
+                    'breakdown': {},
+                    'agent': self.agent_name
+                }
 
             # Extract metrics (handles None fields gracefully)
             metrics = self._extract_metrics(symbol, info)
 
-            # Calculate component scores
-            recommendation_score = self._score_recommendation(metrics)
+            # Calculate component scores (AQR/FactSet standard breakdown):
+            #   Revision diffusion (level + momentum): 50 pts  — replaces flat rating level
+            #   Target price upside:                   30 pts
+            #   Analyst coverage:                      20 pts
+            diffusion_score = self._score_revision_diffusion(metrics)
             target_price_score = self._score_target_price(metrics)
             coverage_score = self._score_analyst_coverage(metrics)
 
@@ -139,7 +151,7 @@ class SentimentAgent:
 
             # Calculate total score (clamped to 0–100)
             total_score = max(0.0, min(100.0,
-                recommendation_score + target_price_score + coverage_score + news_adjustment
+                diffusion_score + target_price_score + coverage_score + news_adjustment
             ))
 
             # Calculate confidence
@@ -147,7 +159,7 @@ class SentimentAgent:
 
             # Generate reasoning
             reasoning = self._generate_reasoning(metrics, {
-                'recommendation': recommendation_score,
+                'diffusion': diffusion_score,
                 'target_price': target_price_score,
                 'coverage': coverage_score,
                 'news': news_adjustment,
@@ -159,7 +171,7 @@ class SentimentAgent:
                 'reasoning': reasoning,
                 'metrics': metrics,
                 'breakdown': {
-                    'recommendation_score': round(recommendation_score, 2),
+                    'diffusion_score': round(diffusion_score, 2),
                     'target_price_score': round(target_price_score, 2),
                     'coverage_score': round(coverage_score, 2),
                     'news_adjustment': round(news_adjustment, 2),
@@ -264,7 +276,7 @@ class SentimentAgent:
         rec_mean = metrics.get('recommendation_mean')
 
         if rec_mean is None:
-            return 28  # Neutral if no data (50% of 55)
+            return 0
 
         if rec_mean < self.RECOMMENDATION_THRESHOLDS['strong_buy']:
             return 55  # Strong Buy consensus
@@ -277,55 +289,89 @@ class SentimentAgent:
         else:
             return 0   # Sell consensus
 
-    def _score_target_price(self, metrics: Dict) -> float:
+    def _score_revision_diffusion(self, metrics: Dict) -> float:
         """
-        Score target price upside (0-33 points)
+        Analyst revision diffusion score (0–50 pts).
+        AQR/FactSet primary sentiment signal: (upgrades − downgrades) / total + rate of change.
+        Uses recommendationTrend periods [0M, -1M] from yfinance.
 
-        Higher upside = more bullish
+        Falls back to flat rating level when trend data is absent.
         """
+        trend_data = metrics.get('recommendation_trend')
+        if trend_data and len(trend_data) >= 2:
+            def bull_minus_bear(period: Dict) -> float:
+                bulls = period.get('strongBuy', 0) + period.get('buy', 0)
+                bears = period.get('sell', 0) + period.get('strongSell', 0)
+                total = bulls + bears + period.get('hold', 0)
+                if total == 0:
+                    return 0.0
+                return (bulls - bears) / total   # -1 to +1
+
+            current = trend_data[0]    # 0M (latest)
+            prior = trend_data[1]      # -1M
+            current_diffusion = bull_minus_bear(current)
+            prior_diffusion = bull_minus_bear(prior)
+            diffusion_change = current_diffusion - prior_diffusion
+
+            # Level (50%) + momentum (50%) → 0–50 pts total
+            level_score = (current_diffusion + 1) / 2 * 25       # -1..+1 → 0..25
+            momentum_score = max(0.0, min(25.0, (diffusion_change + 0.5) * 25))
+            return level_score + momentum_score
+
+        # No trend data — fall back to flat recommendation mean (legacy signal)
+        rec_mean = metrics.get('recommendation_mean')
+        if rec_mean is None:
+            return 0
+        if rec_mean < self.RECOMMENDATION_THRESHOLDS['strong_buy']:
+            return 50
+        if rec_mean < self.RECOMMENDATION_THRESHOLDS['buy']:
+            return 40
+        if rec_mean < self.RECOMMENDATION_THRESHOLDS['hold']:
+            return 25
+        if rec_mean < self.RECOMMENDATION_THRESHOLDS['sell']:
+            return 10
+        return 0
+
+    def _score_target_price(self, metrics: Dict) -> float:
+        """Score target price upside (0–30 pts). Higher upside = more bullish."""
         upside = metrics.get('upside_percent')
 
         if upside is None:
-            return 17  # Neutral if no data (50% of 33, rounded)
+            return 0
 
         if upside >= self.UPSIDE_THRESHOLDS['high']:
-            return 33  # High upside potential
+            return 30
         elif upside >= self.UPSIDE_THRESHOLDS['medium']:
-            return 25  # Medium upside
+            return 23
         elif upside >= self.UPSIDE_THRESHOLDS['low']:
-            return 20  # Low upside
+            return 18
         elif upside > 0:
-            return 17  # Slight upside
+            return 15
         elif upside > -10:
-            return 11  # Slight downside
+            return 9
         else:
-            return 0   # Significant downside
+            return 0
 
     def _score_analyst_coverage(self, metrics: Dict) -> float:
-        """
-        Score analyst coverage (0-12 points)
-
-        More coverage = more institutional interest = better
-        Note: Indian stocks typically have less coverage than US stocks
-        """
+        """Score analyst coverage (0–20 pts). More coverage = stronger signal quality."""
         num_analysts = metrics.get('number_of_analyst_opinions')
 
         if num_analysts is None:
-            return 5  # Neutral-ish score if no data (50% of 12, rounded)
+            return 0
 
-        # Adjusted for Indian market (lower coverage)
+        # Calibrated for Indian market (lower analyst coverage than US)
         if num_analysts >= 20:
-            return 12  # Excellent coverage
+            return 20
         elif num_analysts >= 10:
-            return 10  # Good coverage
+            return 16
         elif num_analysts >= 5:
-            return 7   # Moderate coverage
+            return 11
         elif num_analysts >= 3:
-            return 5   # Limited coverage
+            return 7
         elif num_analysts >= 1:
-            return 3   # Very limited
+            return 4
         else:
-            return 0   # No coverage
+            return 0
 
     def _calculate_confidence(self, metrics: Dict) -> float:
         """
@@ -359,20 +405,22 @@ class SentimentAgent:
         return min(1.0, confidence)
 
     def _generate_reasoning(self, metrics: Dict, breakdown: Dict) -> str:
-        """Generate human-readable reasoning"""
         reasons = []
 
-        # Recommendation
-        rec_mean = metrics.get('recommendation_mean')
-        if rec_mean is not None:
-            if rec_mean < 2.0:
-                reasons.append(f"Strong Buy consensus ({rec_mean:.1f})")
-            elif rec_mean < 2.5:
-                reasons.append(f"Buy consensus ({rec_mean:.1f})")
-            elif rec_mean < 3.5:
-                reasons.append(f"Hold consensus ({rec_mean:.1f})")
-            else:
-                reasons.append(f"Sell leaning ({rec_mean:.1f})")
+        # Revision diffusion
+        diffusion_score = breakdown.get('diffusion', 0)
+        trend_data = metrics.get('recommendation_trend')
+        if trend_data and len(trend_data) >= 2:
+            reasons.append(f"Revision diffusion {diffusion_score:.0f}/50 pts")
+        else:
+            rec_mean = metrics.get('recommendation_mean')
+            if rec_mean is not None:
+                label = (
+                    "Strong Buy" if rec_mean < 2.0 else
+                    "Buy" if rec_mean < 2.5 else
+                    "Hold" if rec_mean < 3.5 else "Sell"
+                )
+                reasons.append(f"{label} consensus ({rec_mean:.1f})")
 
         # Target price upside
         upside = metrics.get('upside_percent')

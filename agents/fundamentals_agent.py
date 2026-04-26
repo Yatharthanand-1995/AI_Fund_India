@@ -142,21 +142,14 @@ class FundamentalsAgent:
             ]
             has_fundamental_data = any(info.get(k) is not None for k in FINANCIAL_KEYS)
             if not has_fundamental_data:
-                logger.info(f"No fundamental financial data available for {symbol} - returning neutral score")
+                logger.info(f"No fundamental financial data available for {symbol} - excluding from composite")
                 return {
-                    'score': 50.0,
-                    'confidence': 0.3,
-                    'reasoning': 'No fundamental financial data available - using neutral score',
+                    'score': None,
+                    'confidence': 0.0,
+                    'reasoning': 'No fundamental financial data available',
                     'status': 'no_data',
                     'metrics': {},
-                    'breakdown': {
-                        'profitability_score': 0.0,
-                        'valuation_score': 0.0,
-                        'growth_score': 0.0,
-                        'health_score': 0.0,
-                        'dividend_score': 0.0,
-                        'promoter_bonus': 0.0
-                    },
+                    'breakdown': {},
                     'agent': self.agent_name,
                     'note': 'no_fundamental_data'
                 }
