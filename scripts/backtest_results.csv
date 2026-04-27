@@ -1,4 +1,8 @@
-run_at,name,years,top_n,sector_cap_pct,quality,costs,total_return_pct,cagr_pct,sharpe,max_drawdown_pct,alpha_ann_pct,beta,win_rate_pct,ann_vol_pct,nifty_return_pct,nifty_cagr_pct,nifty_sharpe,nifty_maxdd_pct
-2026-04-27 10:21,baseline_nocap,3,10,0,yes,yes,-3.3,-1.1,-0.41,-30.8,-8.8,0.88,38.9,15.2,33.3,10.3,0.31,-15.8
-2026-04-27 10:21,sector_cap_30pct,3,10,30,yes,yes,9.5,3.1,-0.17,-22.1,-4.6,0.82,47.2,14.0,33.3,10.3,0.31,-15.8
-2026-04-27 10:21,sector_cap_30pct_noQuality,3,10,30,no,yes,16.1,5.1,0.0,-26.6,-4.5,1.04,44.4,16.6,33.3,10.3,0.31,-15.8
+run_at,name,years,top_n,sector_cap_pct,quality,costs,total_return_pct,cagr_pct,sharpe,max_drawdown_pct,alpha_ann_pct,beta,win_rate_pct,ann_vol_pct,nifty_return_pct,nifty_cagr_pct,nifty_sharpe,nifty_maxdd_pct,exit_drawdown_pct,score_decay
+2026-04-27 10:21,baseline_nocap,3,10,0,yes,yes,-3.3,-1.1,-0.41,-30.8,-8.8,0.88,38.9,15.2,33.3,10.3,0.31,-15.8,,
+2026-04-27 10:21,sector_cap_30pct,3,10,30,yes,yes,9.5,3.1,-0.17,-22.1,-4.6,0.82,47.2,14.0,33.3,10.3,0.31,-15.8,,
+2026-04-27 10:21,sector_cap_30pct_noQuality,3,10,30,no,yes,16.1,5.1,0.0,-26.6,-4.5,1.04,44.4,16.6,33.3,10.3,0.31,-15.8,,
+2026-04-27 11:22,sc30_dd8,3,10,30,yes,yes,8.0,2.6,-0.22,-19.6,-4.9,0.8,41.7,13.2,33.2,10.3,0.31,-15.8,8.0,0.0
+2026-04-27 11:23,sc30_sd20,3,10,30,yes,yes,5.6,1.8,-0.27,-21.9,-5.7,0.81,41.7,13.3,33.2,10.3,0.3,-15.8,0.0,20.0
+2026-04-27 11:26,sc30_dd8_sd20,3,10,30,yes,yes,6.2,2.0,-0.25,-21.1,-5.5,0.82,41.7,13.4,33.1,10.3,0.3,-15.8,8.0,20.0
+2026-04-27 11:27,sc30_noQ_IT2,3,10,30,no,yes,16.7,5.3,0.01,-27.3,-4.4,1.05,44.4,16.6,33.1,10.2,0.3,-15.8,0.0,0.0

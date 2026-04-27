@@ -277,32 +277,50 @@ def get_rebalance_dates(prices: Dict[str, pd.Series], bench: pd.Series) -> List[
 # Main simulation
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Per-sector overrides: tighter cap for known laggards (data-driven from diagnostic)
+# IT: worst sector by total contribution (-71.5%), diagnostic shows max 2 stocks optimal
+SECTOR_MAX_OVERRIDES: Dict[str, int] = {
+    'IT': 2,   # cap IT at 2 stocks regardless of general sector_cap setting
+}
+
+
 def apply_sector_cap(
     scored: List[Tuple[str, float]],
     top_n: int,
     sector_cap: float,
+    forced_exits: Optional[set] = None,
 ) -> List[Tuple[str, float]]:
     """
-    Select top_n stocks from a score-sorted list, capping sector exposure.
-    sector_cap = max fraction of portfolio in any one sector (e.g. 0.30 → 3/10).
+    Select top_n stocks from a score-sorted list, with:
+    - forced_exits: symbols that must be excluded (drawdown / score-decay exits)
+    - general sector_cap: max fraction in any one sector
+    - SECTOR_MAX_OVERRIDES: per-sector hard caps
     """
-    max_per_sector = max(1, int(top_n * sector_cap))
+    forced_exits = forced_exits or set()
+    max_general = max(1, int(top_n * sector_cap)) if sector_cap > 0 else top_n
     sector_counts: Dict[str, int] = {}
     selected: List[Tuple[str, float]] = []
+
     for sym, score in scored:
         if len(selected) >= top_n:
             break
+        if sym in forced_exits:
+            continue
         sector = NIFTY50_SECTORS.get(sym, 'Other')
-        if sector_counts.get(sector, 0) < max_per_sector:
+        general_ok = sector_counts.get(sector, 0) < max_general
+        override_max = SECTOR_MAX_OVERRIDES.get(sector, max_general)
+        override_ok = sector_counts.get(sector, 0) < override_max
+        if general_ok and override_ok:
             selected.append((sym, score))
             sector_counts[sector] = sector_counts.get(sector, 0) + 1
-    # If capping leaves us short, fill remaining slots uncapped
+
+    # Fill any remaining slots ignoring sector cap but still respect forced_exits
     if len(selected) < top_n:
         picked = {s for s, _ in selected}
         for sym, score in scored:
             if len(selected) >= top_n:
                 break
-            if sym not in picked:
+            if sym not in picked and sym not in forced_exits:
                 selected.append((sym, score))
     return selected
 
@@ -314,10 +332,16 @@ def run_simulation(
     top_n: int,
     transaction_cost: float,
     sector_cap: float = 0.0,
+    exit_drawdown: float = 0.0,
+    score_decay: float = 0.0,
 ) -> Tuple[pd.Series, pd.DataFrame]:
     """
     Returns (portfolio_value_series, trade_log_df).
-    portfolio_value_series is indexed by rebalance date, starting at 100.
+
+    exit_drawdown: force-exit any holding that has fallen > X% from its entry price
+                   (e.g. 0.08 = exit if down 8% from when we first bought it).
+    score_decay:   force-exit any holding whose score has dropped > N points since entry
+                   (e.g. 20.0 = exit if score fell 20+ pts — momentum structurally reversed).
     """
     rebal_dates = get_rebalance_dates(prices, bench)
     if len(rebal_dates) < 2:
@@ -327,6 +351,8 @@ def run_simulation(
 
     portfolio_values: List[Tuple[pd.Timestamp, float]] = [(rebal_dates[0], 100.0)]
     holdings: Dict[str, float] = {}   # sym → weight
+    entry_prices: Dict[str, float] = {}  # sym → price when first added
+    entry_scores: Dict[str, float] = {}  # sym → score when first added
     pv = 100.0
 
     trade_log: List[Dict] = []
@@ -336,30 +362,67 @@ def run_simulation(
         date_t1 = rebal_dates[i + 1]
 
         # ── Score all stocks at date_t ──────────────────────────────────────
-        # Find benchmark index position for regime detection
         bench_idx = bench.index.get_indexer([date_t], method='ffill')[0]
         regime, mom_w, qual_w = detect_regime_at(bench, bench_idx) if bench_idx >= 0 else ('SIDEWAYS', 0.55, 0.45)
 
+        score_map: Dict[str, float] = {}
         scored: List[Tuple[str, float]] = []
         for sym, price_series in prices.items():
             idx = price_series.index.get_indexer([date_t], method='ffill')[0]
-            if idx < 63:   # need at least 3M of data
+            if idx < 63:
                 continue
             score = composite_score_at(sym, price_series, idx, quality_map, mom_w, qual_w)
             if score is not None:
                 scored.append((sym, score))
+                score_map[sym] = score
 
         if len(scored) < top_n:
-            # Not enough stocks — carry forward
             portfolio_values.append((date_t1, pv))
             continue
 
         scored.sort(key=lambda x: x[1], reverse=True)
-        if sector_cap > 0:
-            selected = apply_sector_cap(scored, top_n, sector_cap)
-        else:
-            selected = scored[:top_n]
+
+        # ── Identify forced exits from current holdings ─────────────────────
+        forced_exits: set = set()
+        for sym in list(holdings.keys()):
+            p_series = prices.get(sym)
+            if p_series is None:
+                continue
+            idx_t = p_series.index.get_indexer([date_t], method='ffill')[0]
+            if idx_t < 0:
+                continue
+            current_price = p_series.iloc[idx_t]
+
+            # 1. Drawdown-from-entry exit
+            if exit_drawdown > 0 and sym in entry_prices:
+                ep = entry_prices[sym]
+                if ep > 0 and (current_price - ep) / ep < -exit_drawdown:
+                    forced_exits.add(sym)
+                    continue
+
+            # 2. Score-decay exit
+            if score_decay > 0 and sym in entry_scores:
+                current_score = score_map.get(sym, 0.0)
+                if entry_scores[sym] - current_score > score_decay:
+                    forced_exits.add(sym)
+
+        # ── Select new holdings ─────────────────────────────────────────────
+        selected = apply_sector_cap(scored, top_n, sector_cap, forced_exits)
         new_holdings = {sym: 1.0 / top_n for sym, _ in selected}
+
+        # ── Update entry tracking ───────────────────────────────────────────
+        for sym, _ in selected:
+            if sym not in holdings:  # new entry
+                p_series = prices[sym]
+                idx_t = p_series.index.get_indexer([date_t], method='ffill')[0]
+                if idx_t >= 0:
+                    entry_prices[sym] = p_series.iloc[idx_t]
+                entry_scores[sym] = score_map.get(sym, 50.0)
+        # Remove exited stocks from tracking
+        for sym in list(entry_prices.keys()):
+            if sym not in new_holdings:
+                entry_prices.pop(sym, None)
+                entry_scores.pop(sym, None)
 
         # ── Transaction costs on turnover ──────────────────────────────────
         old_syms = set(holdings.keys())
@@ -391,14 +454,15 @@ def run_simulation(
         bench_ret = (b1 - b0) / b0 if (b0 and b1 and b0 > 0) else None
 
         trade_log.append({
-            'date':         date_t.strftime('%Y-%m'),
-            'regime':       regime,
-            'top_stocks':   ', '.join(s.replace('.NS', '') for s, _ in selected),
-            'port_ret_pct': round(port_ret * 100, 2),
+            'date':          date_t.strftime('%Y-%m'),
+            'regime':        regime,
+            'top_stocks':    ', '.join(s.replace('.NS', '') for s, _ in selected),
+            'forced_exits':  ', '.join(s.replace('.NS', '') for s in forced_exits) if forced_exits else '',
+            'port_ret_pct':  round(port_ret * 100, 2),
             'bench_ret_pct': round(bench_ret * 100, 2) if bench_ret else None,
-            'alpha_pct':    round((port_ret - (bench_ret or 0)) * 100, 2),
-            'pv':           round(pv, 2),
-            'turnover_pct': round(turnover * 100, 1),
+            'alpha_pct':     round((port_ret - (bench_ret or 0)) * 100, 2),
+            'pv':            round(pv, 2),
+            'turnover_pct':  round(turnover * 100, 1),
         })
 
         holdings = new_holdings
@@ -569,9 +633,11 @@ def save_run_result(name: str, config: Dict, m: Dict, bm: Dict) -> None:
         'name':          name,
         'years':         config['years'],
         'top_n':         config['top_n'],
-        'sector_cap_pct': int(config['sector_cap'] * 100),
-        'quality':       'yes' if config['quality'] else 'no',
-        'costs':         'yes' if config['costs'] else 'no',
+        'sector_cap_pct':    int(config['sector_cap'] * 100),
+        'exit_drawdown_pct': int(config.get('exit_drawdown', 0) * 100),
+        'score_decay':       config.get('score_decay', 0),
+        'quality':           'yes' if config['quality'] else 'no',
+        'costs':             'yes' if config['costs'] else 'no',
         # Strategy
         'total_return_pct':   round(m['total_return'] * 100, 1),
         'cagr_pct':           round(m['cagr'] * 100, 1),
@@ -633,8 +699,12 @@ def main():
     parser.add_argument('--top',      type=int,   default=10,    help='Stocks to hold per month (default: 10)')
     parser.add_argument('--no-costs',    action='store_true',                  help='Disable transaction costs')
     parser.add_argument('--no-quality',  action='store_true',                  help='Momentum-only scoring (skip quality fetch)')
-    parser.add_argument('--sector-cap',  type=float, default=SECTOR_CAP_DEFAULT,
+    parser.add_argument('--sector-cap',      type=float, default=SECTOR_CAP_DEFAULT,
                         help=f'Max sector weight 0-1 (default: {SECTOR_CAP_DEFAULT}, 0=off)')
+    parser.add_argument('--exit-drawdown',   type=float, default=0.0,
+                        help='Force-exit a holding if it falls X%% from entry price (e.g. 0.08). Default: off')
+    parser.add_argument('--score-decay',     type=float, default=0.0,
+                        help='Force-exit a holding if its score drops >N pts from entry (e.g. 20). Default: off')
     parser.add_argument('--name',        type=str,   default='',
                         help='Label for this run (saved to results log)')
     parser.add_argument('--compare',     action='store_true',
@@ -652,6 +722,8 @@ def main():
         f"top{args.top}_"
         f"{'noQ_' if args.no_quality else ''}"
         f"sc{int(args.sector_cap*100)}_"
+        f"{'dd'+str(int(args.exit_drawdown*100))+'_' if args.exit_drawdown else ''}"
+        f"{'sd'+str(int(args.score_decay))+'_' if args.score_decay else ''}"
         f"{args.years}y"
     )
 
@@ -688,7 +760,10 @@ def main():
 
     # Run simulation
     print(f"\n  Running monthly simulation (top-{args.top}) …")
-    pv, trade_log = run_simulation(prices_bt, bench_bt, quality_map, args.top, cost, args.sector_cap)
+    pv, trade_log = run_simulation(
+        prices_bt, bench_bt, quality_map, args.top, cost,
+        args.sector_cap, args.exit_drawdown, args.score_decay
+    )
 
     # Compute metrics
     bm = bench_metrics(bench_bt) if not bench_bt.empty else {
@@ -713,11 +788,13 @@ def main():
 
     # Save run to results log
     save_run_result(run_name, {
-        'years':      args.years,
-        'top_n':      args.top,
-        'sector_cap': args.sector_cap,
-        'quality':    not args.no_quality,
-        'costs':      not args.no_costs,
+        'years':          args.years,
+        'top_n':          args.top,
+        'sector_cap':     args.sector_cap,
+        'exit_drawdown':  args.exit_drawdown,
+        'score_decay':    args.score_decay,
+        'quality':        not args.no_quality,
+        'costs':          not args.no_costs,
     }, m, bm)
 
     print(f"  Run --compare to see all saved runs side-by-side.\n")
