@@ -1623,19 +1623,16 @@ async def evaluate_portfolio_signals(symbols: Optional[List[str]] = None):
     Automatically adds BUY signals and removes SELL signals from the portfolio.
     """
     try:
-        nifty_data = await run_in_thread(get_nifty_data)
-
         # Determine universe to score
         if symbols:
-            universe = [s if s.endswith('.NS') else f"{s}.NS" for s in symbols]
+            universe = [s.replace('.NS', '') for s in symbols]
         else:
-            from data.stock_universe import get_nifty50_symbols
-            universe = get_nifty50_symbols()
+            universe = stock_universe.get_symbols('NIFTY_50')
 
         # Batch score
         logger.info(f"Portfolio evaluation: scoring {len(universe)} stocks")
         results = await run_in_thread(
-            stock_scorer.score_stocks_batch, universe, nifty_data
+            stock_scorer.score_stocks_batch, universe
         )
         valid = [r for r in results if r.get('composite_score') is not None
                  and r.get('recommendation') != 'ERROR']

@@ -109,10 +109,11 @@ class HistoricalDataCollector:
             f"Data collector started - will run every {self.collection_interval_hours} hours"
         )
 
-        # Run initial collection if during market hours
+        # Run initial collection in background thread if during market hours
         if self._is_market_hours():
-            logger.info("Running initial data collection")
-            self._collect_data()
+            logger.info("Running initial data collection in background")
+            import threading
+            threading.Thread(target=self._collect_data, daemon=True, name="initial-collection").start()
 
     def stop(self):
         """Stop background data collection"""
