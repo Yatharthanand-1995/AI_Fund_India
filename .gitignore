@@ -61,6 +61,8 @@ dmypy.json
 *.csv
 *.parquet
 *.db
+# Keep backtest results log for comparison history
+!scripts/backtest_results.csv
 *.sqlite
 
 # Jupyter Notebook

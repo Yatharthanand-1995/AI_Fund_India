@@ -1,0 +1,4 @@
+run_at,name,years,top_n,sector_cap_pct,quality,costs,total_return_pct,cagr_pct,sharpe,max_drawdown_pct,alpha_ann_pct,beta,win_rate_pct,ann_vol_pct,nifty_return_pct,nifty_cagr_pct,nifty_sharpe,nifty_maxdd_pct
+2026-04-27 10:21,baseline_nocap,3,10,0,yes,yes,-3.3,-1.1,-0.41,-30.8,-8.8,0.88,38.9,15.2,33.3,10.3,0.31,-15.8
+2026-04-27 10:21,sector_cap_30pct,3,10,30,yes,yes,9.5,3.1,-0.17,-22.1,-4.6,0.82,47.2,14.0,33.3,10.3,0.31,-15.8
+2026-04-27 10:21,sector_cap_30pct_noQuality,3,10,30,no,yes,16.1,5.1,0.0,-26.6,-4.5,1.04,44.4,16.6,33.3,10.3,0.31,-15.8

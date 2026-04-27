@@ -64,6 +64,60 @@ NIFTY50 = [
 BENCHMARK = '^NSEI'
 
 TRANSACTION_COST = 0.001   # 0.1% per trade (round-trip = 0.2%)
+SECTOR_CAP_DEFAULT = 0.30  # max 30% of portfolio in any one sector
+
+# Sector labels for NIFTY50 (used for concentration cap)
+NIFTY50_SECTORS: Dict[str, str] = {
+    'RELIANCE.NS':    'Energy',
+    'ONGC.NS':        'Energy',
+    'BPCL.NS':        'Energy',
+    'COALINDIA.NS':   'Energy',
+    'NTPC.NS':        'Energy',
+    'POWERGRID.NS':   'Energy',
+    'TCS.NS':         'IT',
+    'INFY.NS':        'IT',
+    'WIPRO.NS':       'IT',
+    'HCLTECH.NS':     'IT',
+    'TECHM.NS':       'IT',
+    'LTIM.NS':        'IT',
+    'HDFCBANK.NS':    'Financials',
+    'ICICIBANK.NS':   'Financials',
+    'SBIN.NS':        'Financials',
+    'AXISBANK.NS':    'Financials',
+    'KOTAKBANK.NS':   'Financials',
+    'BAJFINANCE.NS':  'Financials',
+    'BAJAJFINSV.NS':  'Financials',
+    'SBILIFE.NS':     'Financials',
+    'HDFCLIFE.NS':    'Financials',
+    'INDUSINDBK.NS':  'Financials',
+    'HINDUNILVR.NS':  'FMCG',
+    'ITC.NS':         'FMCG',
+    'NESTLEIND.NS':   'FMCG',
+    'BRITANNIA.NS':   'FMCG',
+    'TATACONSUM.NS':  'FMCG',
+    'SUNPHARMA.NS':   'Pharma',
+    'DIVISLAB.NS':    'Pharma',
+    'CIPLA.NS':       'Pharma',
+    'DRREDDY.NS':     'Pharma',
+    'APOLLOHOSP.NS':  'Pharma',
+    'TATAMOTORS.NS':  'Auto',
+    'MARUTI.NS':      'Auto',
+    'HEROMOTOCO.NS':  'Auto',
+    'EICHERMOT.NS':   'Auto',
+    'BAJAJ-AUTO.NS':  'Auto',
+    'M&M.NS':         'Auto',
+    'JSWSTEEL.NS':    'Metals',
+    'TATASTEEL.NS':   'Metals',
+    'HINDALCO.NS':    'Metals',
+    'LT.NS':          'Industrials',
+    'ADANIPORTS.NS':  'Industrials',
+    'ADANIENT.NS':    'Industrials',
+    'GRASIM.NS':      'Construction',
+    'ULTRACEMCO.NS':  'Construction',
+    'ASIANPAINT.NS':  'Consumer',
+    'TITAN.NS':       'Consumer',
+    'BHARTIARTL.NS':  'Telecom',
+}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -223,12 +277,43 @@ def get_rebalance_dates(prices: Dict[str, pd.Series], bench: pd.Series) -> List[
 # Main simulation
 # ─────────────────────────────────────────────────────────────────────────────
 
+def apply_sector_cap(
+    scored: List[Tuple[str, float]],
+    top_n: int,
+    sector_cap: float,
+) -> List[Tuple[str, float]]:
+    """
+    Select top_n stocks from a score-sorted list, capping sector exposure.
+    sector_cap = max fraction of portfolio in any one sector (e.g. 0.30 → 3/10).
+    """
+    max_per_sector = max(1, int(top_n * sector_cap))
+    sector_counts: Dict[str, int] = {}
+    selected: List[Tuple[str, float]] = []
+    for sym, score in scored:
+        if len(selected) >= top_n:
+            break
+        sector = NIFTY50_SECTORS.get(sym, 'Other')
+        if sector_counts.get(sector, 0) < max_per_sector:
+            selected.append((sym, score))
+            sector_counts[sector] = sector_counts.get(sector, 0) + 1
+    # If capping leaves us short, fill remaining slots uncapped
+    if len(selected) < top_n:
+        picked = {s for s, _ in selected}
+        for sym, score in scored:
+            if len(selected) >= top_n:
+                break
+            if sym not in picked:
+                selected.append((sym, score))
+    return selected
+
+
 def run_simulation(
     prices: Dict[str, pd.Series],
     bench: pd.Series,
     quality_map: Dict[str, float],
     top_n: int,
     transaction_cost: float,
+    sector_cap: float = 0.0,
 ) -> Tuple[pd.Series, pd.DataFrame]:
     """
     Returns (portfolio_value_series, trade_log_df).
@@ -270,7 +355,11 @@ def run_simulation(
             continue
 
         scored.sort(key=lambda x: x[1], reverse=True)
-        new_holdings = {sym: 1.0 / top_n for sym, _ in scored[:top_n]}
+        if sector_cap > 0:
+            selected = apply_sector_cap(scored, top_n, sector_cap)
+        else:
+            selected = scored[:top_n]
+        new_holdings = {sym: 1.0 / top_n for sym, _ in selected}
 
         # ── Transaction costs on turnover ──────────────────────────────────
         old_syms = set(holdings.keys())
@@ -304,7 +393,7 @@ def run_simulation(
         trade_log.append({
             'date':         date_t.strftime('%Y-%m'),
             'regime':       regime,
-            'top_stocks':   ', '.join(s.replace('.NS', '') for s, _ in scored[:top_n]),
+            'top_stocks':   ', '.join(s.replace('.NS', '') for s, _ in selected),
             'port_ret_pct': round(port_ret * 100, 2),
             'bench_ret_pct': round(bench_ret * 100, 2) if bench_ret else None,
             'alpha_pct':    round((port_ret - (bench_ret or 0)) * 100, 2),
@@ -468,6 +557,73 @@ def print_summary(m: Dict, bm: Dict, pv: pd.Series, bench: pd.Series, log: pd.Da
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Results log — append every run to a CSV for side-by-side comparison
+# ─────────────────────────────────────────────────────────────────────────────
+
+RESULTS_LOG = Path(__file__).parent / 'backtest_results.csv'
+
+def save_run_result(name: str, config: Dict, m: Dict, bm: Dict) -> None:
+    """Append this run's key metrics to backtest_results.csv."""
+    row = {
+        'run_at':        datetime.now().strftime('%Y-%m-%d %H:%M'),
+        'name':          name,
+        'years':         config['years'],
+        'top_n':         config['top_n'],
+        'sector_cap_pct': int(config['sector_cap'] * 100),
+        'quality':       'yes' if config['quality'] else 'no',
+        'costs':         'yes' if config['costs'] else 'no',
+        # Strategy
+        'total_return_pct':   round(m['total_return'] * 100, 1),
+        'cagr_pct':           round(m['cagr'] * 100, 1),
+        'sharpe':             round(m['sharpe'], 2),
+        'max_drawdown_pct':   round(m['max_drawdown'] * 100, 1),
+        'alpha_ann_pct':      round(m['alpha_ann'] * 100, 1),
+        'beta':               round(m['beta'], 2),
+        'win_rate_pct':       round(m['win_rate'] * 100, 1),
+        'ann_vol_pct':        round(m['ann_std'] * 100, 1),
+        # Benchmark
+        'nifty_return_pct':   round(bm['total'] * 100, 1),
+        'nifty_cagr_pct':     round(bm['cagr'] * 100, 1),
+        'nifty_sharpe':       round(bm['sharpe'], 2),
+        'nifty_maxdd_pct':    round(bm['max_dd'] * 100, 1),
+    }
+    df_new = pd.DataFrame([row])
+    if RESULTS_LOG.exists():
+        df_old = pd.read_csv(RESULTS_LOG)
+        df_all = pd.concat([df_old, df_new], ignore_index=True)
+    else:
+        df_all = df_new
+    df_all.to_csv(RESULTS_LOG, index=False)
+    print(f"\n  ✓ Results saved → scripts/backtest_results.csv  (row #{len(df_all)})")
+
+
+def print_comparison_table() -> None:
+    """Print all saved runs side-by-side from backtest_results.csv."""
+    if not RESULTS_LOG.exists():
+        print("  No results saved yet. Run a backtest first.")
+        return
+    df = pd.read_csv(RESULTS_LOG)
+    print(f"\n{'='*90}")
+    print("  BACKTEST COMPARISON TABLE")
+    print(f"{'='*90}")
+    cols = ['name', 'years', 'top_n', 'sector_cap_pct', 'quality',
+            'total_return_pct', 'cagr_pct', 'sharpe', 'max_drawdown_pct',
+            'alpha_ann_pct', 'win_rate_pct', 'nifty_return_pct', 'nifty_cagr_pct']
+    headers = ['Name', 'Yrs', 'TopN', 'SecCap%', 'Qual',
+               'Return%', 'CAGR%', 'Sharpe', 'MaxDD%',
+               'Alpha%', 'WinRate%', 'NIFTY%', 'NIFTY CAGR%']
+    widths = [22, 4, 4, 7, 4, 8, 6, 6, 7, 7, 8, 7, 10]
+    header_row = '  ' + '  '.join(f"{h:>{w}}" for h, w in zip(headers, widths))
+    print(header_row)
+    print('  ' + '-' * (sum(widths) + 2 * len(widths)))
+    for _, row in df.iterrows():
+        vals = [str(row.get(c, ''))[:w] for c, w in zip(cols, widths)]
+        print('  ' + '  '.join(f"{v:>{w}}" for v, w in zip(vals, widths)))
+    print(f"{'='*90}\n")
+    print(f"  Full data: scripts/backtest_results.csv")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -475,16 +631,36 @@ def main():
     parser = argparse.ArgumentParser(description='3-Year Portfolio Backtest on NIFTY50')
     parser.add_argument('--years',    type=int,   default=3,     help='Backtest window in years (default: 3)')
     parser.add_argument('--top',      type=int,   default=10,    help='Stocks to hold per month (default: 10)')
-    parser.add_argument('--no-costs', action='store_true',       help='Disable transaction costs')
-    parser.add_argument('--no-quality', action='store_true',     help='Momentum-only scoring (skip quality fetch)')
+    parser.add_argument('--no-costs',    action='store_true',                  help='Disable transaction costs')
+    parser.add_argument('--no-quality',  action='store_true',                  help='Momentum-only scoring (skip quality fetch)')
+    parser.add_argument('--sector-cap',  type=float, default=SECTOR_CAP_DEFAULT,
+                        help=f'Max sector weight 0-1 (default: {SECTOR_CAP_DEFAULT}, 0=off)')
+    parser.add_argument('--name',        type=str,   default='',
+                        help='Label for this run (saved to results log)')
+    parser.add_argument('--compare',     action='store_true',
+                        help='Print comparison table of all saved runs and exit')
     args = parser.parse_args()
+
+    if args.compare:
+        print_comparison_table()
+        return
 
     cost = 0.0 if args.no_costs else TRANSACTION_COST
 
+    # Auto-generate run name if not provided
+    run_name = args.name or (
+        f"top{args.top}_"
+        f"{'noQ_' if args.no_quality else ''}"
+        f"sc{int(args.sector_cap*100)}_"
+        f"{args.years}y"
+    )
+
     print("\n" + "="*64)
     print("  AI HEDGE FUND — PORTFOLIO BACKTEST")
+    print(f"  Run: {run_name}")
     print(f"  Universe: NIFTY50  |  Window: {args.years}Y  |  Top-{args.top} stocks")
-    print(f"  Rebalance: Monthly  |  Costs: {'none' if cost == 0 else '0.1% per trade'}")
+    sector_cap_str = f"{int(args.sector_cap * 100)}% cap" if args.sector_cap > 0 else "no cap"
+    print(f"  Rebalance: Monthly  |  Costs: {'none' if cost == 0 else '0.1% per trade'}  |  Sector: {sector_cap_str}")
     print("="*64)
 
     # Fetch prices
@@ -512,7 +688,7 @@ def main():
 
     # Run simulation
     print(f"\n  Running monthly simulation (top-{args.top}) …")
-    pv, trade_log = run_simulation(prices_bt, bench_bt, quality_map, args.top, cost)
+    pv, trade_log = run_simulation(prices_bt, bench_bt, quality_map, args.top, cost, args.sector_cap)
 
     # Compute metrics
     bm = bench_metrics(bench_bt) if not bench_bt.empty else {
@@ -527,12 +703,24 @@ def main():
     # Print results
     print_summary(m, bm, pv_monthly, bench_bt, trade_log, args.top)
 
-    print("\n" + "="*64)
-    print("  NOTE: Quality scores use current fundamentals as a constant")
-    print("  proxy. For large-cap NIFTY50 stocks this is a reasonable")
-    print("  approximation but may slightly overstate quality signal.")
-    print("  Run with --no-quality for a fully price-based backtest.")
-    print("="*64 + "\n")
+    if not args.no_quality:
+        print("\n" + "="*64)
+        print("  NOTE: Quality scores use current fundamentals as a constant")
+        print("  proxy. For large-cap NIFTY50 stocks this is a reasonable")
+        print("  approximation but may slightly overstate quality signal.")
+        print("  Run with --no-quality for a fully price-based backtest.")
+        print("="*64 + "\n")
+
+    # Save run to results log
+    save_run_result(run_name, {
+        'years':      args.years,
+        'top_n':      args.top,
+        'sector_cap': args.sector_cap,
+        'quality':    not args.no_quality,
+        'costs':      not args.no_costs,
+    }, m, bm)
+
+    print(f"  Run --compare to see all saved runs side-by-side.\n")
 
 
 if __name__ == '__main__':
