@@ -475,6 +475,212 @@ def run_simulation(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Signal-driven simulation (institutional buy/hold/sell logic)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def run_signal_simulation(
+    prices: Dict[str, pd.Series],
+    bench: pd.Series,
+    quality_map: Dict[str, float],
+    buy_threshold: float = 65.0,
+    sell_threshold: float = 50.0,
+    stop_loss: float = 0.10,
+    max_positions: int = 10,
+    transaction_cost: float = 0.001,
+    sector_cap: float = 0.30,
+) -> Tuple[pd.Series, pd.DataFrame]:
+    """
+    Signal-driven portfolio simulation — institutional approach.
+
+    Rules evaluated at each monthly review date:
+      EXIT first (in order):
+        1. Hard stop-loss: position down > stop_loss % from entry → forced exit
+        2. Thesis broken: score < sell_threshold → exit regardless of price
+      HOLD:
+        3. sell_threshold ≤ score AND position in portfolio → keep it (thesis intact)
+      ENTRY:
+        4. score ≥ buy_threshold AND sector allows AND < max_positions → buy
+      ADD to winner:
+        5. score improved vs entry_score AND position profitable → increase weight
+           (implemented as: weight = score_proportion of portfolio)
+
+    Position sizing: score-proportional weights, capped at 20% per stock.
+    Cash earns 0% (conservative — avoids look-ahead on risk-free rate).
+    """
+    rebal_dates = get_rebalance_dates(prices, bench)
+    if len(rebal_dates) < 2:
+        raise ValueError("Not enough rebalance dates")
+
+    bench_at = {d: bench.get(d) for d in rebal_dates}
+
+    portfolio_values: List[Tuple[pd.Timestamp, float]] = [(rebal_dates[0], 100.0)]
+    # Holdings: sym → (entry_price, entry_score, current_weight)
+    holdings: Dict[str, Dict] = {}
+    pv = 100.0
+    trade_log: List[Dict] = []
+
+    for i in range(len(rebal_dates) - 1):
+        date_t  = rebal_dates[i]
+        date_t1 = rebal_dates[i + 1]
+
+        bench_idx = bench.index.get_indexer([date_t], method='ffill')[0]
+        regime, mom_w, qual_w = detect_regime_at(bench, bench_idx) if bench_idx >= 0 else ('SIDEWAYS', 0.55, 0.45)
+
+        # ── Score all stocks ────────────────────────────────────────────────
+        score_map: Dict[str, float] = {}
+        for sym, price_series in prices.items():
+            idx = price_series.index.get_indexer([date_t], method='ffill')[0]
+            if idx < 63:
+                continue
+            s = composite_score_at(sym, price_series, idx, quality_map, mom_w, qual_w)
+            if s is not None:
+                score_map[sym] = s
+
+        exits: List[str] = []
+        exit_reasons: Dict[str, str] = {}
+
+        # ── Step 1: EXIT — stop-loss and thesis-broken ──────────────────────
+        for sym, h in list(holdings.items()):
+            p_series = prices.get(sym)
+            if p_series is None:
+                exits.append(sym); exit_reasons[sym] = 'no_data'; continue
+            idx_t = p_series.index.get_indexer([date_t], method='ffill')[0]
+            if idx_t < 0:
+                exits.append(sym); exit_reasons[sym] = 'no_data'; continue
+
+            current_price = p_series.iloc[idx_t]
+            ret_from_entry = (current_price - h['entry_price']) / h['entry_price']
+            current_score  = score_map.get(sym, 0.0)
+
+            if ret_from_entry < -stop_loss:
+                exits.append(sym); exit_reasons[sym] = f'stop_loss({ret_from_entry*100:.1f}%)'
+            elif current_score < sell_threshold:
+                exits.append(sym); exit_reasons[sym] = f'score_exit({current_score:.0f})'
+
+        for sym in exits:
+            del holdings[sym]
+
+        # ── Step 2: ENTRY — buy new high-conviction stocks ──────────────────
+        # Sort by score desc; respect sector cap
+        candidates = sorted(
+            [(s, sc) for s, sc in score_map.items() if sc >= buy_threshold and s not in holdings],
+            key=lambda x: x[1], reverse=True
+        )
+        sec_counts: Dict[str, int] = {}
+        for sym in holdings:
+            sec = NIFTY50_SECTORS.get(sym, 'Other')
+            sec_counts[sym] = sec_counts.get(sym, 0) + 1   # just track existing holdings
+        # Rebuild sector count from current holdings
+        sec_counts = {}
+        for sym in holdings:
+            sec = NIFTY50_SECTORS.get(sym, 'Other')
+            sec_counts[sec] = sec_counts.get(sec, 0) + 1
+
+        max_per_sec = max(1, int(max_positions * sector_cap))
+        override_max = SECTOR_MAX_OVERRIDES  # e.g. IT=2
+
+        for sym, score in candidates:
+            if len(holdings) >= max_positions:
+                break
+            sec = NIFTY50_SECTORS.get(sym, 'Other')
+            general_ok  = sec_counts.get(sec, 0) < max_per_sec
+            override_ok = sec_counts.get(sec, 0) < override_max.get(sec, max_per_sec)
+            if not (general_ok and override_ok):
+                continue
+            p_series = prices[sym]
+            idx_t = p_series.index.get_indexer([date_t], method='ffill')[0]
+            if idx_t < 0:
+                continue
+            entry_p = p_series.iloc[idx_t]
+            holdings[sym] = {
+                'entry_price': entry_p,
+                'entry_score': score,
+            }
+            sec_counts[sec] = sec_counts.get(sec, 0) + 1
+
+        # ── Step 3: Compute score-proportional weights ──────────────────────
+        if not holdings:
+            # All cash month
+            portfolio_values.append((date_t1, pv))
+            trade_log.append({
+                'date': date_t.strftime('%Y-%m'), 'regime': regime,
+                'top_stocks': '(cash)', 'exits': '', 'n_positions': 0,
+                'port_ret_pct': 0.0, 'bench_ret_pct': None, 'alpha_pct': 0.0,
+                'pv': round(pv, 2), 'turnover_pct': 0.0,
+            })
+            continue
+
+        # Score-proportional weights, capped at 20% per position
+        scores_held = {sym: score_map.get(sym, h['entry_score'])
+                       for sym, h in holdings.items()}
+        total_score = sum(scores_held.values())
+        raw_weights = {sym: sc / total_score for sym, sc in scores_held.items()}
+        # Cap any single stock at 20% and redistribute surplus
+        cap = 0.20
+        capped: Dict[str, float] = {}
+        surplus = 0.0
+        for sym, w in raw_weights.items():
+            if w > cap:
+                surplus += w - cap
+                capped[sym] = cap
+            else:
+                capped[sym] = w
+        # Distribute surplus pro-rata to uncapped positions
+        uncapped = [s for s, w in capped.items() if w < cap]
+        if uncapped and surplus > 0:
+            add_each = surplus / len(uncapped)
+            for sym in uncapped:
+                capped[sym] = min(cap, capped[sym] + add_each)
+        weights = capped
+
+        # ── Step 4: Compute return for this period ──────────────────────────
+        # Turnover vs last period
+        old_syms = set(h for h in (list(holdings.keys()) + exits))
+        new_syms  = set(holdings.keys())
+        exited_syms = set(exits)
+        entered_syms = {s for s in new_syms if exit_reasons.get(s) is None and s not in (old_syms - exited_syms)}
+        turnover = (len(exited_syms) + len(entered_syms)) / max(len(old_syms | new_syms), 1)
+        cost = turnover * transaction_cost
+
+        port_ret = 0.0
+        for sym, w in weights.items():
+            p_series = prices[sym]
+            idx_t  = p_series.index.get_indexer([date_t],  method='ffill')[0]
+            idx_t1 = p_series.index.get_indexer([date_t1], method='ffill')[0]
+            if idx_t < 0 or idx_t1 < 0 or idx_t1 <= idx_t:
+                continue
+            p0 = p_series.iloc[idx_t]; p1 = p_series.iloc[idx_t1]
+            if p0 > 0:
+                port_ret += w * (p1 - p0) / p0
+
+        port_ret -= cost
+        pv = pv * (1 + port_ret)
+        portfolio_values.append((date_t1, round(pv, 4)))
+
+        b0 = bench_at.get(date_t) or (bench.iloc[bench_idx] if bench_idx >= 0 else None)
+        b_idx_t1 = bench.index.get_indexer([date_t1], method='ffill')[0]
+        b1 = bench.iloc[b_idx_t1] if b_idx_t1 >= 0 else None
+        bench_ret = (b1 - b0) / b0 if (b0 and b1 and b0 > 0) else None
+
+        trade_log.append({
+            'date':          date_t.strftime('%Y-%m'),
+            'regime':        regime,
+            'top_stocks':    ', '.join(s.replace('.NS', '') for s in holdings),
+            'exits':         ', '.join(f"{s.replace('.NS','')}({r})"
+                                       for s, r in exit_reasons.items()),
+            'n_positions':   len(holdings),
+            'port_ret_pct':  round(port_ret * 100, 2),
+            'bench_ret_pct': round(bench_ret * 100, 2) if bench_ret else None,
+            'alpha_pct':     round((port_ret - (bench_ret or 0)) * 100, 2),
+            'pv':            round(pv, 2),
+            'turnover_pct':  round(turnover * 100, 1),
+        })
+
+    pv_series = pd.Series({d: v for d, v in portfolio_values}, name='portfolio')
+    return pv_series, pd.DataFrame(trade_log)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Metrics
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -705,6 +911,14 @@ def main():
                         help='Force-exit a holding if it falls X%% from entry price (e.g. 0.08). Default: off')
     parser.add_argument('--score-decay',     type=float, default=0.0,
                         help='Force-exit a holding if its score drops >N pts from entry (e.g. 20). Default: off')
+    parser.add_argument('--signal-mode',     action='store_true',
+                        help='Institutional signal mode: buy on score≥buy-threshold, hold until score<sell-threshold or stop-loss')
+    parser.add_argument('--buy-threshold',   type=float, default=65.0,
+                        help='Signal mode: minimum score to initiate a position (default: 65)')
+    parser.add_argument('--sell-threshold',  type=float, default=50.0,
+                        help='Signal mode: exit when score drops below this (default: 50)')
+    parser.add_argument('--stop-loss',       type=float, default=0.10,
+                        help='Signal mode: hard stop-loss %% from entry price (default: 0.10 = 10%%)')
     parser.add_argument('--name',        type=str,   default='',
                         help='Label for this run (saved to results log)')
     parser.add_argument('--compare',     action='store_true',
@@ -718,21 +932,33 @@ def main():
     cost = 0.0 if args.no_costs else TRANSACTION_COST
 
     # Auto-generate run name if not provided
-    run_name = args.name or (
-        f"top{args.top}_"
-        f"{'noQ_' if args.no_quality else ''}"
-        f"sc{int(args.sector_cap*100)}_"
-        f"{'dd'+str(int(args.exit_drawdown*100))+'_' if args.exit_drawdown else ''}"
-        f"{'sd'+str(int(args.score_decay))+'_' if args.score_decay else ''}"
-        f"{args.years}y"
-    )
+    if args.signal_mode:
+        run_name = args.name or (
+            f"signal_buy{int(args.buy_threshold)}_sell{int(args.sell_threshold)}_"
+            f"sl{int(args.stop_loss*100)}_"
+            f"{'noQ_' if args.no_quality else ''}"
+            f"{args.years}y"
+        )
+    else:
+        run_name = args.name or (
+            f"top{args.top}_"
+            f"{'noQ_' if args.no_quality else ''}"
+            f"sc{int(args.sector_cap*100)}_"
+            f"{'dd'+str(int(args.exit_drawdown*100))+'_' if args.exit_drawdown else ''}"
+            f"{'sd'+str(int(args.score_decay))+'_' if args.score_decay else ''}"
+            f"{args.years}y"
+        )
 
     print("\n" + "="*64)
     print("  AI HEDGE FUND — PORTFOLIO BACKTEST")
     print(f"  Run: {run_name}")
-    print(f"  Universe: NIFTY50  |  Window: {args.years}Y  |  Top-{args.top} stocks")
+    print(f"  Universe: NIFTY50  |  Window: {args.years}Y")
+    if args.signal_mode:
+        print(f"  Mode: SIGNAL-DRIVEN  |  Buy≥{args.buy_threshold:.0f}  Sell<{args.sell_threshold:.0f}  Stop={args.stop_loss*100:.0f}%")
+    else:
+        print(f"  Mode: Calendar  |  Top-{args.top} stocks")
     sector_cap_str = f"{int(args.sector_cap * 100)}% cap" if args.sector_cap > 0 else "no cap"
-    print(f"  Rebalance: Monthly  |  Costs: {'none' if cost == 0 else '0.1% per trade'}  |  Sector: {sector_cap_str}")
+    print(f"  Costs: {'none' if cost == 0 else '0.1% per trade'}  |  Sector: {sector_cap_str}")
     print("="*64)
 
     # Fetch prices
@@ -759,11 +985,23 @@ def main():
     print(f"  Stocks with data in window: {len(prices_bt)}")
 
     # Run simulation
-    print(f"\n  Running monthly simulation (top-{args.top}) …")
-    pv, trade_log = run_simulation(
-        prices_bt, bench_bt, quality_map, args.top, cost,
-        args.sector_cap, args.exit_drawdown, args.score_decay
-    )
+    if args.signal_mode:
+        print(f"\n  Running signal-driven simulation …")
+        pv, trade_log = run_signal_simulation(
+            prices_bt, bench_bt, quality_map,
+            buy_threshold=args.buy_threshold,
+            sell_threshold=args.sell_threshold,
+            stop_loss=args.stop_loss,
+            max_positions=args.top,
+            transaction_cost=cost,
+            sector_cap=args.sector_cap,
+        )
+    else:
+        print(f"\n  Running monthly simulation (top-{args.top}) …")
+        pv, trade_log = run_simulation(
+            prices_bt, bench_bt, quality_map, args.top, cost,
+            args.sector_cap, args.exit_drawdown, args.score_decay
+        )
 
     # Compute metrics
     bm = bench_metrics(bench_bt) if not bench_bt.empty else {
@@ -791,8 +1029,8 @@ def main():
         'years':          args.years,
         'top_n':          args.top,
         'sector_cap':     args.sector_cap,
-        'exit_drawdown':  args.exit_drawdown,
-        'score_decay':    args.score_decay,
+        'exit_drawdown':  args.exit_drawdown if not args.signal_mode else args.stop_loss,
+        'score_decay':    args.score_decay if not args.signal_mode else args.sell_threshold,
         'quality':        not args.no_quality,
         'costs':          not args.no_costs,
     }, m, bm)
