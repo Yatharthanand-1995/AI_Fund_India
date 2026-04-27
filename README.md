@@ -1,521 +1,249 @@
-# 🚀 AI Hedge Fund - Stock Analysis Platform
+# AI Hedge Fund — Indian Stock Market Analysis Platform
 
-**Version**: 2.0 (Enhanced Dashboard)
-**Status**: Production Ready ✅
-**Last Updated**: February 1, 2026
-
----
-
-## 📖 Overview
-
-A comprehensive AI-powered stock analysis platform for Indian stock markets that combines **5 specialized AI agents** with **historical data tracking**, **interactive visualizations**, and **portfolio management** capabilities.
-
-### Key Features
-
-✅ **Real-time Analysis** - Analyze any NIFTY 50 stock instantly
-✅ **5 AI Agents** - Fundamentals, Momentum, Quality, Sentiment, Institutional Flow
-✅ **Adaptive Weights** - Automatically adjusts based on market regime
-✅ **Historical Tracking** - SQLite database with automated data collection
-✅ **Interactive Charts** - 8 Recharts visualizations
-✅ **Portfolio Management** - Watchlist with performance tracking
-✅ **Stock Comparison** - Side-by-side analysis of up to 4 stocks
-✅ **Advanced Filtering** - Filter top picks by sector, recommendation, score
-✅ **Export Functionality** - CSV/JSON export of analysis data
-✅ **System Analytics** - Monitor performance and agent metrics
+**Version**: 3.0  
+**Status**: Production Ready  
+**Last Updated**: April 2026
 
 ---
 
-## 🎯 Quick Start
+## Overview
+
+An AI-powered stock analysis and portfolio management platform for Indian markets. Five specialized AI agents score every NIFTY 50 stock across fundamentals, momentum, quality, sentiment, and institutional flow. A signal-driven portfolio engine then acts on those scores the way an institutional fund manager would — buying on conviction, holding winners, and cutting losers when the thesis breaks.
+
+---
+
+## Features
+
+| Category | What it does |
+|---|---|
+| **5 AI Agents** | Fundamentals · Momentum · Quality · Sentiment · Institutional Flow — run in parallel, results in ~3s per stock |
+| **Adaptive Weights** | Regime detector (BULL/BEAR/SIDEWAYS × HIGH/NORMAL/LOW vol) blends agent weights using IC-calibrated coefficients |
+| **Signal-Driven Portfolio** | Buy ≥ score threshold, hold until thesis breaks, sell on score drop or stop-loss — no calendar churn |
+| **Backtester** | Full 3-year NIFTY50 simulation with sector caps, IT hard cap, equity curve, Sharpe, alpha, win rate |
+| **Historical Tracking** | SQLite DB auto-populated by background collector every 4h during market hours |
+| **Screener** | Server-side filtering by score, sector, recommendation, RSI, trend |
+| **Sector Analysis** | Sector heatmap, rankings, top stock per sector |
+| **Watchlist** | REST-backed watchlist with live scores |
+| **Compare** | Side-by-side agent score comparison for up to 4 stocks |
+| **Alerts** | Score-change and regime-shift alerts, badge on header |
+| **Export** | CSV / JSON export of any analysis |
+
+---
+
+## Quick Start
 
 ### Prerequisites
-
 - Python 3.11+
 - Node.js 18+
-- npm or yarn
 
-### Installation
+### Setup
 
 ```bash
-# 1. Clone the repository
-git clone <repository-url>
+# 1. Clone
+git clone https://github.com/Yatharthanand-1995/AI_Fund_India
 cd "Indian Stock Fund"
 
-# 2. Backend Setup
-python3 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+# 2. Python dependencies
+python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 
-# 3. Frontend Setup
-cd frontend
-npm install
-cd ..
+# 3. Frontend dependencies
+cd frontend && npm install && cd ..
 
-# 4. Environment Configuration
+# 4. Environment (optional — works without any keys)
 cp .env.example .env
-# Edit .env with your API keys (optional for basic usage)
 ```
 
-### Running the Application
+### Run
 
 ```bash
-# Terminal 1: Start Backend
-uvicorn api.main:app --reload --port 8000
+# Terminal 1 — Backend (port 8010)
+python3 -m uvicorn api.main:app --host 0.0.0.0 --port 8010
 
-# Terminal 2: Start Frontend
-cd frontend
-npm run dev
+# Terminal 2 — Frontend (port 3000)
+cd frontend && npm run dev
 ```
 
-**Access**:
-- Frontend: http://localhost:3000
-- Backend API: http://localhost:8000
-- API Docs: http://localhost:8000/docs
+Open http://localhost:3000
+
+API docs: http://localhost:8010/docs
 
 ---
 
-## 🏗️ Architecture
-
-### System Components
+## Architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                   React Frontend                     │
-│  (Vite + TypeScript + Tailwind + Recharts)         │
-└─────────────────┬───────────────────────────────────┘
-                  │ HTTP/REST
-┌─────────────────▼───────────────────────────────────┐
-│                FastAPI Backend                       │
-│  (Python 3.11+ with async support)                  │
-├──────────────────────────────────────────────────────┤
-│  ┌──────────────┐  ┌──────────────┐  ┌────────────┐ │
-│  │ 5 AI Agents  │  │ Market       │  │ Data       │ │
-│  │ • Fundamentals│  │ Regime       │  │ Providers  │ │
-│  │ • Momentum   │  │ Detector     │  │ • NSEpy    │ │
-│  │ • Quality    │  │              │  │ • Yahoo    │ │
-│  │ • Sentiment  │  │              │  │ Finance    │ │
-│  │ • Institutional│ │              │  │            │ │
-│  └──────────────┘  └──────────────┘  └────────────┘ │
-└─────────────────┬───────────────────────────────────┘
-                  │
-┌─────────────────▼───────────────────────────────────┐
-│           SQLite Historical Database                 │
-│  • Stock analyses history                           │
-│  • Market regime timeline                           │
-│  • User watchlists                                  │
-│  • Search tracking                                  │
-└─────────────────────────────────────────────────────┘
+React + TypeScript + Tailwind (port 3000)
+          │  REST via Vite proxy
+FastAPI backend (port 8010)
+    ├── 5 AI agents (parallel ThreadPoolExecutor)
+    ├── Market regime detector (6h cache)
+    ├── Portfolio manager (signal-driven, SQLite)
+    ├── Backtester (3Y simulation engine)
+    ├── Data collector (APScheduler, every 4h)
+    └── Hybrid data provider (NSEpy → Yahoo fallback)
+          │
+SQLite databases
+    ├── data/analysis_history.db  — stock score history, regime timeline, watchlist, alerts
+    └── data/portfolio.db         — holdings, closed trades, signal log, config
 ```
 
-### Technology Stack
+### Tech Stack
 
-**Backend**:
-- FastAPI - Modern async web framework
-- Python 3.11+ - Latest Python features
-- SQLite - Historical data storage
-- APScheduler - Background task scheduling
-- NSEpy/yfinance - Market data providers
-
-**Frontend**:
-- React 18 - UI library
-- TypeScript - Type safety
-- Vite - Build tool
-- Recharts - Data visualization
-- Zustand - State management
-- React Router - Navigation
-- Tailwind CSS - Styling
-- Axios - HTTP client
+**Backend**: FastAPI · Python 3.11+ · SQLite (WAL mode) · APScheduler · NSEpy · yfinance  
+**Frontend**: React 18 · TypeScript · Vite · Recharts · Zustand · React Router · Tailwind · Axios
 
 ---
 
-## 📊 Features
+## Pages
 
-### 1. Stock Analysis
-
-Analyze any NIFTY 50 stock with comprehensive AI-powered insights:
-
-- **Composite Score** (0-100): Overall stock quality
-- **Recommendation**: STRONG BUY, BUY, WEAK BUY, HOLD, WEAK SELL, SELL
-- **Confidence Level**: AI's confidence in the recommendation
-- **Agent Breakdown**: Individual scores from 5 specialized agents
-- **LLM Narrative**: AI-generated investment thesis
-- **Market Context**: Current market regime and adaptive weights
-
-### 2. Top Picks
-
-Discover best opportunities from NIFTY 50:
-
-- **Advanced Filters**: Sector, recommendation, sort order, top N
-- **Recommendation Distribution**: Visual pie chart breakdown
-- **Export**: Download results as CSV or JSON
-- **Real-time Rankings**: Updated based on latest analysis
-
-### 3. Historical Analysis
-
-Track stock performance over time:
-
-- **Price & Score Charts**: Dual-axis visualization
-- **Trend Analysis**: Linear regression with trend indicators
-- **Recommendation History**: Track rating changes
-- **Statistics**: Avg, min, max scores with data points
-- **Regime Correlation**: See how regime changes affected performance
-
-### 4. Portfolio Management
-
-Manage your watchlist:
-
-- **CRUD Operations**: Add, view, remove stocks
-- **Latest Scores**: See current ratings
-- **Performance Tracking**: Monitor portfolio over time
-- **Bulk Actions**: Refresh all, export, clear
-
-### 5. Stock Comparison
-
-Compare up to 4 stocks side-by-side:
-
-- **Comprehensive Table**: All metrics in one view
-- **Agent Score Comparison**: See strengths/weaknesses
-- **Radar Chart Overlay**: Visual comparison
-- **Historical Performance**: Compare trends
-
-### 6. Sector Analysis
-
-Analyze sector performance:
-
-- **Heatmap Visualization**: Treemap of sectors
-- **Sector Rankings**: Top performers by sector
-- **Top Picks**: Best stock in each sector
-- **Trend Analysis**: Sector momentum
-
-### 7. System Analytics
-
-Monitor system health:
-
-- **KPIs**: Uptime, requests, response time, error rate, cache hit
-- **Agent Performance**: See which agents perform best
-- **Data Provider Stats**: NSEpy vs Yahoo Finance comparison
-- **Request Timeline**: Visual activity graph
+| Route | Page | Description |
+|---|---|---|
+| `/` | Dashboard | Market regime, quick search, watchlist widget, top sectors |
+| `/ideas` | Investment Ideas | Top NIFTY50 picks with filters and CSV export |
+| `/screener` | Screener | Server-side filtering by score / sector / RSI / trend |
+| `/suggestions` | Suggestions | AI-ranked stock suggestions |
+| `/portfolio` | Live Portfolio | Signal engine — evaluate, buy, hold, sell with live P&L |
+| `/backtest` | Backtester | Run / compare 3Y simulations with equity curve |
+| `/stock/:symbol` | Stock Details | Deep dive: agents, historical chart, comparison tab |
+| `/sectors` | Sector Analysis | Heatmap, sector rankings, top picks per sector |
+| `/watchlist` | Watchlist | REST-backed watchlist with live scores |
+| `/compare` | Compare | Side-by-side multi-stock comparison |
+| `/analytics` | Analytics | System metrics, agent performance, data provider stats |
+| `/system` | System Health | Health check, collector status, cache stats |
+| `/about` | About | Agent methodology, market regime explanation |
 
 ---
 
-## 🎨 User Interface
+## Portfolio Engine
 
-### Pages
+The signal-driven portfolio (`/portfolio`) replicates institutional buy/hold/sell logic:
 
-1. **Dashboard** (`/`)
-   - Quick stock search
-   - KPI cards (regime, total analyses, watchlist, cache)
-   - Watchlist widget (top 5)
-   - Top sectors widget (top 3)
-   - Market regime timeline
-   - Analysis results with charts
+- **BUY** — composite score ≥ `buy_threshold` (default 65) and sector cap allows
+- **HOLD** — score between `sell_threshold` (50) and `buy_threshold`; price above stop-loss floor
+- **SELL_SCORE** — score drops below `sell_threshold` (thesis broken)
+- **SELL_STOP** — price falls more than `stop_loss_pct` (10%) from entry
+- **WATCH** — stocks near buy threshold not yet in portfolio
 
-2. **Top Picks** (`/top-picks`)
-   - Advanced filters
-   - Recommendation pie chart
-   - Ranked stock cards
-   - Export functionality
+**Sector rules**: max 30% in any sector; IT hard-capped at 2 positions regardless.  
+**Sizing**: score-proportional within position count limit (max 10).  
+**Persistence**: all trades stored in `data/portfolio.db` and survive restarts.
 
-3. **Stock Details** (`/stock/:symbol`)
-   - 4 tabs: Overview, Historical, Agents, Compare
-   - Watchlist toggle
-   - Deep agent analysis
-   - Historical charts
-   - Comparison tools
+### Portfolio API
 
-4. **Analytics** (`/analytics`)
-   - System performance metrics
-   - Agent statistics
-   - Request timeline
-
-5. **Sector Analysis** (`/sectors`)
-   - Sector heatmap
-   - Rankings table
-   - Detailed metrics
-
-6. **Watchlist** (`/watchlist`)
-   - Full watchlist table
-   - Performance chart
-   - CRUD operations
-
-7. **Comparison** (`/compare`)
-   - Multi-stock selector
-   - Side-by-side table
-   - Radar overlay
-
-8. **About** (`/about`)
-   - System information
-   - Agent descriptions
-   - Methodology
+```
+GET  /portfolio/config              — current thresholds
+POST /portfolio/config?buy_threshold=65&...  — update thresholds
+GET  /portfolio/holdings            — open positions with live P&L
+GET  /portfolio/closed              — closed trade history
+POST /portfolio/evaluate            — score NIFTY50, apply signal logic, update DB
+POST /portfolio/buy?symbol=X&entry_price=Y   — manual buy
+POST /portfolio/sell?symbol=X&exit_price=Y  — manual sell
+GET  /portfolio/performance         — win rate, avg win/loss, best/worst
+GET  /portfolio/signals/history     — full signal log
+POST /portfolio/reset               — wipe all holdings and trades
+```
 
 ---
 
-## 🔧 Configuration
+## Backtester
 
-### Environment Variables
+`scripts/portfolio_backtest.py` — 3-year monthly simulation over NIFTY50:
 
 ```bash
-# API Configuration
-OPENAI_API_KEY=your_openai_key_here  # Optional for narratives
-LOG_LEVEL=INFO
+# Basic run
+python3 scripts/portfolio_backtest.py --years 3 --top-n 10
 
-# Historical Data Collection
+# Signal-driven mode (institutional logic)
+python3 scripts/portfolio_backtest.py --signal-mode --buy-threshold 60 --sell-threshold 40
+
+# With sector cap
+python3 scripts/portfolio_backtest.py --sector-cap 0.30
+
+# Save and compare runs
+python3 scripts/portfolio_backtest.py --name "signal_b60_s40" --signal-mode
+python3 scripts/portfolio_backtest.py --compare
+```
+
+Results auto-append to `scripts/backtrack_results.csv`.
+
+**Best configuration found** (signal_b60_s40_sl12_noQ):  
+Total return +22.6% · Sharpe +0.10 · No IT overweight
+
+---
+
+## Key API Endpoints
+
+```
+POST /analyze                     — score a single stock
+POST /analyze/batch               — score multiple stocks in parallel
+GET  /portfolio/top-picks         — top NIFTY50 picks
+GET  /screener                    — filtered stock list
+GET  /market/regime               — current regime + weights
+GET  /history/stock/{symbol}      — score history for a stock
+GET  /history/regime              — market regime timeline
+GET  /analytics/system            — system KPIs
+GET  /analytics/sectors           — sector performance
+GET  /analytics/agents            — agent performance stats
+GET  /backtest/runs               — list past backtest runs
+POST /backtest/run                — run a new backtest
+GET  /backtest/results/{run_id}   — equity curve + signals
+GET  /health                      — health check
+```
+
+---
+
+## Configuration
+
+### Backend (.env)
+
+```bash
+# Data collection
 ENABLE_HISTORICAL_COLLECTION=true
-HISTORICAL_COLLECTION_INTERVAL=14400  # 4 hours
+HISTORICAL_COLLECTION_INTERVAL=14400   # seconds (4h)
 DATA_RETENTION_DAYS=365
-DATABASE_PATH=data/analysis_history.db
 
-# Market Hours (IST)
-MARKET_OPEN_HOUR=9
-MARKET_OPEN_MINUTE=15
-MARKET_CLOSE_HOUR=15
-MARKET_CLOSE_MINUTE=30
+# Optional LLM for narratives
+OPENAI_API_KEY=...
 
-# Background Tasks
-ENABLE_BACKGROUND_TASKS=true
-COLLECTION_BATCH_SIZE=50
+# Optional API key auth
+ENABLE_API_KEY_AUTH=false
+API_KEY=...
+
+# Port
+API_PORT=8010
 ```
 
-### Frontend Configuration
+### Frontend (.env)
 
 ```bash
-# Frontend .env
-VITE_API_URL=http://localhost:8000
+VITE_API_URL=/api          # proxied to backend in dev
+VITE_API_KEY=              # optional, sent as X-Api-Key header
 ```
 
 ---
 
-## 📚 API Documentation
-
-### Interactive API Docs
-
-Visit http://localhost:8000/docs for full interactive Swagger documentation.
-
-### Key Endpoints
-
-**Analysis**:
-- `POST /analyze` - Analyze a stock
-- `POST /batch-analyze` - Analyze multiple stocks
-- `GET /top-picks` - Get top NIFTY 50 picks
-
-**Historical Data**:
-- `GET /history/stock/{symbol}` - Get stock history
-- `GET /history/regime` - Get market regime timeline
-
-**Analytics**:
-- `GET /analytics/system` - System metrics
-- `GET /analytics/sectors` - Sector analysis
-- `GET /analytics/agents` - Agent performance
-
-**Watchlist**:
-- `POST /watchlist` - Add to watchlist
-- `GET /watchlist` - Get watchlist
-- `DELETE /watchlist/{symbol}` - Remove from watchlist
-
-**Other**:
-- `GET /market-regime` - Current market regime
-- `POST /compare` - Compare stocks
-- `GET /export/analysis/{symbol}` - Export data
-- `GET /health` - Health check
-
-See [API_DOCUMENTATION.md](API_DOCUMENTATION.md) for complete details.
-
----
-
-## 🧪 Testing
-
-### Backend Tests
-
-```bash
-# Run all tests
-python3 -m pytest tests/ -v
-
-# Run specific test file
-python3 -m pytest tests/test_backend_comprehensive.py -v
-
-# Run with coverage
-python3 -m pytest tests/ --cov=data --cov=api --cov-report=html
-```
-
-**Test Coverage**: 100% database, 100% API endpoints
-
-### Frontend Tests
-
-```bash
-cd frontend
-
-# Install test dependencies
-npm install
-
-# Run tests
-npm test
-
-# Run with UI
-npm run test:ui
-
-# Run with coverage
-npm run test:coverage
-```
-
-**Test Coverage**: ~30% (hooks, components, pages)
-
-See [TESTING_REPORT.md](TESTING_REPORT.md) and [frontend/TESTING.md](frontend/TESTING.md) for details.
-
----
-
-## ⚡ Performance
-
-### Benchmarks
-
-**Frontend**:
-- Initial Load: 0.8s (p95)
-- Bundle Size: 180KB (gzipped)
-- Chart Rendering: 80ms (average)
-- Page Navigation: 150ms (average)
-
-**Backend**:
-- Stock Analysis: 2.2s (p95)
-- Historical Query: 20ms (p95)
-- Top Picks (10): 4.5s (p95)
-- Database Query: 5ms (average)
-
-**Optimizations Applied**:
-- Code splitting ✅
-- Lazy loading ✅
-- React.memo ✅
-- SQLite WAL mode ✅
-- Query caching ✅
-- Composite indexes ✅
-
-See [PERFORMANCE_OPTIMIZATION.md](PERFORMANCE_OPTIMIZATION.md) for details.
-
----
-
-## 📦 Deployment
-
-### Production Build
+## Testing
 
 ```bash
 # Backend
-pip install -r requirements.txt
-# Run with gunicorn
-gunicorn api.main:app -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000
+python3 -m pytest tests/ -v
 
 # Frontend
-cd frontend
-npm run build
-# Serve dist/ folder with nginx or similar
+cd frontend && npm test
+cd frontend && npm run test:coverage
 ```
 
-### Docker Deployment
+---
 
-```bash
-# Build and run
-docker-compose up -d
+## Known Limitations
 
-# View logs
-docker-compose logs -f
-
-# Stop
-docker-compose down
-```
-
-See [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) for complete instructions.
+- NSEpy (`nsepy` lib) has a Python 3.13 incompatibility (`FrameLocalsProxy` error). Yahoo Finance fallback activates automatically — no action needed.
+- Narrative generation requires an OpenAI/compatible API key. Without one, rule-based narratives are used.
+- Paper portfolio only — no broker integration.
 
 ---
 
-## 🤝 Contributing
+## License
 
-### Development Workflow
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Make your changes
-4. Run tests (`pytest tests/` and `npm test`)
-5. Commit your changes (`git commit -m 'Add amazing feature'`)
-6. Push to the branch (`git push origin feature/amazing-feature`)
-7. Open a Pull Request
-
-### Code Style
-
-- **Python**: PEP 8, Black formatter
-- **TypeScript**: ESLint, Prettier
-- **Commits**: Conventional Commits format
-
----
-
-## 📖 Documentation
-
-- [API Documentation](API_DOCUMENTATION.md) - Complete API reference
-- [Deployment Guide](DEPLOYMENT_GUIDE.md) - Production deployment
-- [Testing Report](TESTING_REPORT.md) - Test coverage and results
-- [Performance Optimization](PERFORMANCE_OPTIMIZATION.md) - Performance guide
-- [Implementation Status](IMPLEMENTATION_STATUS.md) - Feature completion
-- [User Guide](USER_GUIDE.md) - End-user documentation
-
----
-
-## 🎯 Roadmap
-
-### Completed (v2.0)
-- ✅ Historical data tracking
-- ✅ Interactive visualizations (8 charts)
-- ✅ Portfolio management
-- ✅ Stock comparison
-- ✅ Advanced filtering
-- ✅ Export functionality
-- ✅ System analytics
-- ✅ Performance optimization
-- ✅ Comprehensive testing
-
-### Planned (v3.0)
-- ⏳ Real-time WebSocket updates
-- ⏳ Email/SMS alerts
-- ⏳ Mobile app (React Native)
-- ⏳ Backtesting engine
-- ⏳ Social features
-- ⏳ Broker integration
-
----
-
-## 📄 License
-
-This project is proprietary software. All rights reserved.
-
----
-
-## 👥 Team
-
-**Development**: AI-assisted development with Claude
-**Testing**: Comprehensive test suite (28 backend + 30 frontend tests)
-**Documentation**: Complete technical and user documentation
-
----
-
-## 🙏 Acknowledgments
-
-- **NSEpy** - Indian stock market data
-- **Yahoo Finance** - Supplementary market data
-- **OpenAI** - LLM for narrative generation
-- **Recharts** - Beautiful chart library
-- **FastAPI** - Modern Python web framework
-- **React** - UI library
-
----
-
-## 📞 Support
-
-For issues, questions, or feature requests:
-- Create an issue on GitHub
-- Check existing documentation
-- Review API docs at `/docs`
-
----
-
-**Built with ❤️ using AI-assisted development**
-
-**Status**: Production Ready ✅
-**Version**: 2.0
-**Code Quality**: Excellent ✅
-**Test Coverage**: Comprehensive ✅
-**Documentation**: Complete ✅
-**Performance**: Optimized ✅
+Proprietary. All rights reserved.
