@@ -138,6 +138,7 @@ app.add_middleware(ErrorTrackingMiddleware)
 from core.di_container import get_container
 from core.cache_manager import get_cache_manager
 from core.config import get_global_config
+from core.portfolio_manager import PortfolioManager
 
 config = get_global_config()
 container = get_container()
@@ -156,6 +157,9 @@ data_collector = init_collector(
     stock_scorer=stock_scorer,
     market_regime_service=market_regime_service
 )
+
+# Initialize portfolio manager (signal-driven paper portfolio)
+portfolio_manager = PortfolioManager(db_path="data/portfolio.db")
 
 # Initialize unified cache manager
 cache_manager = get_cache_manager()
@@ -1543,6 +1547,162 @@ async def remove_from_watchlist(symbol: str):
     except Exception as e:
         logger.error(f"Failed to remove from watchlist: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to remove from watchlist: {str(e)}")
+
+
+# ============================================================================
+# Portfolio (Signal-Driven) Endpoints
+# ============================================================================
+
+@app.get("/portfolio/config", tags=["Portfolio"])
+async def get_portfolio_config():
+    """Return current signal thresholds and position limits."""
+    try:
+        return portfolio_manager.get_config().to_dict()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/portfolio/config", tags=["Portfolio"])
+async def update_portfolio_config(
+    buy_threshold: Optional[float] = None,
+    sell_threshold: Optional[float] = None,
+    stop_loss_pct: Optional[float] = None,
+    max_positions: Optional[int] = None,
+    sector_cap_pct: Optional[float] = None,
+):
+    """Update signal thresholds and position limits."""
+    try:
+        updates = {k: v for k, v in {
+            'buy_threshold': buy_threshold,
+            'sell_threshold': sell_threshold,
+            'stop_loss_pct': stop_loss_pct,
+            'max_positions': max_positions,
+            'sector_cap_pct': sector_cap_pct,
+        }.items() if v is not None}
+        return portfolio_manager.update_config(**updates).to_dict()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/portfolio/holdings", tags=["Portfolio"])
+async def get_portfolio_holdings():
+    """Return all open positions with live scores and P&L."""
+    try:
+        holdings = portfolio_manager.get_holdings()
+        # Enrich with live price from latest DB analysis
+        for h in holdings:
+            latest = historical_db.get_latest_stock_analysis(h['symbol'])
+            if latest:
+                h['current_score'] = latest.get('composite_score')
+                h['current_price'] = latest.get('price')
+                h['recommendation'] = latest.get('recommendation')
+                if h['current_price'] and h['entry_price']:
+                    h['return_pct'] = (h['current_price'] - h['entry_price']) / h['entry_price'] * 100
+        return {'holdings': holdings, 'count': len(holdings)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/portfolio/closed", tags=["Portfolio"])
+async def get_closed_trades(limit: int = 50):
+    """Return closed trade history with P&L."""
+    try:
+        trades = portfolio_manager.get_closed_trades(limit=limit)
+        return {'trades': trades, 'count': len(trades)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/portfolio/evaluate", tags=["Portfolio"])
+async def evaluate_portfolio_signals(symbols: Optional[List[str]] = None):
+    """
+    Run signal evaluation against live agent scores.
+
+    Scores the universe (or provided symbols), then applies the institutional
+    buy/hold/sell logic and returns actionable signals.
+    Automatically adds BUY signals and removes SELL signals from the portfolio.
+    """
+    try:
+        nifty_data = await run_in_thread(get_nifty_data)
+
+        # Determine universe to score
+        if symbols:
+            universe = [s if s.endswith('.NS') else f"{s}.NS" for s in symbols]
+        else:
+            from data.stock_universe import get_nifty50_symbols
+            universe = get_nifty50_symbols()
+
+        # Batch score
+        logger.info(f"Portfolio evaluation: scoring {len(universe)} stocks")
+        results = await run_in_thread(
+            stock_scorer.score_stocks_batch, universe, nifty_data
+        )
+        valid = [r for r in results if r.get('composite_score') is not None
+                 and r.get('recommendation') != 'ERROR']
+
+        # Get current regime
+        regime_data = await run_in_thread(market_regime_service.get_current_regime)
+        regime = regime_data.get('regime', 'UNKNOWN') if regime_data else 'UNKNOWN'
+
+        result = portfolio_manager.evaluate(valid, regime=regime)
+        return result.to_dict()
+
+    except Exception as e:
+        logger.error(f"Portfolio evaluation failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/portfolio/buy", tags=["Portfolio"])
+async def manual_portfolio_buy(symbol: str, entry_price: float,
+                               entry_score: float = 0.0):
+    """Manually add a position to the portfolio."""
+    try:
+        result = portfolio_manager.manual_buy(symbol, entry_price, entry_score)
+        return {'success': True, **result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/portfolio/sell", tags=["Portfolio"])
+async def manual_portfolio_sell(symbol: str, exit_price: float):
+    """Manually close a position."""
+    try:
+        result = portfolio_manager.manual_sell(symbol, exit_price, reason='manual')
+        if not result:
+            raise HTTPException(status_code=404, detail=f"{symbol} not in open holdings")
+        return {'success': True, **result}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/portfolio/performance", tags=["Portfolio"])
+async def get_portfolio_performance():
+    """Return aggregated win rate, avg return, best/worst trades."""
+    try:
+        return portfolio_manager.get_performance_summary()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/portfolio/signals/history", tags=["Portfolio"])
+async def get_signal_history(limit: int = 100):
+    """Return recent signal log entries."""
+    try:
+        return {'signals': portfolio_manager.get_signal_history(limit), 'limit': limit}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/portfolio/reset", tags=["Portfolio"])
+async def reset_portfolio():
+    """Clear all holdings and signal history (irreversible)."""
+    try:
+        portfolio_manager.reset()
+        return {'success': True, 'message': 'Portfolio reset complete'}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================================================

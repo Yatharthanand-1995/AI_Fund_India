@@ -432,6 +432,70 @@ class APIClient {
   async put(url: string, data?: any, config?: any): Promise<any> {
     return this.client.put(url, data, config);
   }
+
+  // ── Portfolio (signal-driven) ─────────────────────────────────────────
+
+  async getPortfolioConfig(): Promise<import('@/types').PortfolioConfig> {
+    const r = await this.client.get('/portfolio/config');
+    return r.data;
+  }
+
+  async updatePortfolioConfig(
+    params: Partial<import('@/types').PortfolioConfig>
+  ): Promise<import('@/types').PortfolioConfig> {
+    const r = await this.client.post('/portfolio/config', null, { params });
+    return r.data;
+  }
+
+  async getPortfolioHoldings(): Promise<import('@/types').HoldingsResponse> {
+    const r = await this.client.get('/portfolio/holdings');
+    return r.data;
+  }
+
+  async getClosedTrades(limit = 50): Promise<import('@/types').ClosedTradesResponse> {
+    const r = await this.client.get('/portfolio/closed', { params: { limit } });
+    return r.data;
+  }
+
+  async evaluatePortfolio(
+    symbols?: string[]
+  ): Promise<import('@/types').EvaluationResult> {
+    const r = await this.client.post('/portfolio/evaluate', symbols ?? null);
+    return r.data;
+  }
+
+  async getPortfolioPerformance(): Promise<import('@/types').PortfolioPerformance> {
+    const r = await this.client.get('/portfolio/performance');
+    return r.data;
+  }
+
+  async getSignalHistory(limit = 100): Promise<{ signals: any[]; limit: number }> {
+    const r = await this.client.get('/portfolio/signals/history', { params: { limit } });
+    return r.data;
+  }
+
+  async manualPortfolioBuy(
+    symbol: string, entryPrice: number, entryScore?: number
+  ): Promise<{ success: boolean }> {
+    const r = await this.client.post('/portfolio/buy', null, {
+      params: { symbol, entry_price: entryPrice, entry_score: entryScore ?? 0 },
+    });
+    return r.data;
+  }
+
+  async manualPortfolioSell(
+    symbol: string, exitPrice: number
+  ): Promise<{ success: boolean; return_pct: number }> {
+    const r = await this.client.post('/portfolio/sell', null, {
+      params: { symbol, exit_price: exitPrice },
+    });
+    return r.data;
+  }
+
+  async resetPortfolio(): Promise<{ success: boolean }> {
+    const r = await this.client.post('/portfolio/reset');
+    return r.data;
+  }
 }
 
 // Singleton instance

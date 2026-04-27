@@ -502,6 +502,96 @@ export interface CompareStocksResponse {
   timestamp: string;
 }
 
+// ============================================================================
+// Portfolio (Signal-Driven) Types
+// ============================================================================
+
+export interface PortfolioConfig {
+  buy_threshold: number;
+  sell_threshold: number;
+  stop_loss_pct: number;
+  max_positions: number;
+  sector_cap_pct: number;
+  updated_at: string;
+}
+
+export interface PortfolioHolding {
+  id: number;
+  symbol: string;
+  entry_price: number;
+  entry_score: number;
+  entry_date: string;
+  sector: string;
+  status: string;
+  // enriched by API
+  current_score?: number;
+  current_price?: number;
+  return_pct?: number;
+  recommendation?: string;
+}
+
+export interface ClosedTrade {
+  id: number;
+  symbol: string;
+  entry_price: number;
+  entry_score: number;
+  entry_date: string;
+  exit_price: number;
+  exit_date: string;
+  exit_reason: string;
+  return_pct: number;
+  sector: string;
+}
+
+export type SignalType = 'BUY' | 'HOLD' | 'SELL_SCORE' | 'SELL_STOP' | 'WATCH';
+
+export interface PortfolioSignal {
+  symbol: string;
+  signal: SignalType;
+  composite_score: number;
+  current_price: number | null;
+  entry_price: number | null;
+  return_pct: number | null;
+  reason: string;
+  sector: string;
+  recommendation: string;
+}
+
+export interface EvaluationResult {
+  evaluated_at: string;
+  n_holdings: number;
+  signals: PortfolioSignal[];
+  buys: PortfolioSignal[];
+  sells: PortfolioSignal[];
+  holds: PortfolioSignal[];
+  watches: PortfolioSignal[];
+  portfolio_return_pct: number;
+  regime: string;
+}
+
+export interface PortfolioPerformance {
+  n_open: number;
+  n_closed: number;
+  avg_open_return: number;
+  avg_closed_return: number;
+  total_trades: number;
+  win_rate: number;
+  avg_win: number;
+  avg_loss: number;
+  best_trade: number;
+  worst_trade: number;
+}
+
+export interface HoldingsResponse {
+  holdings: PortfolioHolding[];
+  count: number;
+}
+
+export interface ClosedTradesResponse {
+  trades: ClosedTrade[];
+  count: number;
+}
+
 /** Response from POST /backtest/run */
 export interface BacktestRunResult {
   success: boolean;

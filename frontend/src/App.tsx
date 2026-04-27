@@ -22,6 +22,7 @@ const Backtest = lazy(() => import('./pages/Backtest'));
 const SystemHealth = lazy(() => import('./pages/SystemHealth'));
 const Screener = lazy(() => import('./pages/Screener'));
 const Suggestions = lazy(() => import('./pages/Suggestions'));
+const Portfolio = lazy(() => import('./pages/Portfolio'));
 
 function App() {
   const { setMarketRegime, setStockUniverse, cacheTopPicks } = useStore();
@@ -115,6 +116,7 @@ function App() {
                 <Route path="/compare" element={<ErrorBoundary><Comparison /></ErrorBoundary>} />
                 <Route path="/backtest" element={<ErrorBoundary><Backtest /></ErrorBoundary>} />
                 <Route path="/system" element={<ErrorBoundary><SystemHealth /></ErrorBoundary>} />
+                <Route path="/portfolio" element={<ErrorBoundary><Portfolio /></ErrorBoundary>} />
                 <Route path="/about" element={<ErrorBoundary><About /></ErrorBoundary>} />
                 <Route path="*" element={<NotFound />} />
               </Routes>
