@@ -3,7 +3,7 @@ Market Regime Detection Service
 
 Analyzes market conditions (NIFTY50) and provides adaptive weights:
 - Trend Detection: Bull, Bear, Sideways
-- Volatility Detection: High, Normal, Low
+- Volatility Detection: High, Normal, Low (uses India VIX as primary signal)
 - Adaptive Weights: Adjust agent weights based on regime
 
 Strategy (IC-calibrated 2026-04-26, 29 NIFTY50 stocks):
@@ -12,6 +12,12 @@ Strategy (IC-calibrated 2026-04-26, 29 NIFTY50 stocks):
 - Bear + High Vol:   Maximum Quality/Safety (22/8/38/20/12)
 - Bear + Normal:     Quality + Fundamentals (28/10/32/18/12)
 - Sideways:          Balanced with raised Institutional (30/25/18/10/17)
+
+Volatility Source (India-specific):
+  Primary  : India VIX (^NSEINDVIX) — forward-looking implied vol from NIFTY options
+  Secondary: 30-day realized vol (backward-looking, always available)
+  Blend    : 70% VIX + 30% realized when VIX is available; 100% realized as fallback.
+  India VIX responds faster to FII exodus, election uncertainty, and global shocks.
 """
 
 import pandas as pd
@@ -142,6 +148,11 @@ class MarketRegimeService:
         },
     }
 
+    # India VIX symbol (NSE implied volatility index — forward-looking)
+    INDIA_VIX_SYMBOL = "^INDIAVIX"
+    # Blend weight: how much India VIX contributes vs realized vol when VIX is available
+    VIX_BLEND_WEIGHT = 0.70  # 70% VIX (forward-looking) + 30% realized (backward-looking)
+
     # How many % the SMA gap needs to be before we consider a trend "established".
     # Below this we blend toward neutral to avoid reacting to fresh crossovers.
     SMA_GAP_FULL_CONFIDENCE_PCT = 5.0   # 5% gap → 100% regime weights
@@ -270,9 +281,12 @@ class MarketRegimeService:
                         'metrics': {}
                     }
 
+            # Fetch India VIX (forward-looking; graceful None on failure)
+            india_vix = self._fetch_india_vix()
+
             # Detect regime
             trend, trend_metrics = self._detect_trend(nifty_data)
-            volatility, vol_metrics = self._detect_volatility(nifty_data)
+            volatility, vol_metrics = self._detect_volatility(nifty_data, india_vix=india_vix)
 
             # Combine regime
             regime = f"{trend}_{volatility}"
@@ -387,42 +401,83 @@ class MarketRegimeService:
             logger.error(f"Trend detection failed: {e}")
             return 'SIDEWAYS', {}
 
-    def _detect_volatility(self, nifty_data: pd.DataFrame, window: int = 30) -> Tuple[str, Dict]:
+    def _fetch_india_vix(self) -> Optional[float]:
         """
-        Detect market volatility
+        Fetch the latest India VIX level from yfinance.
+        Returns the most recent closing VIX value, or None on failure.
+        India VIX is the implied volatility index derived from NIFTY 50 options.
+        """
+        try:
+            import yfinance as yf
+            vix_ticker = yf.Ticker(self.INDIA_VIX_SYMBOL)
+            vix_hist = vix_ticker.history(period="5d")
+            if vix_hist.empty:
+                return None
+            vix_level = float(vix_hist['Close'].iloc[-1])
+            logger.info(f"  India VIX: {vix_level:.2f}")
+            return vix_level
+        except Exception as e:
+            logger.debug(f"India VIX fetch failed (will use realized vol): {e}")
+            return None
 
-        Uses 30-day rolling volatility (annualized)
+    def _detect_volatility(
+        self,
+        nifty_data: pd.DataFrame,
+        window: int = 30,
+        india_vix: Optional[float] = None
+    ) -> Tuple[str, Dict]:
+        """
+        Detect market volatility.
+
+        Uses India VIX as primary signal (forward-looking implied vol) blended
+        with 30-day realized vol (backward-looking). Falls back to realized vol
+        only when VIX is unavailable.
 
         Returns:
             (volatility_str, metrics_dict)
         """
         try:
-            # Calculate returns
+            # Calculate realized returns-based volatility
             returns = nifty_data['Close'].pct_change()
+            realized_vol = returns.rolling(window=window).std().iloc[-1]
+            realized_vol_pct = float(realized_vol * np.sqrt(252) * 100)
 
-            # Calculate 30-day rolling volatility (annualized)
-            volatility = returns.rolling(window=window).std().iloc[-1]
-            volatility_pct = float(volatility * np.sqrt(252) * 100)
-
-            # Also calculate recent volatility trend
             vol_series = returns.rolling(window=window).std() * np.sqrt(252) * 100
             vol_trend = 'increasing' if vol_series.iloc[-1] > vol_series.iloc[-10] else 'decreasing'
 
+            # Blend India VIX (forward-looking) with realized vol (backward-looking)
+            if india_vix is not None and india_vix > 0:
+                effective_vol_pct = (
+                    self.VIX_BLEND_WEIGHT * india_vix
+                    + (1.0 - self.VIX_BLEND_WEIGHT) * realized_vol_pct
+                )
+                vol_source = 'india_vix_blend'
+            else:
+                effective_vol_pct = realized_vol_pct
+                vol_source = 'realized_only'
+
             metrics = {
-                'volatility_pct': volatility_pct,
+                'volatility_pct': round(effective_vol_pct, 2),
+                'realized_vol_pct': round(realized_vol_pct, 2),
+                'india_vix': round(india_vix, 2) if india_vix is not None else None,
+                'volatility_source': vol_source,
                 'volatility_trend': vol_trend,
-                'volatility_window_days': window
+                'volatility_window_days': window,
             }
 
-            # Classify volatility
-            if volatility_pct > self.VOLATILITY_THRESHOLDS['high']:
+            # Classify using blended effective volatility
+            if effective_vol_pct > self.VOLATILITY_THRESHOLDS['high']:
                 vol_class = 'HIGH'
-            elif volatility_pct > self.VOLATILITY_THRESHOLDS['normal']:
+            elif effective_vol_pct > self.VOLATILITY_THRESHOLDS['normal']:
                 vol_class = 'NORMAL'
             else:
                 vol_class = 'LOW'
 
-            logger.info(f"  Volatility: {vol_class} ({volatility_pct:.1f}%)")
+            vix_str = f"{india_vix:.1f}" if india_vix is not None else "N/A"
+            logger.info(
+                f"  Volatility: {vol_class} (effective={effective_vol_pct:.1f}%, "
+                f"vix={vix_str}, realized={realized_vol_pct:.1f}%, source={vol_source})"
+            )
 
             return vol_class, metrics
 

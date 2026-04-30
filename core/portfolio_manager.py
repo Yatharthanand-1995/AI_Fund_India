@@ -15,7 +15,7 @@ import json
 import logging
 from contextlib import contextmanager
 from dataclasses import dataclass, asdict, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -49,6 +49,28 @@ NIFTY50_SECTORS: Dict[str, str] = {
 SECTOR_MAX_OVERRIDES: Dict[str, int] = {
     'IT': 2,  # cap based on IC diagnostic: worst sector by total contribution
 }
+
+
+def _is_fno_expiry_window(date: Optional[datetime] = None) -> bool:
+    """
+    Returns True if today is within 2 calendar days before the NSE F&O expiry
+    (last Thursday of the month), or on the expiry day itself.
+
+    During F&O expiry week, rollover flows and short-covering cause intraday
+    volatility spikes that distort entry prices. New BUY entries are suppressed.
+    Exits (SELL_STOP, SELL_SCORE) are NOT suppressed — the guard only blocks new entries.
+    """
+    d = (date or datetime.now(timezone.utc)).date()
+    # Find last Thursday of the current month
+    import calendar
+    last_day = calendar.monthrange(d.year, d.month)[1]
+    last_thursday = max(
+        datetime(d.year, d.month, day).date()
+        for day in range(last_day, last_day - 7, -1)
+        if datetime(d.year, d.month, day).weekday() == 3  # Thursday = 3
+    )
+    # Guard window: expiry day and 2 calendar days before it
+    return last_thursday - timedelta(days=2) <= d <= last_thursday
 
 
 def _clean_symbol(symbol: str) -> str:
@@ -439,6 +461,11 @@ class PortfolioManager:
             ))
 
         # ── Step 2: identify BUY candidates ───────────────────────────────
+        # F&O expiry guard: suppress new entries in the 2 days before/on last Thursday
+        fno_window = _is_fno_expiry_window()
+        if fno_window:
+            logger.info("F&O expiry window active — new BUY entries suppressed (exits still allowed)")
+
         # Sector counts from remaining holdings (after exits)
         remaining_holdings = self.db.get_open_holdings()
         sec_counts: Dict[str, int] = {}
@@ -490,6 +517,16 @@ class PortfolioManager:
                     symbol=native_sym, signal='WATCH', composite_score=score,
                     current_price=price, entry_price=None, return_pct=None,
                     reason=f"Sector cap reached: {sec} ({sec_counts.get(sec,0)} held)",
+                    sector=sec, recommendation=rec,
+                ))
+                continue
+
+            # F&O expiry window — defer to WATCH, do not execute entry
+            if fno_window:
+                signals.append(SignalItem(
+                    symbol=native_sym, signal='WATCH', composite_score=score,
+                    current_price=price, entry_price=None, return_pct=None,
+                    reason=f"F&O expiry window: entry deferred (score {score:.1f} qualifies)",
                     sector=sec, recommendation=rec,
                 ))
                 continue

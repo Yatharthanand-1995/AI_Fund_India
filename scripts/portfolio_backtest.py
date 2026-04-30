@@ -12,7 +12,7 @@ Methodology:
   • Scoring    : momentum-based (price-only, fully historically valid)
                  quality uses current yfinance fundamentals as constant proxy
                  (acceptable approximation for large-cap NIFTY stocks over 3Y)
-  • Costs      : 0.1% per trade (brokerage + STT + slippage estimate)
+  • Costs      : 0.27% per trade (27 bps: STT + brokerage + GST + stamp duty + exchange charges)
   • Benchmark  : NIFTY50 index (^NSEI)
 
 Metrics reported:
@@ -28,6 +28,7 @@ Usage:
 
 import sys
 import os
+import json
 import warnings
 import logging
 import argparse
@@ -63,7 +64,7 @@ NIFTY50 = [
 ]
 BENCHMARK = '^NSEI'
 
-TRANSACTION_COST = 0.001   # 0.1% per trade (round-trip = 0.2%)
+TRANSACTION_COST = 0.0027  # 27 bps/side: STT 0.1% sell + brokerage + GST + stamp duty + exchange charges
 SECTOR_CAP_DEFAULT = 0.30  # max 30% of portfolio in any one sector
 
 # Sector labels for NIFTY50 (used for concentration cap)
@@ -119,6 +120,26 @@ NIFTY50_SECTORS: Dict[str, str] = {
     'BHARTIARTL.NS':  'Telecom',
 }
 
+# ── Macro overlay: USD/INR sector sensitivity (backtest sector names) ─────────
+# Positive = benefits from INR depreciation (USD earner), negative = hurt by it
+_BT_SECTOR_CURRENCY_SENS: Dict[str, float] = {
+    'IT':     +1.0,   # large USD revenue exporters
+    'Pharma': +0.5,   # significant USD export revenues
+    'Metals': +0.4,   # commodity prices in USD, export-oriented
+    'FMCG':   -0.3,   # import input costs rise with weak INR
+    'Auto':   -0.2,   # commodity/input cost pressure
+}
+
+# ── Macro overlay: RBI rate cycle base adjustments (backtest sector names) ────
+_BT_SECTOR_RBI_BASE: Dict[str, float] = {
+    'Financials': 2.5,  # banks/NBFCs: NIM expansion on cuts
+    'Auto':       1.5,  # EMIs cheaper on rate cuts
+    'Consumer':   1.5,  # discretionary spending improves
+    'FMCG':       0.8,  # rural credit/consumption
+}
+_RBI_MAX_ADJ_PTS = 3.0
+_RBI_AMPLIFY_BPS = 50   # ≥50 bps in 6 months → 1.5× scale
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Data fetching
@@ -171,6 +192,101 @@ def get_quality_snapshot(symbols: List[str]) -> Dict[str, float]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Macro overlay helpers (USD/INR + RBI rate cycle)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def fetch_usdinr_prices(years: int) -> pd.Series:
+    """Pre-fetch USD/INR (INR=X) historical prices for macro overlay."""
+    import yfinance as yf
+    print(f"  Fetching USD/INR history …")
+    raw = yf.download("INR=X", period=f"{years + 1}y", auto_adjust=True, progress=False)
+    if raw.empty:
+        print("  WARNING: USD/INR data unavailable — currency overlay disabled")
+        return pd.Series(dtype=float)
+    if isinstance(raw.columns, pd.MultiIndex):
+        close = raw['Close']
+        col = 'INR=X' if 'INR=X' in close.columns else close.columns[0]
+        series = close[col].dropna()
+    else:
+        series = raw['Close'].dropna()
+    print(f"  USD/INR: {len(series)} trading days fetched")
+    return series
+
+
+def load_rbi_history() -> List[Dict]:
+    """Load MPC decision history from rbi_rate_config.json."""
+    config_path = project_root / 'data' / 'rbi_rate_config.json'
+    try:
+        with open(config_path) as f:
+            data = json.load(f)
+        return data.get('decision_history', [])
+    except Exception:
+        return []
+
+
+def usdinr_adj_at(inr_prices: pd.Series, as_of_date: pd.Timestamp, sector: str) -> float:
+    """Point-in-time USD/INR sector adjustment using price data up to as_of_date."""
+    sensitivity = _BT_SECTOR_CURRENCY_SENS.get(sector, 0.0)
+    if sensitivity == 0.0 or inr_prices.empty:
+        return 0.0
+    idx = inr_prices.index.get_indexer([as_of_date], method='ffill')[0]
+    if idx < 20:
+        return 0.0
+    hist = inr_prices.iloc[:idx + 1]
+    p_now = hist.iloc[-1]
+    p_20d = hist.iloc[-20]
+    if p_20d <= 0:
+        return 0.0
+    trend_pct = (p_now / p_20d - 1) * 100
+    if abs(trend_pct) < 1.0:   # noise threshold
+        return 0.0
+    raw_adj = sensitivity * trend_pct * 0.6   # scale: 5% IT move → +3 pts
+    return round(float(np.clip(raw_adj, -4.0, 4.0)), 2)
+
+
+def rbi_adj_at(rbi_history: List[Dict], as_of_date: pd.Timestamp, sector: str) -> float:
+    """
+    Point-in-time RBI sector adjustment: only uses decisions on or before as_of_date.
+    Returns 0 for pausing cycle or rate-agnostic sectors.
+    """
+    base = _BT_SECTOR_RBI_BASE.get(sector, 0.0)
+    if base == 0.0 or not rbi_history:
+        return 0.0
+    as_of = as_of_date.date() if hasattr(as_of_date, 'date') else as_of_date
+    past = [d for d in rbi_history
+            if datetime.strptime(d['date'], '%Y-%m-%d').date() <= as_of]
+    if len(past) < 2:
+        return 0.0
+    last2 = past[:2]  # history is newest-first
+    actions = [d['action'] for d in last2]
+    if 'cut' in actions and 'hike' not in actions:
+        cycle = 'cutting'
+    elif 'hike' in actions and 'cut' not in actions:
+        cycle = 'hiking'
+    else:
+        return 0.0  # pausing
+    cutoff = as_of - timedelta(days=182)
+    recent = [d for d in past
+              if datetime.strptime(d['date'], '%Y-%m-%d').date() >= cutoff]
+    cum_bps = sum(d['bps'] for d in recent)
+    direction = 1.0 if cycle == 'cutting' else -1.0
+    scale = 1.5 if abs(cum_bps) >= _RBI_AMPLIFY_BPS else 1.0
+    adj = direction * base * scale
+    return round(float(np.clip(adj, -_RBI_MAX_ADJ_PTS, _RBI_MAX_ADJ_PTS)), 2)
+
+
+def macro_adj_for_stock(
+    sym: str,
+    as_of_date: pd.Timestamp,
+    inr_prices: pd.Series,
+    rbi_history: List[Dict],
+) -> float:
+    """Combined USD/INR + RBI adjustment for a symbol at a point in time."""
+    sector = NIFTY50_SECTORS.get(sym, 'Other')
+    return usdinr_adj_at(inr_prices, as_of_date, sector) + rbi_adj_at(rbi_history, as_of_date, sector)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Scoring at a historical date
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -204,6 +320,51 @@ def momentum_score_at(prices: pd.Series, as_of_idx: int) -> Optional[float]:
     return sum(components) * 100
 
 
+def rs_acceleration_score_at(
+    prices: pd.Series,
+    bench_prices: pd.Series,
+    as_of_idx: int,
+    bench_as_of_idx: int,
+) -> float:
+    """
+    RS Acceleration = (3m RS vs NIFTY) - (6m RS vs NIFTY).
+    Positive  → momentum building (early stage, good entry)
+    Negative  → momentum fading  (extended run, mean-reversion risk)
+
+    Returns an adjustment in range [-10, +10] pts to add to composite score.
+    Threshold: only penalise when fading strongly (< -10pp) and only reward
+    when building clearly (> +5pp). Noise below those levels → 0.
+    """
+    hist  = prices.iloc[:as_of_idx + 1]
+    bench = bench_prices.iloc[:bench_as_of_idx + 1]
+
+    if len(hist) < 127 or len(bench) < 127:
+        return 0.0
+
+    def pct(series, days):
+        if len(series) < days + 1: return None
+        p0 = series.iloc[-(days + 1)]
+        return (series.iloc[-1] - p0) / p0 if p0 > 0 else None
+
+    r3s = pct(hist,  63);  r6s = pct(hist,  126)
+    r3b = pct(bench, 63);  r6b = pct(bench, 126)
+
+    if any(v is None for v in [r3s, r6s, r3b, r6b]):
+        return 0.0
+
+    rs3 = (r3s - r3b) * 100   # stock 3m excess return vs NIFTY
+    rs6 = (r6s - r6b) * 100   # stock 6m excess return vs NIFTY
+    accel = rs3 - rs6          # positive = building, negative = fading
+
+    if accel > 5:
+        # Momentum building: +2 to +10 pts proportional to strength
+        return float(np.clip(accel * 0.5, 2.0, 10.0))
+    elif accel < -10:
+        # Momentum fading strongly: -2 to -10 pts
+        return float(np.clip(accel * 0.4, -10.0, -2.0))
+    return 0.0
+
+
 def composite_score_at(
     sym: str,
     prices: pd.Series,
@@ -211,16 +372,27 @@ def composite_score_at(
     quality_map: Dict[str, float],
     regime_momentum_weight: float = 0.60,
     regime_quality_weight: float = 0.40,
+    macro_adj: float = 0.0,
+    bench_prices: Optional[pd.Series] = None,
+    bench_as_of_idx: int = -1,
 ) -> Optional[float]:
     """
-    Composite = regime_momentum_weight * momentum + regime_quality_weight * quality_proxy.
-    Weights shift by regime (same logic as adaptive weights, simplified for backtest).
+    Composite = regime_momentum_weight * momentum + regime_quality_weight * quality_proxy
+               + rs_acceleration_adj (early vs extended momentum)
+               + macro_adj (USD/INR + RBI sector adjustments).
     """
     mom = momentum_score_at(prices, as_of_idx)
     if mom is None:
         return None
     qual = quality_map.get(sym, 25.0)
-    return regime_momentum_weight * mom + regime_quality_weight * qual
+    base = regime_momentum_weight * mom + regime_quality_weight * qual
+
+    # RS Acceleration: reward building momentum, penalise extended/fading runs
+    rs_adj = 0.0
+    if bench_prices is not None and bench_as_of_idx >= 0:
+        rs_adj = rs_acceleration_score_at(prices, bench_prices, as_of_idx, bench_as_of_idx)
+
+    return float(np.clip(base + rs_adj + macro_adj, 0.0, 100.0))
 
 
 def detect_regime_at(nifty_prices: pd.Series, as_of_idx: int) -> Tuple[str, float, float]:
@@ -260,14 +432,61 @@ def detect_regime_at(nifty_prices: pd.Series, as_of_idx: int) -> Tuple[str, floa
     return regime, round(mom_w, 3), round(qual_w, 3)
 
 
+def market_stress_scalar_at(nifty_prices: pd.Series, as_of_idx: int) -> float:
+    """
+    Portfolio circuit breaker: detects acute market stress using 20-day NIFTY return.
+
+    Returns a position-size scalar:
+      1.0  — normal (no stress)
+      0.6  — moderate stress: NIFTY down 5–8% over 20 days  → reduce new entries 40%
+      0.4  — severe stress:   NIFTY down >8% over 20 days   → reduce new entries 60%
+
+    Applied only to NEW entries in that month; existing holdings are not force-sold
+    (avoids locking in losses at the worst moment). The circuit breaker resets
+    automatically once the 20-day return recovers above -5%.
+    """
+    hist = nifty_prices.iloc[:as_of_idx + 1]
+    if len(hist) < 21:
+        return 1.0
+    ret_20d = (hist.iloc[-1] / hist.iloc[-21] - 1)
+    if ret_20d < -0.08:
+        return 0.4   # severe: global selloff / crash event
+    if ret_20d < -0.05:
+        return 0.6   # moderate: correcting market
+    return 1.0
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Portfolio construction
 # ─────────────────────────────────────────────────────────────────────────────
 
 def get_rebalance_dates(prices: Dict[str, pd.Series], bench: pd.Series) -> List[pd.Timestamp]:
-    """Last trading day of each calendar month within common price history."""
+    """
+    Last NSE trading day of each calendar month within the price history.
+    Uses pandas_market_calendars NSE calendar to exclude Indian market holidays
+    (Diwali, Holi, Republic Day, etc.) — ~14 holidays/year that plain bdate_range misses.
+    Falls back to last available price date per month if calendar fetch fails.
+    """
     all_dates = bench.index if not bench.empty else list(prices.values())[0].index
-    df = pd.DataFrame({'date': all_dates})
+    actual_dates = set(pd.Timestamp(d).date() for d in all_dates)
+
+    try:
+        import pandas_market_calendars as mcal
+        nse = mcal.get_calendar('NSE')
+        start = all_dates[0]
+        end = all_dates[-1]
+        valid = nse.valid_days(start_date=start, end_date=end)
+        # Filter to dates that actually exist in price data (data gaps possible)
+        # Strip UTC timezone to match naive price index
+        valid_actual = [
+            pd.Timestamp(d).tz_convert(None) for d in valid
+            if pd.Timestamp(d).date() in actual_dates
+        ]
+        df = pd.DataFrame({'date': valid_actual})
+    except Exception:
+        # Fallback: use price dates as-is
+        df = pd.DataFrame({'date': pd.DatetimeIndex(all_dates)})
+
     df['ym'] = df['date'].dt.to_period('M')
     last_days = df.groupby('ym')['date'].max().tolist()
     return sorted(last_days)
@@ -277,10 +496,21 @@ def get_rebalance_dates(prices: Dict[str, pd.Series], bench: pd.Series) -> List[
 # Main simulation
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Per-sector overrides: tighter cap for known laggards (data-driven from diagnostic)
-# IT: worst sector by total contribution (-71.5%), diagnostic shows max 2 stocks optimal
+# Hard cap: max 2 stocks per sector in any portfolio to prevent correlated crashes.
+# Analysis: Feb-2026 -13.5% loss came from 3 correlated Metals + 2 Auto stocks falling together.
+# Extending the IT-only cap to all sectors reduces sector concentration risk globally.
 SECTOR_MAX_OVERRIDES: Dict[str, int] = {
-    'IT': 2,   # cap IT at 2 stocks regardless of general sector_cap setting
+    'IT':          2,
+    'Metals':      2,
+    'Auto':        2,
+    'Energy':      2,
+    'Financials':  2,
+    'FMCG':        2,
+    'Pharma':      2,
+    'Industrials': 2,
+    'Construction':2,
+    'Consumer':    2,
+    'Telecom':     1,  # only 1 stock (BHARTIARTL) in index
 }
 
 
@@ -314,14 +544,19 @@ def apply_sector_cap(
             selected.append((sym, score))
             sector_counts[sector] = sector_counts.get(sector, 0) + 1
 
-    # Fill any remaining slots ignoring sector cap but still respect forced_exits
+    # Fill remaining slots respecting SECTOR_MAX_OVERRIDES (hard caps) but relaxing
+    # the general fractional cap so small universes can still fill top_n.
     if len(selected) < top_n:
         picked = {s for s, _ in selected}
         for sym, score in scored:
             if len(selected) >= top_n:
                 break
             if sym not in picked and sym not in forced_exits:
-                selected.append((sym, score))
+                sector = NIFTY50_SECTORS.get(sym, 'Other')
+                override_max = SECTOR_MAX_OVERRIDES.get(sector, top_n)
+                if sector_counts.get(sector, 0) < override_max:
+                    selected.append((sym, score))
+                    sector_counts[sector] = sector_counts.get(sector, 0) + 1
     return selected
 
 
@@ -334,6 +569,8 @@ def run_simulation(
     sector_cap: float = 0.0,
     exit_drawdown: float = 0.0,
     score_decay: float = 0.0,
+    inr_prices: Optional[pd.Series] = None,
+    rbi_history: Optional[List[Dict]] = None,
 ) -> Tuple[pd.Series, pd.DataFrame]:
     """
     Returns (portfolio_value_series, trade_log_df).
@@ -367,11 +604,17 @@ def run_simulation(
 
         score_map: Dict[str, float] = {}
         scored: List[Tuple[str, float]] = []
+        inr_s = inr_prices if inr_prices is not None else pd.Series(dtype=float)
+        rbi_h = rbi_history or []
         for sym, price_series in prices.items():
             idx = price_series.index.get_indexer([date_t], method='ffill')[0]
             if idx < 63:
                 continue
-            score = composite_score_at(sym, price_series, idx, quality_map, mom_w, qual_w)
+            m_adj = macro_adj_for_stock(sym, date_t, inr_s, rbi_h)
+            score = composite_score_at(
+                sym, price_series, idx, quality_map, mom_w, qual_w, m_adj,
+                bench_prices=bench, bench_as_of_idx=bench_idx,
+            )
             if score is not None:
                 scored.append((sym, score))
                 score_map[sym] = score
@@ -488,6 +731,8 @@ def run_signal_simulation(
     max_positions: int = 10,
     transaction_cost: float = 0.001,
     sector_cap: float = 0.30,
+    inr_prices: Optional[pd.Series] = None,
+    rbi_history: Optional[List[Dict]] = None,
 ) -> Tuple[pd.Series, pd.DataFrame]:
     """
     Signal-driven portfolio simulation — institutional approach.
@@ -528,11 +773,17 @@ def run_signal_simulation(
 
         # ── Score all stocks ────────────────────────────────────────────────
         score_map: Dict[str, float] = {}
+        inr_s = inr_prices if inr_prices is not None else pd.Series(dtype=float)
+        rbi_h = rbi_history or []
         for sym, price_series in prices.items():
             idx = price_series.index.get_indexer([date_t], method='ffill')[0]
             if idx < 63:
                 continue
-            s = composite_score_at(sym, price_series, idx, quality_map, mom_w, qual_w)
+            m_adj = macro_adj_for_stock(sym, date_t, inr_s, rbi_h)
+            s = composite_score_at(
+                sym, price_series, idx, quality_map, mom_w, qual_w, m_adj,
+                bench_prices=bench, bench_as_of_idx=bench_idx,
+            )
             if s is not None:
                 score_map[sym] = s
 
@@ -560,24 +811,26 @@ def run_signal_simulation(
         for sym in exits:
             del holdings[sym]
 
-        # ── Step 2: ENTRY — buy new high-conviction stocks ──────────────────
-        # Sort by score desc; respect sector cap
+        # ── Step 2: Circuit breaker — scale down new entries under market stress ──
+        stress_scalar = market_stress_scalar_at(bench, bench_idx) if bench_idx >= 0 else 1.0
+        # Under stress: raise the effective buy threshold so only highest-conviction
+        # entries survive (rather than reducing size, we tighten entry gate)
+        effective_buy_threshold = buy_threshold if stress_scalar == 1.0 else buy_threshold + (1 - stress_scalar) * 20
+
+        # ── Step 3: ENTRY — buy new high-conviction stocks ──────────────────
+        # Sort by score desc; respect sector cap + SECTOR_MAX_OVERRIDES (all sectors capped at 2)
         candidates = sorted(
-            [(s, sc) for s, sc in score_map.items() if sc >= buy_threshold and s not in holdings],
+            [(s, sc) for s, sc in score_map.items() if sc >= effective_buy_threshold and s not in holdings],
             key=lambda x: x[1], reverse=True
         )
-        sec_counts: Dict[str, int] = {}
-        for sym in holdings:
-            sec = NIFTY50_SECTORS.get(sym, 'Other')
-            sec_counts[sym] = sec_counts.get(sym, 0) + 1   # just track existing holdings
         # Rebuild sector count from current holdings
-        sec_counts = {}
+        sec_counts: Dict[str, int] = {}
         for sym in holdings:
             sec = NIFTY50_SECTORS.get(sym, 'Other')
             sec_counts[sec] = sec_counts.get(sec, 0) + 1
 
         max_per_sec = max(1, int(max_positions * sector_cap))
-        override_max = SECTOR_MAX_OVERRIDES  # e.g. IT=2
+        override_max = SECTOR_MAX_OVERRIDES
 
         for sym, score in candidates:
             if len(holdings) >= max_positions:
@@ -595,6 +848,7 @@ def run_signal_simulation(
             holdings[sym] = {
                 'entry_price': entry_p,
                 'entry_score': score,
+                'stress_entry': stress_scalar < 1.0,  # flag for pyramiding logic
             }
             sec_counts[sec] = sec_counts.get(sec, 0) + 1
 
@@ -610,22 +864,22 @@ def run_signal_simulation(
             })
             continue
 
-        # Score-proportional weights, capped at 20% per position
+        # ── Score-proportional weights, capped at 20% per position ────────
+        # Note: pyramiding (entry sizing) is tracked in portfolio_manager.py
+        # for live trading. The monthly backtest bar is too coarse for intra-month
+        # add-ons; we use score-proportional sizing here instead.
         scores_held = {sym: score_map.get(sym, h['entry_score'])
                        for sym, h in holdings.items()}
         total_score = sum(scores_held.values())
         raw_weights = {sym: sc / total_score for sym, sc in scores_held.items()}
-        # Cap any single stock at 20% and redistribute surplus
         cap = 0.20
         capped: Dict[str, float] = {}
         surplus = 0.0
         for sym, w in raw_weights.items():
             if w > cap:
-                surplus += w - cap
-                capped[sym] = cap
+                surplus += w - cap; capped[sym] = cap
             else:
                 capped[sym] = w
-        # Distribute surplus pro-rata to uncapped positions
         uncapped = [s for s, w in capped.items() if w < cap]
         if uncapped and surplus > 0:
             add_each = surplus / len(uncapped)
@@ -684,7 +938,7 @@ def run_signal_simulation(
 # Metrics
 # ─────────────────────────────────────────────────────────────────────────────
 
-def compute_metrics(pv: pd.Series, bench: pd.Series, risk_free: float = 0.065) -> Dict:
+def compute_metrics(pv: pd.Series, bench: pd.Series, risk_free: float = 0.07) -> Dict:
     """Compute CAGR, Sharpe, Max Drawdown, Calmar, Alpha, Beta, Win Rate."""
     returns = pv.pct_change().dropna()
     n_months = len(returns)
@@ -733,7 +987,7 @@ def compute_metrics(pv: pd.Series, bench: pd.Series, risk_free: float = 0.065) -
     }
 
 
-def bench_metrics(bench: pd.Series, risk_free: float = 0.065) -> Dict:
+def bench_metrics(bench: pd.Series, risk_free: float = 0.07) -> Dict:
     n_years = len(bench) / 252
     total   = (bench.iloc[-1] / bench.iloc[0]) - 1
     cagr    = (1 + total) ** (1 / n_years) - 1 if n_years > 0 else 0
@@ -923,6 +1177,8 @@ def main():
                         help='Label for this run (saved to results log)')
     parser.add_argument('--compare',     action='store_true',
                         help='Print comparison table of all saved runs and exit')
+    parser.add_argument('--no-macro',    action='store_true',
+                        help='Disable USD/INR + RBI macro overlays (for A/B comparison)')
     args = parser.parse_args()
 
     if args.compare:
@@ -932,12 +1188,13 @@ def main():
     cost = 0.0 if args.no_costs else TRANSACTION_COST
 
     # Auto-generate run name if not provided
+    macro_suffix = '_nomacro' if args.no_macro else '_macro'
     if args.signal_mode:
         run_name = args.name or (
             f"signal_buy{int(args.buy_threshold)}_sell{int(args.sell_threshold)}_"
             f"sl{int(args.stop_loss*100)}_"
             f"{'noQ_' if args.no_quality else ''}"
-            f"{args.years}y"
+            f"{args.years}y{macro_suffix}"
         )
     else:
         run_name = args.name or (
@@ -946,7 +1203,7 @@ def main():
             f"sc{int(args.sector_cap*100)}_"
             f"{'dd'+str(int(args.exit_drawdown*100))+'_' if args.exit_drawdown else ''}"
             f"{'sd'+str(int(args.score_decay))+'_' if args.score_decay else ''}"
-            f"{args.years}y"
+            f"{args.years}y{macro_suffix}"
         )
 
     print("\n" + "="*64)
@@ -958,11 +1215,25 @@ def main():
     else:
         print(f"  Mode: Calendar  |  Top-{args.top} stocks")
     sector_cap_str = f"{int(args.sector_cap * 100)}% cap" if args.sector_cap > 0 else "no cap"
-    print(f"  Costs: {'none' if cost == 0 else '0.1% per trade'}  |  Sector: {sector_cap_str}")
+    cost_str = 'none' if cost == 0 else f'{cost*100:.2f}% per trade ({cost*10000:.0f} bps)'
+    macro_str = 'OFF (--no-macro)' if args.no_macro else 'ON (USD/INR + RBI cycle)'
+    print(f"  Costs: {cost_str}  |  Sector: {sector_cap_str}")
+    print(f"  Macro overlays: {macro_str}")
     print("="*64)
 
     # Fetch prices
     prices, bench = fetch_all_prices(NIFTY50, years=args.years + 1)  # +1Y buffer for warmup
+
+    # Macro overlay data (USD/INR + RBI)
+    if args.no_macro:
+        inr_prices: pd.Series = pd.Series(dtype=float)
+        rbi_history: List[Dict] = []
+        print("  Macro overlays: DISABLED (--no-macro)")
+    else:
+        inr_prices = fetch_usdinr_prices(args.years)
+        rbi_history = load_rbi_history()
+        rbi_msg = f"{len(rbi_history)} MPC decisions loaded" if rbi_history else "no RBI data"
+        print(f"  RBI rate cycle: {rbi_msg}")
 
     if bench.empty:
         print("  WARNING: NIFTY50 benchmark data unavailable — relative metrics will be skipped")
@@ -995,12 +1266,16 @@ def main():
             max_positions=args.top,
             transaction_cost=cost,
             sector_cap=args.sector_cap,
+            inr_prices=inr_prices,
+            rbi_history=rbi_history,
         )
     else:
         print(f"\n  Running monthly simulation (top-{args.top}) …")
         pv, trade_log = run_simulation(
             prices_bt, bench_bt, quality_map, args.top, cost,
-            args.sector_cap, args.exit_drawdown, args.score_decay
+            args.sector_cap, args.exit_drawdown, args.score_decay,
+            inr_prices=inr_prices,
+            rbi_history=rbi_history,
         )
 
     # Compute metrics

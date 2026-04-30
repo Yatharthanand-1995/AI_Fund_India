@@ -26,6 +26,7 @@ from agents.quality_agent import QualityAgent
 from agents.sentiment_agent import SentimentAgent
 from agents.institutional_flow_agent import InstitutionalFlowAgent
 from data.hybrid_provider import HybridDataProvider
+from data.rbi_rate_provider import get_default_provider as get_rbi_provider
 from core.market_regime_service import MarketRegimeService
 from utils.validation import get_nifty_data
 from core.exceptions import DataValidationException
@@ -111,6 +112,13 @@ class StockScorer:
         self.current_weights = self.STATIC_WEIGHTS.copy()
         self._custom_weights: dict | None = None  # Set via set_weights(); overrides adaptive/static
 
+        # USD/INR trend cache (refreshed hourly; avoids repeated yfinance calls per stock)
+        self._usdinr_trend_cache: Optional[Dict] = None
+        self._usdinr_cache_ts: Optional[datetime] = None
+
+        # RBI rate cycle provider (reads local JSON config — no network call)
+        self._rbi_provider = get_rbi_provider()
+
         # Stats tracking
         self.stats = {
             'total_analyses': 0,
@@ -129,6 +137,138 @@ class StockScorer:
         }
 
         logger.info(f"Stock Scorer initialized (adaptive_weights: {use_adaptive_weights})")
+
+    # ── USD/INR sector adjustment (India-specific) ───────────────────────────
+    # Sector sensitivity to USD/INR exchange rate movements.
+    # Positive = benefits when INR weakens (USD appreciates).
+    # IT firms bill USD, costs in INR → biggest beneficiary.
+    # Oil marketing cos (in Energy sector) have ONGC (benefit) + BPCL (hurt) → skip Energy.
+    # Keys use Yahoo Finance sector names (as returned by ticker.info['sector']).
+    _SECTOR_CURRENCY_SENSITIVITY: Dict[str, float] = {
+        'Technology':           +1.0,  # IT services: 100% USD billing, INR cost base
+        'Healthcare':           +0.5,  # Pharma: US generic exports
+        'Basic Materials':      +0.4,  # Metals: commodity exports priced in USD
+        'Consumer Defensive':   -0.3,  # FMCG: import raw materials in USD
+        'Consumer Cyclical':    -0.2,  # Auto: import components (EV transition)
+        # Financial Services, Energy, Communication Services, Industrials: mixed/neutral
+    }
+    _USDINR_CACHE_TTL_SECONDS = 3600  # Refresh at most once per hour
+
+    def _get_usdinr_trend(self) -> Optional[Dict]:
+        """
+        Fetch 20-day USD/INR change from yfinance (INR=X).
+        Returns {'trend_pct': float, 'direction': str} or None on failure.
+        Positive trend_pct means INR has weakened (USD buys more INR).
+        Cached for 1 hour to avoid per-stock fetching overhead.
+        """
+        now = datetime.now()
+        if (
+            self._usdinr_trend_cache is not None
+            and self._usdinr_cache_ts is not None
+            and (now - self._usdinr_cache_ts).total_seconds() < self._USDINR_CACHE_TTL_SECONDS
+        ):
+            return self._usdinr_trend_cache
+
+        try:
+            import yfinance as yf
+            inr = yf.Ticker("INR=X").history(period="30d")
+            if len(inr) < 20:
+                return None
+            trend_pct = (inr['Close'].iloc[-1] / inr['Close'].iloc[-20] - 1) * 100
+            direction = 'weakening' if trend_pct > 0 else 'strengthening'
+            result = {'trend_pct': round(float(trend_pct), 2), 'direction': direction}
+            self._usdinr_trend_cache = result
+            self._usdinr_cache_ts = now
+            logger.debug(f"USD/INR 20d trend: {trend_pct:+.2f}% ({direction})")
+            return result
+        except Exception as e:
+            logger.debug(f"USD/INR fetch failed (skipping currency adjustment): {e}")
+            return None
+
+    def _compute_currency_adjustment(self, sector: Optional[str], usdinr: Optional[Dict]) -> float:
+        """
+        Returns a score adjustment (pts, capped ±4) based on USD/INR trend and sector.
+        Only applied when INR movement is material (>1% over 20 days).
+        """
+        if not sector or not usdinr:
+            return 0.0
+        sensitivity = self._SECTOR_CURRENCY_SENSITIVITY.get(sector, 0.0)
+        if sensitivity == 0.0:
+            return 0.0
+        trend_pct = usdinr.get('trend_pct', 0.0)
+        if abs(trend_pct) < 1.0:
+            return 0.0
+        raw_adj = sensitivity * trend_pct * 0.6  # scaling: 5% move in IT → +3 pts
+        return round(float(np.clip(raw_adj, -4.0, 4.0)), 2)
+
+    def _compute_earnings_acceleration(self, symbol: str, cached_data: Optional[Dict] = None) -> float:
+        """
+        Earnings Acceleration signal: measures whether EPS/revenue growth is speeding up or slowing down.
+
+        Uses quarterly earnings data from yfinance. Returns a score adjustment in range [-8, +8] pts.
+
+        Logic:
+          - Fetch last 4 quarters of EPS (or revenue if EPS unavailable)
+          - Compute QoQ growth for Q-1 vs Q-2, then Q-2 vs Q-3 (trend of growth rate)
+          - Accelerating (growth rate rising): +2 to +8 pts
+          - Decelerating (growth rate falling): -2 to -8 pts
+          - Flat / no data: 0
+
+        This catches the key pattern our system missed:
+          HDFCBANK 2024-25: price was flat but EPS was accelerating → +28% forward return
+          ASIANPAINT 2023-25: PE >60x AND EPS decelerating → -12% forward return
+        """
+        try:
+            import yfinance as yf
+            # Try getting quarterly earnings from cached_data first
+            info = cached_data.get('raw_info') if cached_data else None
+            ticker_sym = symbol if symbol.endswith('.NS') else f"{symbol}.NS"
+            t = yf.Ticker(ticker_sym)
+
+            # earningsGrowth = current quarter YoY; revenueGrowth = TTM
+            # For acceleration we need the trend across quarters
+            quarterly = t.quarterly_earnings
+            if quarterly is None or quarterly.empty or len(quarterly) < 3:
+                # Fall back to single growth metrics from info
+                info_data = t.info
+                eps_growth = info_data.get('earningsGrowth')    # current quarter YoY
+                rev_growth = info_data.get('revenueGrowth')     # TTM
+                # Without trend data, use magnitude as a proxy for momentum
+                if eps_growth is not None and rev_growth is not None:
+                    avg_growth = (eps_growth + rev_growth) / 2 * 100
+                    if avg_growth > 20:
+                        return 3.0   # solid growth, modest boost
+                    elif avg_growth < -10:
+                        return -3.0  # shrinking earnings
+                return 0.0
+
+            # Compute QoQ growth acceleration using last 3 quarters
+            # quarterly.index is sorted newest-first by yfinance
+            eps_vals = quarterly['Earnings'].dropna().values[:4]
+            if len(eps_vals) < 3:
+                return 0.0
+
+            def safe_growth(a, b):
+                # growth from b to a
+                if b == 0 or np.isnan(b) or np.isnan(a):
+                    return None
+                return (a - b) / abs(b)
+
+            g1 = safe_growth(eps_vals[0], eps_vals[1])   # most recent QoQ
+            g2 = safe_growth(eps_vals[1], eps_vals[2])   # one period prior
+
+            if g1 is None or g2 is None:
+                return 0.0
+
+            acceleration = g1 - g2   # positive = earnings growing faster
+            if acceleration > 0.15:
+                return float(np.clip(acceleration * 30, 2.0, 8.0))   # +2 to +8 pts
+            elif acceleration < -0.15:
+                return float(np.clip(acceleration * 25, -8.0, -2.0)) # -2 to -8 pts
+            return 0.0
+
+        except Exception:
+            return 0.0
 
     def score_stock(
         self,
@@ -319,6 +459,31 @@ class StockScorer:
                 weights
             )
 
+            # Step 5b: USD/INR sector adjustment (India-specific overlay, ±4 pts max)
+            stock_sector = cached_data.get('sector')
+            usdinr_data = self._get_usdinr_trend()
+            currency_adj = self._compute_currency_adjustment(stock_sector, usdinr_data)
+            if currency_adj != 0.0:
+                composite_score = float(np.clip(composite_score + currency_adj, 0.0, 100.0))
+                logger.debug(f"  Currency adjustment ({stock_sector}): {currency_adj:+.2f} pts "
+                             f"(USD/INR {usdinr_data['direction']} {usdinr_data['trend_pct']:+.1f}%)")
+
+            # Step 5c: RBI rate cycle sector adjustment (India-specific overlay, ±3 pts max)
+            rbi_adj = self._rbi_provider.get_sector_adjustment(stock_sector)
+            if rbi_adj != 0.0:
+                composite_score = float(np.clip(composite_score + rbi_adj, 0.0, 100.0))
+                rbi_info = self._rbi_provider.get_rate_info()
+                logger.debug(f"  RBI rate adjustment ({stock_sector}): {rbi_adj:+.2f} pts "
+                             f"(cycle={rbi_info['cycle']}, repo={rbi_info['repo_rate']}%)")
+
+            # Step 5d: Earnings Acceleration adjustment (±8 pts max)
+            # Rewards stocks with accelerating QoQ EPS; penalises decelerating ones.
+            # Catches value recovery (HDFCBANK type) and avoids extended PE stocks.
+            earnings_acc_adj = self._compute_earnings_acceleration(symbol, cached_data)
+            if earnings_acc_adj != 0.0:
+                composite_score = float(np.clip(composite_score + earnings_acc_adj, 0.0, 100.0))
+                logger.debug(f"  Earnings acceleration ({symbol}): {earnings_acc_adj:+.2f} pts")
+
             # Step 6: Determine recommendation
             recommendation = self._get_recommendation(composite_score, composite_confidence)
 
@@ -359,7 +524,12 @@ class StockScorer:
                 'trading_levels': trading_levels,
                 'timestamp': datetime.now().isoformat(),
                 'analysis_time_seconds': round(analysis_time, 2),
-                'data_provider': cached_data.get('provider')
+                'data_provider': cached_data.get('provider'),
+                'currency_adjustment': currency_adj if 'currency_adj' in locals() else 0.0,
+                'usdinr_trend': usdinr_data if 'usdinr_data' in locals() else None,
+                'rbi_adjustment': rbi_adj if 'rbi_adj' in locals() else 0.0,
+                'rbi_rate_cycle': self._rbi_provider.get_rate_info().get('cycle'),
+                'earnings_acceleration_adj': earnings_acc_adj if 'earnings_acc_adj' in locals() else 0.0,
             }
 
             # Update stats

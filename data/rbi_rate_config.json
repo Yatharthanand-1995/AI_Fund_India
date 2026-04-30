@@ -1,0 +1,19 @@
+{
+  "_comment": "RBI MPC decisions. Update after each meeting (6x/year). Dates in YYYY-MM-DD. repo_rate is current rate in %.",
+  "_update_instructions": "After each MPC meeting: 1) add new entry at top of decision_history, 2) update repo_rate, 3) update last_updated, 4) update next_mpc_date.",
+  "repo_rate": 5.75,
+  "last_updated": "2026-02-07",
+  "next_mpc_date": "2026-04-09",
+  "decision_history": [
+    {"date": "2026-02-07", "action": "cut",  "bps": -25, "rate": 5.75},
+    {"date": "2025-12-06", "action": "hold", "bps":   0, "rate": 6.00},
+    {"date": "2025-10-08", "action": "hold", "bps":   0, "rate": 6.00},
+    {"date": "2025-08-06", "action": "cut",  "bps": -25, "rate": 6.00},
+    {"date": "2025-06-06", "action": "cut",  "bps": -25, "rate": 6.25},
+    {"date": "2025-04-09", "action": "cut",  "bps": -25, "rate": 6.50},
+    {"date": "2025-02-07", "action": "cut",  "bps": -25, "rate": 6.75},
+    {"date": "2024-12-06", "action": "hold", "bps":   0, "rate": 7.00},
+    {"date": "2024-10-09", "action": "hold", "bps":   0, "rate": 7.00},
+    {"date": "2024-08-08", "action": "hold", "bps":   0, "rate": 7.00}
+  ]
+}
