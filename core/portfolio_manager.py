@@ -47,8 +47,32 @@ NIFTY50_SECTORS: Dict[str, str] = {
 }
 
 SECTOR_MAX_OVERRIDES: Dict[str, int] = {
-    'IT': 2,  # cap based on IC diagnostic: worst sector by total contribution
+    'IT': 2,  # default (BEAR/SIDEWAYS): worst sector by IC diagnostic
 }
+
+# Regime-aware sector caps: relax cyclical caps in confirmed bull, tighten in bear.
+# Trend prefix (BULL/BEAR/SIDEWAYS) extracted from regime string e.g. "BULL_NORMAL".
+SECTOR_CAPS_BY_REGIME: Dict[str, Dict[str, int]] = {
+    'BULL': {
+        # Bull market: momentum leaders (IT, Financials) can run — allow more concentration
+        'IT': 4, 'Financials': 3, 'Metals': 3, 'Auto': 3,
+    },
+    'BEAR': {
+        # Bear market: reduce cyclical exposure, keep defensives intact
+        'IT': 2, 'Financials': 2, 'Metals': 1, 'Auto': 1,
+        'Pharma': 3, 'FMCG': 3,   # defensives get more room in bear
+    },
+    'SIDEWAYS': {
+        # Sideways: moderate relaxation from base defaults
+        'IT': 3, 'Financials': 3, 'Metals': 2, 'Auto': 2,
+    },
+}
+
+
+def _get_sector_overrides(regime: str) -> Dict[str, int]:
+    """Return sector hard-cap overrides for the given regime string."""
+    trend = regime.split('_')[0].upper() if regime else 'SIDEWAYS'
+    return SECTOR_CAPS_BY_REGIME.get(trend, SECTOR_MAX_OVERRIDES)
 
 
 def _is_fno_expiry_window(date: Optional[datetime] = None) -> bool:
@@ -213,7 +237,8 @@ class PortfolioDatabase:
                     entry_score REAL NOT NULL,
                     entry_date TEXT NOT NULL,
                     sector TEXT NOT NULL DEFAULT 'Other',
-                    status TEXT NOT NULL DEFAULT 'open'
+                    status TEXT NOT NULL DEFAULT 'open',
+                    trailing_stop_price REAL
                 );
 
                 CREATE TABLE IF NOT EXISTS portfolio_closed_trades (
@@ -242,6 +267,15 @@ class PortfolioDatabase:
                     regime TEXT
                 );
             """)
+            # Migration: add trailing_stop_price if it doesn't exist yet
+            cols = [r[1] for r in conn.execute(
+                "PRAGMA table_info(portfolio_holdings)"
+            ).fetchall()]
+            if 'trailing_stop_price' not in cols:
+                conn.execute(
+                    "ALTER TABLE portfolio_holdings ADD COLUMN trailing_stop_price REAL"
+                )
+                logger.info("Migrated portfolio_holdings: added trailing_stop_price column")
 
     # ── Config ────────────────────────────────────────────────────────────
 
@@ -282,18 +316,20 @@ class PortfolioDatabase:
             return [dict(r) for r in rows]
 
     def add_holding(self, symbol: str, entry_price: float,
-                    entry_score: float) -> Dict:
+                    entry_score: float, stop_loss_pct: float = 0.10) -> Dict:
         sector = _get_sector(symbol)
         now = datetime.now(timezone.utc).isoformat()
+        trailing_stop = round(entry_price * (1.0 - stop_loss_pct), 2) if entry_price > 0 else None
         with self._conn() as conn:
             conn.execute(
                 """INSERT OR REPLACE INTO portfolio_holdings
-                   (symbol, entry_price, entry_score, entry_date, sector, status)
-                   VALUES (?,?,?,?,?,'open')""",
-                (symbol, entry_price, entry_score, now, sector)
+                   (symbol, entry_price, entry_score, entry_date, sector, status, trailing_stop_price)
+                   VALUES (?,?,?,?,?,'open',?)""",
+                (symbol, entry_price, entry_score, now, sector, trailing_stop)
             )
         return {'symbol': symbol, 'entry_price': entry_price,
-                'entry_score': entry_score, 'entry_date': now, 'sector': sector}
+                'entry_score': entry_score, 'entry_date': now, 'sector': sector,
+                'trailing_stop_price': trailing_stop}
 
     def close_holding(self, symbol: str, exit_price: float,
                       exit_reason: str) -> Optional[Dict]:
@@ -394,7 +430,8 @@ class PortfolioManager:
 
     def manual_buy(self, symbol: str, entry_price: float,
                    entry_score: float) -> Dict:
-        return self.db.add_holding(symbol, entry_price, entry_score)
+        config = self.db.get_config()
+        return self.db.add_holding(symbol, entry_price, entry_score, config.stop_loss_pct)
 
     def manual_sell(self, symbol: str, exit_price: float,
                     reason: str = 'manual') -> Optional[Dict]:
@@ -430,6 +467,9 @@ class PortfolioManager:
         signals: List[SignalItem] = []
         max_per_sector = max(1, int(config.max_positions * config.sector_cap_pct))
 
+        # Regime-aware sector overrides (relax in bull, tighten cyclicals in bear)
+        regime_overrides = _get_sector_overrides(regime)
+
         # ── Step 1: evaluate current holdings → HOLD / SELL ───────────────
         for h in open_holdings:
             sym = _clean_symbol(h['symbol'])
@@ -439,10 +479,28 @@ class PortfolioManager:
             rec   = (analysis or {}).get('recommendation', '')
             ret   = (price - h['entry_price']) / h['entry_price'] * 100
 
-            if ret < -config.stop_loss_pct * 100:
+            # Update trailing stop: ratchet up when price moves in our favour
+            current_trailing = h.get('trailing_stop_price')
+            new_trailing = current_trailing
+            if price > h['entry_price'] and price > 0:
+                candidate = round(price * (1.0 - config.stop_loss_pct), 2)
+                if current_trailing is None or candidate > current_trailing:
+                    new_trailing = candidate
+                    with self.db._conn() as conn:
+                        conn.execute(
+                            "UPDATE portfolio_holdings SET trailing_stop_price=? WHERE symbol=? AND status='open'",
+                            (new_trailing, h['symbol'])
+                        )
+
+            # Determine effective stop level (trailing or fixed, whichever is higher)
+            effective_stop = new_trailing if new_trailing is not None else (h['entry_price'] * (1.0 - config.stop_loss_pct))
+            trailing_triggered = price < effective_stop
+
+            if trailing_triggered:
+                stop_type = 'trailing' if (new_trailing is not None and new_trailing > h['entry_price'] * (1.0 - config.stop_loss_pct)) else 'fixed'
                 signal = 'SELL_STOP'
-                reason = f"Stop-loss: {ret:.1f}% from entry ₹{h['entry_price']:.2f}"
-                self.db.close_holding(h['symbol'], price, 'stop_loss')
+                reason = f"{stop_type.title()} stop-loss: ₹{price:.2f} < stop ₹{effective_stop:.2f} ({ret:+.1f}% from entry)"
+                self.db.close_holding(h['symbol'], price, f'{stop_type}_stop_loss')
                 held_symbols.discard(sym)
             elif score < config.sell_threshold:
                 signal = 'SELL_SCORE'
@@ -451,7 +509,7 @@ class PortfolioManager:
                 held_symbols.discard(sym)
             else:
                 signal = 'HOLD'
-                reason = f"Score {score:.1f} in hold zone (threshold: {config.sell_threshold})"
+                reason = f"Score {score:.1f} in hold zone (stop: ₹{effective_stop:.2f})"
 
             signals.append(SignalItem(
                 symbol=h['symbol'], signal=signal, composite_score=score,
@@ -509,9 +567,10 @@ class PortfolioManager:
                 ))
                 continue
 
-            # Sector cap check
+            # Sector cap check (regime-aware overrides applied)
+            hard_cap = regime_overrides.get(sec, max_per_sector)
             general_ok  = sec_counts.get(sec, 0) < max_per_sector
-            override_ok = sec_counts.get(sec, 0) < SECTOR_MAX_OVERRIDES.get(sec, max_per_sector)
+            override_ok = sec_counts.get(sec, 0) < hard_cap
             if not (general_ok and override_ok):
                 signals.append(SignalItem(
                     symbol=native_sym, signal='WATCH', composite_score=score,
@@ -534,7 +593,7 @@ class PortfolioManager:
             # BUY
             entry_price = price or 0.0
             if entry_price > 0:
-                self.db.add_holding(native_sym, entry_price, score)
+                self.db.add_holding(native_sym, entry_price, score, config.stop_loss_pct)
             signals.append(SignalItem(
                 symbol=native_sym, signal='BUY', composite_score=score,
                 current_price=price, entry_price=None, return_pct=None,

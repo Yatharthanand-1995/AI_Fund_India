@@ -201,6 +201,62 @@ class StockScorer:
         raw_adj = sensitivity * trend_pct * 0.6  # scaling: 5% move in IT → +3 pts
         return round(float(np.clip(raw_adj, -4.0, 4.0)), 2)
 
+    def _compute_rs_acceleration(
+        self,
+        price_data: pd.DataFrame,
+        nifty_data: Optional[pd.DataFrame],
+    ) -> float:
+        """
+        RS Acceleration = (3M excess return vs NIFTY) - (6M excess return vs NIFTY).
+
+        Positive → momentum building vs index (good early entry signal).
+        Negative → momentum fading vs index (mean-reversion risk).
+
+        Returns a score adjustment in range [-10, +10] pts.
+        Threshold: reward only when clearly building (accel > +5pp),
+        penalise only when strongly fading (accel < -10pp). Noise → 0.
+
+        Mirrors rs_acceleration_score_at() in scripts/portfolio_backtest.py.
+        """
+        try:
+            if price_data is None or price_data.empty:
+                return 0.0
+            if nifty_data is None or nifty_data.empty or len(nifty_data) < 127:
+                return 0.0
+            if len(price_data) < 127:
+                return 0.0
+
+            def pct_return(series: pd.Series, days: int) -> Optional[float]:
+                if len(series) < days + 1:
+                    return None
+                p0 = series.iloc[-(days + 1)]
+                p1 = series.iloc[-1]
+                return (p1 - p0) / p0 if p0 > 0 else None
+
+            stock_close = price_data['Close'] if 'Close' in price_data.columns else price_data.iloc[:, 0]
+            nifty_close = nifty_data['Close'] if 'Close' in nifty_data.columns else nifty_data.iloc[:, 0]
+
+            r3s = pct_return(stock_close, 63)
+            r6s = pct_return(stock_close, 126)
+            r3n = pct_return(nifty_close, 63)
+            r6n = pct_return(nifty_close, 126)
+
+            if any(v is None for v in [r3s, r6s, r3n, r6n]):
+                return 0.0
+
+            rs3 = (r3s - r3n) * 100   # stock 3M excess return vs NIFTY
+            rs6 = (r6s - r6n) * 100   # stock 6M excess return vs NIFTY
+            accel = rs3 - rs6          # positive = momentum building
+
+            if accel > 5.0:
+                return float(np.clip(accel * 0.5, 2.0, 10.0))   # +2 to +10 pts
+            elif accel < -10.0:
+                return float(np.clip(accel * 0.4, -10.0, -2.0)) # -2 to -10 pts
+            return 0.0
+
+        except Exception:
+            return 0.0
+
     def _compute_earnings_acceleration(self, symbol: str, cached_data: Optional[Dict] = None) -> float:
         """
         Earnings Acceleration signal: measures whether EPS/revenue growth is speeding up or slowing down.
@@ -484,6 +540,14 @@ class StockScorer:
                 composite_score = float(np.clip(composite_score + earnings_acc_adj, 0.0, 100.0))
                 logger.debug(f"  Earnings acceleration ({symbol}): {earnings_acc_adj:+.2f} pts")
 
+            # Step 5e: RS Acceleration adjustment (±10 pts max)
+            # Rewards building momentum vs NIFTY (3M RS > 6M RS),
+            # penalises fading momentum (extended run, mean-reversion risk).
+            rs_accel_adj = self._compute_rs_acceleration(price_data, nifty_data)
+            if rs_accel_adj != 0.0:
+                composite_score = float(np.clip(composite_score + rs_accel_adj, 0.0, 100.0))
+                logger.debug(f"  RS acceleration ({symbol}): {rs_accel_adj:+.2f} pts")
+
             # Step 6: Determine recommendation
             recommendation = self._get_recommendation(composite_score, composite_confidence)
 
@@ -530,6 +594,7 @@ class StockScorer:
                 'rbi_adjustment': rbi_adj if 'rbi_adj' in locals() else 0.0,
                 'rbi_rate_cycle': self._rbi_provider.get_rate_info().get('cycle'),
                 'earnings_acceleration_adj': earnings_acc_adj if 'earnings_acc_adj' in locals() else 0.0,
+                'rs_acceleration_adj': rs_accel_adj if 'rs_accel_adj' in locals() else 0.0,
             }
 
             # Update stats
