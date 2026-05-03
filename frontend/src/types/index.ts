@@ -180,14 +180,24 @@ export interface StockAnalysis {
   sector?: string;
   week_52_high?: number;
   week_52_low?: number;
-  // Trading levels (computed in Task #27)
+  // Trading levels
   trading_levels?: TradingLevels;
   agent_scores: AgentScores;
-  weights: Record<string, number>;
+  weights_used?: Record<string, number>;
+  weights?: Record<string, number>;
   market_regime?: MarketRegime;
   narrative?: Narrative;
   timestamp: string;
   cached?: boolean;
+  // Signal adjustments — each contributes to composite score
+  currency_adjustment?: number;
+  rbi_adjustment?: number;
+  rbi_rate_cycle?: string;
+  earnings_acceleration_adj?: number;
+  rs_acceleration_adj?: number;
+  usdinr_trend?: { trend_pct: number; direction: string } | null;
+  composite_confidence?: number;
+  analysis_time_seconds?: number;
 }
 
 export interface TradingLevels {
@@ -523,6 +533,7 @@ export interface PortfolioHolding {
   entry_date: string;
   sector: string;
   status: string;
+  trailing_stop_price?: number | null;
   // enriched by API
   current_score?: number;
   current_price?: number;

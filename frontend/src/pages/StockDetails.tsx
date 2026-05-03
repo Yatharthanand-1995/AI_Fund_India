@@ -30,6 +30,7 @@ import { AgentScoresRadar } from '@/components/charts/AgentScoresRadar';
 import { AgentScoresBar } from '@/components/charts/AgentScoresBar';
 import { CompositeScoreTrend } from '@/components/charts/CompositeScoreTrend';
 import type { StockAnalysis } from '@/types';
+import { ScoreBreakdown } from '@/components/ScoreBreakdown';
 
 type TabType = 'overview' | 'historical' | 'agents' | 'compare';
 
@@ -361,6 +362,9 @@ export default function StockDetails() {
           {/* Agents Tab */}
           {activeTab === 'agents' && (
             <div className="space-y-6">
+              {/* Score Breakdown — full interactive decomposition */}
+              <ScoreBreakdown analysis={analysis} />
+
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 {/* Agent Scores Radar */}
                 <div>

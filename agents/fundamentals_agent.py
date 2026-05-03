@@ -174,6 +174,10 @@ class FundamentalsAgent:
             dividend_score = self._score_dividends(metrics, benchmarks)
             promoter_bonus = self._score_promoter_holding(metrics, benchmarks)
             pledge_penalty = self._score_promoter_pledge(metrics)
+            # P1-B: Relative P/E vs sector peers (±4 pts — finer-grained than absolute P/E)
+            pe_sector_adj = self._score_pe_vs_sector(metrics, benchmarks)
+            # P1-C: Earnings quality filter — OCF/NI cash conversion ratio (±6 pts)
+            earnings_quality_adj = self._score_earnings_quality(metrics)
 
             # Calculate total score (max 105, capped at 100, floor at 0)
             total_score = max(0, min(100,
@@ -183,7 +187,9 @@ class FundamentalsAgent:
                 health_score +
                 dividend_score +
                 promoter_bonus +
-                pledge_penalty
+                pledge_penalty +
+                pe_sector_adj +
+                earnings_quality_adj
             ))
 
             # Calculate confidence
@@ -210,7 +216,9 @@ class FundamentalsAgent:
                     'health_score': round(health_score, 2),
                     'dividend_score': round(dividend_score, 2),
                     'promoter_bonus': round(promoter_bonus, 2),
-                    'pledge_penalty': round(pledge_penalty, 2)
+                    'pledge_penalty': round(pledge_penalty, 2),
+                    'pe_sector_adj': round(pe_sector_adj, 2),
+                    'earnings_quality_adj': round(earnings_quality_adj, 2),
                 },
                 'status': 'success',
                 'agent': self.agent_name
@@ -326,6 +334,8 @@ class FundamentalsAgent:
         # Cash flow metrics — use large max_value; Indian large-caps have FCF in tens of billions ₹
         metrics['free_cash_flow'] = MetricExtractor.get_safe_value(info, 'freeCashflow', max_value=1e15)
         metrics['operating_cash_flow'] = MetricExtractor.get_safe_value(info, 'operatingCashflow', max_value=1e15)
+        # Net income — needed for cash conversion ratio (earnings quality signal)
+        metrics['net_income'] = MetricExtractor.get_safe_value(info, 'netIncomeToCommon', max_value=1e15)
 
         # Calculate Free Cash Flow Yield (FCF / Market Cap)
         # Use already-extracted market_cap (set below) — NOTE: market_cap is extracted after
@@ -650,6 +660,82 @@ class FundamentalsAgent:
             return 1.0  # Low promoter holding
         else:
             return 0.0
+
+    def _score_pe_vs_sector(self, metrics: Dict, benchmarks: Dict) -> float:
+        """
+        Relative P/E vs sector peers — ±4 pts adjustment.
+
+        The absolute P/E score already uses sector-specific thresholds (e.g. IT fair=28,
+        Banks fair=18, FMCG fair=45). This method adds a finer-grained signal: where
+        does the stock's P/E sit *within* its sector's normal range?
+
+        Sector P/E midpoint = (pe_undervalued + pe_expensive) / 2
+          - Well below midpoint (cheap in sector) → up to +4 pts
+          - Well above midpoint (expensive in sector) → down to -4 pts
+          - Near midpoint → 0
+
+        This catches HDFC Bank at P/E 15 being cheap vs Financials peers (midpoint ~18)
+        vs FMCG stock at P/E 40 being cheap in absolute terms but average for FMCG.
+        """
+        pe = metrics.get('pe_ratio')
+        if pe is None or pe <= 0:
+            return 0.0
+        pe_mid = (benchmarks.get('pe_undervalued', 15.0) + benchmarks.get('pe_expensive', 30.0)) / 2.0
+        if pe_mid <= 0:
+            return 0.0
+        # Fractional deviation from sector midpoint: positive = cheaper than sector
+        deviation = (pe_mid - pe) / pe_mid
+        adj = float(np.clip(deviation * 10.0, -4.0, 4.0))
+        metrics['pe_vs_sector_mid'] = round(pe_mid, 1)
+        metrics['pe_sector_deviation_pct'] = round(deviation * 100, 1)
+        return round(adj, 2)
+
+    def _score_earnings_quality(self, metrics: Dict) -> float:
+        """
+        Earnings quality filter: Operating Cash Flow / Net Income ratio.
+
+        A company that earns ₹100 but only generates ₹40 in operating cash flow
+        is likely using accrual accounting to inflate earnings. This catches
+        FMCG/IT companies managing earnings before a miss.
+
+        Scoring (±6 pts max):
+          CCR ≥ 1.2  → +6 pts  (cash earnings exceed reported earnings — very healthy)
+          CCR ≥ 1.0  → +4 pts  (real cash earnings — sound)
+          CCR ≥ 0.7  → +2 pts  (adequate)
+          CCR ≥ 0.5  →  0 pts  (borderline)
+          CCR  < 0.5  → -5 pts  (earnings quality risk)
+          Negative OCF → -6 pts (cash burn despite reported profit)
+
+        Skipped for financial sector (banks/NBFCs — OCF is not meaningful for them).
+        """
+        ocf = metrics.get('operating_cash_flow')
+        ni  = metrics.get('net_income')
+        sector = metrics.get('sector', '')
+
+        # Financial sector: OCF vs NI comparison is meaningless for banks/NBFCs
+        if sector in ('Financial Services', 'Financials'):
+            return 0.0
+
+        if ocf is None or ni is None:
+            return 0.0
+
+        if ni == 0:
+            return 0.0 if ocf >= 0 else -4.0
+
+        ccr = ocf / ni
+        metrics['cash_conversion_ratio'] = round(float(ccr), 3)
+
+        if ocf < 0:
+            return -6.0
+        if ccr >= 1.2:
+            return 6.0
+        if ccr >= 1.0:
+            return 4.0
+        if ccr >= 0.7:
+            return 2.0
+        if ccr >= 0.5:
+            return 0.0
+        return -5.0
 
     def _score_promoter_pledge(self, metrics: Dict) -> float:
         """

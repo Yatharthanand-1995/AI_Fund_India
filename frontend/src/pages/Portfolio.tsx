@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import {
   TrendingUp, TrendingDown, RefreshCw, Settings, Zap,
   ArrowUpRight, ArrowDownRight, Minus, Eye, AlertTriangle,
-  CheckCircle2, XCircle, ChevronDown, ChevronUp,
+  CheckCircle2, XCircle, ChevronDown, ChevronUp, ShieldAlert,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { api } from '@/lib/api';
@@ -111,44 +111,217 @@ function ConfigPanel({ config, onSave }: {
   );
 }
 
+// ── Score zone bar (shows score relative to sell/buy thresholds) ──────────────
+
+function ScoreZoneBar({ s, sellThreshold = 50, buyThreshold = 65 }: {
+  s: number; sellThreshold?: number; buyThreshold?: number;
+}) {
+  // Map score 0-100 to bar width; mark thresholds
+  const sellPct = sellThreshold;
+  const buyPct  = buyThreshold;
+  const zone =
+    s >= buyThreshold  ? 'bg-emerald-500' :
+    s >= sellThreshold ? 'bg-amber-500'   : 'bg-red-500';
+
+  return (
+    <div className="relative h-2 bg-slate-700 rounded-full overflow-visible mt-2 mb-3">
+      {/* Score fill */}
+      <div
+        className={cn('absolute h-full rounded-full transition-all duration-500', zone)}
+        style={{ width: `${Math.min(s, 100)}%` }}
+      />
+      {/* Sell threshold marker */}
+      <div
+        className="absolute top-[-3px] bottom-[-3px] w-px bg-red-500/70"
+        style={{ left: `${sellPct}%` }}
+        title={`Sell threshold: ${sellPct}`}
+      />
+      {/* Buy threshold marker */}
+      <div
+        className="absolute top-[-3px] bottom-[-3px] w-px bg-emerald-500/70"
+        style={{ left: `${buyPct}%` }}
+        title={`Buy threshold: ${buyPct}`}
+      />
+      {/* Score label */}
+      <span
+        className={cn('absolute -top-5 text-[10px] font-mono font-bold -translate-x-1/2',
+          s >= buyThreshold ? 'text-emerald-400' : s >= sellThreshold ? 'text-amber-400' : 'text-red-400'
+        )}
+        style={{ left: `${Math.min(Math.max(s, 4), 96)}%` }}
+      >
+        {s.toFixed(0)}
+      </span>
+    </div>
+  );
+}
+
+// ── Signal rationale lines ────────────────────────────────────────────────────
+
+function RationaleLine({ icon: Icon, text, color = 'text-slate-400' }: {
+  icon: React.ElementType; text: string; color?: string;
+}) {
+  return (
+    <div className={cn('flex items-start gap-1.5 text-[11px] leading-tight', color)}>
+      <Icon className="w-3 h-3 mt-0.5 shrink-0" />
+      <span>{text}</span>
+    </div>
+  );
+}
+
 // ── Signal card ───────────────────────────────────────────────────────────────
 
-function SignalCard({ s }: { s: PortfolioSignal }) {
+function SignalCard({ s, buyThreshold = 65, sellThreshold = 50 }: {
+  s: PortfolioSignal; buyThreshold?: number; sellThreshold?: number;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const sym = s.symbol.replace('.NS', '');
+
+  // Build contextual rationale lines depending on signal type
+  const rationale: Array<{ icon: React.ElementType; text: string; color?: string }> = [];
+
+  if (s.signal === 'BUY') {
+    rationale.push({ icon: ArrowUpRight, color: 'text-emerald-400',
+      text: `Score ${s.composite_score.toFixed(1)} crossed buy threshold ≥ ${buyThreshold}` });
+    if (s.recommendation) rationale.push({ icon: CheckCircle2, color: 'text-emerald-400',
+      text: `System recommendation: ${s.recommendation}` });
+    rationale.push({ icon: TrendingUp, color: 'text-slate-400',
+      text: `Sector: ${s.sector}` });
+  } else if (s.signal === 'SELL_SCORE') {
+    rationale.push({ icon: TrendingDown, color: 'text-red-400',
+      text: `Score ${s.composite_score.toFixed(1)} fell below sell threshold < ${sellThreshold}` });
+    if (s.return_pct != null) rationale.push({
+      icon: s.return_pct >= 0 ? ArrowUpRight : ArrowDownRight,
+      color: s.return_pct >= 0 ? 'text-emerald-400' : 'text-red-400',
+      text: `Exit with ${s.return_pct >= 0 ? 'gain' : 'loss'}: ${pct(s.return_pct)}`,
+    });
+    if (s.entry_price && s.current_price) rationale.push({ icon: Minus, color: 'text-slate-400',
+      text: `Entry ${price(s.entry_price)} → Current ${price(s.current_price)}` });
+  } else if (s.signal === 'SELL_STOP') {
+    rationale.push({ icon: ShieldAlert, color: 'text-red-500',
+      text: 'Trailing stop-loss triggered — price hit ATR-based floor' });
+    if (s.return_pct != null) rationale.push({
+      icon: ArrowDownRight, color: 'text-red-400',
+      text: `Loss capped at: ${pct(s.return_pct)}`,
+    });
+    if (s.entry_price && s.current_price) rationale.push({ icon: Minus, color: 'text-slate-400',
+      text: `Entry ${price(s.entry_price)} → Current ${price(s.current_price)}` });
+  } else if (s.signal === 'HOLD') {
+    rationale.push({ icon: Minus, color: 'text-blue-400',
+      text: `Score ${s.composite_score.toFixed(1)} in hold zone (${sellThreshold}–${buyThreshold})` });
+    if (s.return_pct != null) rationale.push({
+      icon: s.return_pct >= 0 ? ArrowUpRight : ArrowDownRight,
+      color: s.return_pct >= 0 ? 'text-emerald-400' : 'text-red-400',
+      text: `Open P&L: ${pct(s.return_pct)}`,
+    });
+    if (s.entry_price) rationale.push({ icon: TrendingUp, color: 'text-slate-400',
+      text: `Cost basis: ${price(s.entry_price)}` });
+  } else if (s.signal === 'WATCH') {
+    rationale.push({ icon: Eye, color: 'text-amber-400',
+      text: `Score ${s.composite_score.toFixed(1)} qualifies but entry blocked` });
+    rationale.push({ icon: AlertTriangle, color: 'text-amber-400',
+      text: s.reason.length > 80 ? s.reason.slice(0, 80) + '…' : s.reason });
+  }
+
   return (
-    <div className="rounded-xl border border-slate-700 bg-slate-800/60 p-4 hover:border-slate-500 transition-colors">
-      <div className="flex items-start justify-between mb-2">
-        <Link to={`/stock/${s.symbol.replace('.NS', '')}`}
-          className="font-semibold text-slate-100 hover:text-blue-400 transition-colors">
-          {s.symbol.replace('.NS', '')}
+    <div className={cn(
+      'rounded-xl border bg-slate-800/60 p-4 hover:border-slate-500 transition-colors flex flex-col gap-0',
+      s.signal === 'BUY'        ? 'border-emerald-500/30' :
+      s.signal === 'SELL_STOP'  ? 'border-red-600/40' :
+      s.signal === 'SELL_SCORE' ? 'border-red-500/30' :
+      s.signal === 'WATCH'      ? 'border-amber-500/30' :
+                                  'border-slate-700'
+    )}>
+      {/* Header */}
+      <div className="flex items-start justify-between">
+        <Link to={`/stock/${sym}`}
+          className="font-bold text-slate-100 hover:text-blue-400 transition-colors text-base">
+          {sym}
         </Link>
         <SignalBadge signal={s.signal} />
       </div>
-      <div className="text-xs text-slate-500 mb-3">{s.sector}</div>
-      <div className="grid grid-cols-2 gap-2 text-sm">
-        <div>
-          <div className="text-slate-500 text-xs">Score</div>
-          <div className="text-slate-200 font-mono">{score(s.composite_score)}</div>
+      <div className="text-[11px] text-slate-500 mt-0.5">{s.sector}</div>
+
+      {/* Score zone bar */}
+      <div className="mt-3">
+        <ScoreZoneBar s={s.composite_score} buyThreshold={buyThreshold} sellThreshold={sellThreshold} />
+        <div className="flex justify-between text-[9px] text-slate-600 -mt-1">
+          <span>0</span>
+          <span style={{ marginLeft: `${sellThreshold - 3}%` }} className="text-red-500/70">{sellThreshold}</span>
+          <span style={{ marginLeft: `${buyThreshold - sellThreshold - 6}%` }} className="text-emerald-500/70">{buyThreshold}</span>
+          <span>100</span>
         </div>
+      </div>
+
+      {/* Key metrics row */}
+      <div className="grid grid-cols-2 gap-x-4 gap-y-1 mt-2">
         <div>
-          <div className="text-slate-500 text-xs">Price</div>
-          <div className="text-slate-200">{price(s.current_price)}</div>
+          <div className="text-[10px] text-slate-500">Price</div>
+          <div className="text-xs font-mono text-slate-200">{price(s.current_price)}</div>
         </div>
-        {s.entry_price != null && (
+        {s.recommendation && (
           <div>
-            <div className="text-slate-500 text-xs">Entry</div>
-            <div className="text-slate-200">{price(s.entry_price)}</div>
+            <div className="text-[10px] text-slate-500">Rating</div>
+            <div className="text-xs text-slate-300 font-medium">{s.recommendation}</div>
           </div>
         )}
-        {s.return_pct != null && (
+        {s.entry_price != null && s.signal !== 'BUY' && (
           <div>
-            <div className="text-slate-500 text-xs">Return</div>
+            <div className="text-[10px] text-slate-500">Entry</div>
+            <div className="text-xs font-mono text-slate-300">{price(s.entry_price)}</div>
+          </div>
+        )}
+        {s.return_pct != null && s.signal !== 'HOLD' && (
+          <div>
+            <div className="text-[10px] text-slate-500">P&amp;L</div>
             <ReturnCell v={s.return_pct} />
           </div>
         )}
       </div>
-      <div className="mt-3 text-xs text-slate-500 border-t border-slate-700 pt-2 line-clamp-2">
-        {s.reason}
-      </div>
+
+      {/* Rationale (always visible, condensed) */}
+      {rationale.length > 0 && (
+        <div className="mt-3 border-t border-slate-700/60 pt-2 space-y-1">
+          {rationale.slice(0, expanded ? undefined : 2).map((r, i) => (
+            <RationaleLine key={i} icon={r.icon} text={r.text} color={r.color} />
+          ))}
+          {rationale.length > 2 && (
+            <button
+              onClick={() => setExpanded(e => !e)}
+              className="text-[10px] text-slate-500 hover:text-slate-300 flex items-center gap-1 mt-0.5"
+            >
+              {expanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+              {expanded ? 'Less' : `+${rationale.length - 2} more`}
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Full reason (collapsed, only for non-WATCH since WATCH shows reason in rationale) */}
+      {s.signal !== 'WATCH' && s.reason && (
+        <div className="mt-2 text-[10px] text-slate-600 line-clamp-2 leading-relaxed">
+          {s.reason}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Stop proximity indicator ──────────────────────────────────────────────────
+
+function StopProximity({ current, stop }: { current: number | undefined; stop: number | null | undefined }) {
+  if (!current || !stop) return <span className="text-slate-600 text-xs">—</span>;
+  const distPct = ((current - stop) / current) * 100;
+  const danger = distPct < 5;
+  const warning = distPct < 10;
+  return (
+    <div className="flex flex-col gap-0.5">
+      <span className="font-mono text-xs text-slate-300">{price(stop)}</span>
+      <span className={cn('text-[10px] flex items-center gap-0.5',
+        danger ? 'text-red-400' : warning ? 'text-amber-400' : 'text-slate-500'
+      )}>
+        {(danger || warning) && <ShieldAlert className="w-2.5 h-2.5" />}
+        {distPct.toFixed(1)}% away
+      </span>
     </div>
   );
 }
@@ -164,36 +337,46 @@ function HoldingsTable({ holdings }: { holdings: PortfolioHolding[] }) {
     );
   }
   return (
-    <div className="rounded-xl border border-slate-700 overflow-hidden">
+    <div className="rounded-xl border border-slate-700 overflow-x-auto">
       <table className="w-full text-sm">
         <thead className="bg-slate-800 text-slate-400 text-xs uppercase tracking-wide">
           <tr>
-            {['Symbol', 'Sector', 'Entry Price', 'Current', 'Score', 'Return', 'Entry Date', 'Signal'].map(h => (
-              <th key={h} className="px-4 py-3 text-left font-medium">{h}</th>
+            {['Symbol', 'Sector', 'Entry', 'Current', 'Score', 'Return', 'Trailing Stop', 'Entry Date', 'Signal'].map(h => (
+              <th key={h} className="px-4 py-3 text-left font-medium whitespace-nowrap">{h}</th>
             ))}
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-700/60">
           {holdings.map(h => {
-            const sig = h.return_pct != null && h.return_pct < -10
+            const stopPct = h.trailing_stop_price && h.current_price
+              ? ((h.current_price - h.trailing_stop_price) / h.current_price) * 100
+              : null;
+            const nearStop = stopPct != null && stopPct < 5;
+            const sig = nearStop
               ? 'SELL_STOP'
               : h.current_score != null && h.current_score < 50
               ? 'SELL_SCORE'
               : 'HOLD';
             return (
-              <tr key={h.id} className="bg-slate-800/30 hover:bg-slate-800/70 transition-colors">
+              <tr key={h.id} className={cn(
+                'hover:bg-slate-800/70 transition-colors',
+                nearStop ? 'bg-red-900/10' : 'bg-slate-800/30'
+              )}>
                 <td className="px-4 py-3">
                   <Link to={`/stock/${h.symbol.replace('.NS', '')}`}
                     className="font-semibold text-slate-100 hover:text-blue-400">
                     {h.symbol.replace('.NS', '')}
                   </Link>
                 </td>
-                <td className="px-4 py-3 text-slate-400">{h.sector}</td>
-                <td className="px-4 py-3 font-mono text-slate-300">{price(h.entry_price)}</td>
-                <td className="px-4 py-3 font-mono text-slate-300">{price(h.current_price)}</td>
-                <td className="px-4 py-3 font-mono text-slate-300">{score(h.current_score ?? h.entry_score)}</td>
+                <td className="px-4 py-3 text-slate-400 text-xs">{h.sector}</td>
+                <td className="px-4 py-3 font-mono text-slate-300 text-xs">{price(h.entry_price)}</td>
+                <td className="px-4 py-3 font-mono text-slate-300 text-xs">{price(h.current_price)}</td>
+                <td className="px-4 py-3 font-mono text-slate-300 text-xs">{score(h.current_score ?? h.entry_score)}</td>
                 <td className="px-4 py-3"><ReturnCell v={h.return_pct} /></td>
-                <td className="px-4 py-3 text-slate-500 text-xs">
+                <td className="px-4 py-3">
+                  <StopProximity current={h.current_price} stop={h.trailing_stop_price} />
+                </td>
+                <td className="px-4 py-3 text-slate-500 text-xs whitespace-nowrap">
                   {new Date(h.entry_date).toLocaleDateString('en-IN')}
                 </td>
                 <td className="px-4 py-3"><SignalBadge signal={sig} /></td>
@@ -499,7 +682,9 @@ export default function Portfolio() {
                     <ArrowUpRight className="w-4 h-4" /> New Buys ({buys.length})
                   </h2>
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-                    {buys.map(s => <SignalCard key={s.symbol} s={s} />)}
+                    {buys.map(s => <SignalCard key={s.symbol} s={s}
+                      buyThreshold={config?.buy_threshold ?? 65}
+                      sellThreshold={config?.sell_threshold ?? 50} />)}
                   </div>
                 </section>
               )}
@@ -510,7 +695,9 @@ export default function Portfolio() {
                     <TrendingDown className="w-4 h-4" /> Exits ({sells.length})
                   </h2>
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-                    {sells.map(s => <SignalCard key={s.symbol} s={s} />)}
+                    {sells.map(s => <SignalCard key={s.symbol} s={s}
+                      buyThreshold={config?.buy_threshold ?? 65}
+                      sellThreshold={config?.sell_threshold ?? 50} />)}
                   </div>
                 </section>
               )}
@@ -521,7 +708,9 @@ export default function Portfolio() {
                     <Minus className="w-4 h-4" /> Held Positions ({holds.length})
                   </h2>
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-                    {holds.map(s => <SignalCard key={s.symbol} s={s} />)}
+                    {holds.map(s => <SignalCard key={s.symbol} s={s}
+                      buyThreshold={config?.buy_threshold ?? 65}
+                      sellThreshold={config?.sell_threshold ?? 50} />)}
                   </div>
                 </section>
               )}
@@ -532,7 +721,9 @@ export default function Portfolio() {
                     <Eye className="w-4 h-4" /> Watch List — High Score, Not Yet Bought ({watches.length})
                   </h2>
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-                    {watches.slice(0, 12).map(s => <SignalCard key={s.symbol} s={s} />)}
+                    {watches.slice(0, 12).map(s => <SignalCard key={s.symbol} s={s}
+                      buyThreshold={config?.buy_threshold ?? 65}
+                      sellThreshold={config?.sell_threshold ?? 50} />)}
                   </div>
                 </section>
               )}

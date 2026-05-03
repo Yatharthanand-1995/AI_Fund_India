@@ -316,10 +316,18 @@ class PortfolioDatabase:
             return [dict(r) for r in rows]
 
     def add_holding(self, symbol: str, entry_price: float,
-                    entry_score: float, stop_loss_pct: float = 0.10) -> Dict:
+                    entry_score: float, stop_loss_pct: float = 0.10,
+                    initial_stop_price: Optional[float] = None) -> Dict:
         sector = _get_sector(symbol)
         now = datetime.now(timezone.utc).isoformat()
-        trailing_stop = round(entry_price * (1.0 - stop_loss_pct), 2) if entry_price > 0 else None
+        # Prefer ATR-based stop from scorer (initial_stop_price) over flat-% fallback.
+        # ATR stop adapts to each stock's actual volatility; flat % is a last resort.
+        if initial_stop_price and initial_stop_price > 0:
+            trailing_stop = round(float(initial_stop_price), 2)
+        elif entry_price > 0:
+            trailing_stop = round(entry_price * (1.0 - stop_loss_pct), 2)
+        else:
+            trailing_stop = None
         with self._conn() as conn:
             conn.execute(
                 """INSERT OR REPLACE INTO portfolio_holdings
@@ -590,10 +598,15 @@ class PortfolioManager:
                 ))
                 continue
 
-            # BUY
+            # BUY — use ATR-based stop from scorer's trading_levels when available
             entry_price = price or 0.0
+            atr_stop = (analysis.get('trading_levels') or {}).get('stop_loss')
             if entry_price > 0:
-                self.db.add_holding(native_sym, entry_price, score, config.stop_loss_pct)
+                self.db.add_holding(
+                    native_sym, entry_price, score,
+                    config.stop_loss_pct,
+                    initial_stop_price=atr_stop,
+                )
             signals.append(SignalItem(
                 symbol=native_sym, signal='BUY', composite_score=score,
                 current_price=price, entry_price=None, return_pct=None,
