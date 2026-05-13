@@ -111,6 +111,27 @@ async def run_in_thread(func, *args, **kwargs):
     return await loop.run_in_executor(None, functools.partial(func, *args, **kwargs))
 
 
+_SQL_KEYWORDS = frozenset(['SELECT', 'DROP', 'DELETE', 'INSERT', 'UPDATE', 'UNION', 'ALTER', 'CREATE'])
+_SYMBOL_RE = re.compile(r'^[\w\.\-\^]+$')
+
+
+def _validate_symbol_string(v: str) -> str:
+    """Shared symbol validation with security checks. Returns uppercased symbol."""
+    if not v or not isinstance(v, str):
+        raise ValueError("Symbol must be a non-empty string")
+    v = v.strip()
+    if not v:
+        raise ValueError("Symbol cannot be empty")
+    if len(v) > 20:
+        raise ValueError("Symbol too long (max 20 characters)")
+    if not _SYMBOL_RE.match(v):
+        raise ValueError("Symbol contains invalid characters. Only alphanumeric, dash, dot, underscore, and caret allowed")
+    upper = v.upper()
+    if any(kw in upper for kw in _SQL_KEYWORDS):
+        raise ValueError("Symbol contains invalid keywords")
+    return upper
+
+
 def make_error_response(
     error_code: ErrorCode,
     message: str,
@@ -185,30 +206,7 @@ class AnalyzeRequest(BaseModel):
     @field_validator('symbol')
     @classmethod
     def validate_symbol(cls, v):
-        """Validate symbol format with security checks"""
-
-        if not v or not isinstance(v, str):
-            raise ValueError("Symbol must be a non-empty string")
-
-        v = v.strip()
-
-        # Check length
-        if len(v) < 1:
-            raise ValueError("Symbol cannot be empty")
-        if len(v) > 20:
-            raise ValueError("Symbol too long (max 20 characters)")
-
-        # Check format: Only alphanumeric, dash, dot, underscore, caret
-        if not re.match(r'^[\w\.\-\^]+$', v):
-            raise ValueError("Symbol contains invalid characters. Only alphanumeric, dash, dot, underscore, and caret allowed")
-
-        # Security: Block common SQL keywords
-        sql_keywords = ['SELECT', 'DROP', 'DELETE', 'INSERT', 'UPDATE', 'UNION', 'ALTER', 'CREATE']
-        upper_symbol = v.upper()
-        if any(keyword in upper_symbol for keyword in sql_keywords):
-            raise ValueError("Symbol contains invalid keywords")
-
-        return v.upper()
+        return _validate_symbol_string(v)
 
     model_config = {
         "json_schema_extra": {
@@ -229,12 +227,11 @@ class BatchAnalyzeRequest(BaseModel):
     @field_validator('symbols')
     @classmethod
     def validate_symbols(cls, v):
-        """Validate symbols list"""
         if not v:
             raise ValueError("Symbols list cannot be empty")
         if len(v) > 50:
             raise ValueError("Maximum 50 symbols allowed per batch")
-        return [s.strip().upper() for s in v]
+        return [_validate_symbol_string(s) for s in v]
 
     @field_validator('sort_by')
     @classmethod
@@ -450,29 +447,7 @@ class AddToWatchlistRequest(BaseModel):
     @field_validator('symbol')
     @classmethod
     def validate_symbol(cls, v):
-        """Validate symbol format with security checks (same as AnalyzeRequest)"""
-        if not v or not isinstance(v, str):
-            raise ValueError("Symbol must be a non-empty string")
-
-        v = v.strip()
-
-        # Check length
-        if len(v) < 1:
-            raise ValueError("Symbol cannot be empty")
-        if len(v) > 20:
-            raise ValueError("Symbol too long (max 20 characters)")
-
-        # Check format: Only alphanumeric, dash, dot, underscore, caret
-        if not re.match(r'^[\w\.\-\^]+$', v):
-            raise ValueError("Symbol contains invalid characters. Only alphanumeric, dash, dot, underscore, and caret allowed")
-
-        # Security: Block common SQL keywords
-        sql_keywords = ['SELECT', 'DROP', 'DELETE', 'INSERT', 'UPDATE', 'UNION', 'ALTER', 'CREATE']
-        upper_symbol = v.upper()
-        if any(keyword in upper_symbol for keyword in sql_keywords):
-            raise ValueError("Symbol contains invalid keywords")
-
-        return v.upper()
+        return _validate_symbol_string(v)
 
 
 class CompareRequest(BaseModel):
@@ -483,39 +458,11 @@ class CompareRequest(BaseModel):
     @field_validator('symbols')
     @classmethod
     def validate_symbols(cls, v):
-        """Validate symbols list with security checks"""
-
         if len(v) < 2:
             raise ValueError("At least 2 symbols required for comparison")
         if len(v) > 4:
             raise ValueError("Maximum 4 symbols allowed")
-
-        # Validate each symbol
-        validated = []
-        for symbol in v:
-            if not symbol or not isinstance(symbol, str):
-                raise ValueError("Each symbol must be a non-empty string")
-
-            symbol = symbol.strip()
-
-            # Check length
-            if len(symbol) < 1:
-                raise ValueError("Symbol cannot be empty")
-            if len(symbol) > 20:
-                raise ValueError("Symbol too long (max 20 characters)")
-
-            # Check format
-            if not re.match(r'^[\w\.\-\^]+$', symbol):
-                raise ValueError(f"Symbol '{symbol}' contains invalid characters")
-
-            # Security: Block SQL keywords
-            sql_keywords = ['SELECT', 'DROP', 'DELETE', 'INSERT', 'UPDATE', 'UNION', 'ALTER', 'CREATE']
-            if any(keyword in symbol.upper() for keyword in sql_keywords):
-                raise ValueError(f"Symbol '{symbol}' contains invalid keywords")
-
-            validated.append(symbol.upper())
-
-        return validated
+        return [_validate_symbol_string(s) for s in v]
 
 
 class ComparisonResponse(BaseModel):
@@ -927,6 +874,25 @@ async def get_top_picks(
     except Exception as e:
         logger.error(f"Top picks generation failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Top picks generation failed: {str(e)}")
+
+
+@app.get("/stocks/top-picks", response_model=TopPicksResponse, tags=["Stocks"],
+         summary="Top stock picks (alias of /portfolio/top-picks)")
+async def get_top_picks_alias(
+    limit: int = Query(default=10, ge=1, le=100),
+    include_narrative: bool = Query(default=False),
+    force_refresh: bool = Query(default=False),
+    request: Request = None,  # type: ignore[assignment]
+    _auth=Depends(verify_api_key),
+):
+    """Convenience alias — delegates to the portfolio top-picks endpoint."""
+    return await get_top_picks(
+        limit=limit,
+        include_narrative=include_narrative,
+        force_refresh=force_refresh,
+        request=request,
+        _auth=_auth,
+    )
 
 
 @app.get("/market/regime", response_model=MarketRegimeResponse, tags=["Market"])

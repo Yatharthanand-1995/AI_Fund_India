@@ -552,7 +552,7 @@ export default function Portfolio() {
   const watches = evalResult?.watches ?? [];
 
   return (
-    <div className="min-h-screen bg-slate-900 text-slate-100 p-4 md:p-6 space-y-6">
+    <div className="bg-slate-900 text-slate-100 rounded-2xl shadow-2xl p-4 md:p-6 space-y-6 ring-1 ring-slate-700/50">
 
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">

@@ -241,53 +241,6 @@ export const SectorHeatmap: React.FC<SectorHeatmapProps> = ({
         </div>
       </div>
 
-      {/* Sector Rankings */}
-      <div className="mt-6">
-        <h4 className="text-sm font-semibold text-gray-900 mb-3">Sector Rankings</h4>
-        <div className="space-y-2">
-          {treemapData.map((sector, index) => (
-            <div
-              key={sector.name}
-              className={`flex items-center justify-between p-2 rounded-lg border transition-colors ${
-                onSectorClick ? 'cursor-pointer hover:bg-gray-50' : ''
-              }`}
-              style={{ borderColor: `${sector.color}40` }}
-              onClick={() => onSectorClick?.(sector.name)}
-            >
-              <div className="flex items-center gap-3">
-                <span className="text-sm font-semibold text-gray-500 w-6">
-                  #{index + 1}
-                </span>
-                <div
-                  className="w-4 h-4 rounded"
-                  style={{ backgroundColor: sector.color }}
-                />
-                <span className="font-medium text-gray-900">{sector.name}</span>
-              </div>
-
-              <div className="flex items-center gap-6 text-sm">
-                <div>
-                  <span className="text-gray-500">Score: </span>
-                  <span className="font-semibold">
-                    {formatTooltipValue(sector.avgScore, 'score')}
-                  </span>
-                </div>
-                <div>
-                  <span className="text-gray-500">Stocks: </span>
-                  <span className="font-semibold">{sector.value}</span>
-                </div>
-                {sector.topPick && (
-                  <div>
-                    <span className="text-gray-500">Top: </span>
-                    <span className="font-semibold">{sector.topPick}</span>
-                  </div>
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
       {onSectorClick && (
         <p className="mt-4 text-xs text-gray-500 text-center">
           Click on a sector to filter stocks

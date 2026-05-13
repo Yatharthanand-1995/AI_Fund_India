@@ -16,11 +16,19 @@ import {
   Menu,
   X,
   Bell,
+  ChevronDown,
 } from 'lucide-react';
 import { useStore } from '@/store/useStore';
 import { cn } from '@/lib/utils';
 import { useAlerts } from '@/hooks/useAlerts';
 import { useWatchlist } from '@/hooks/useWatchlist';
+
+interface NavItem {
+  path: string;
+  label: string;
+  icon: React.ElementType;
+  badge?: number;
+}
 
 export default function Header() {
   const location = useLocation();
@@ -29,35 +37,47 @@ export default function Header() {
   const watchlistCount = watchlist.length;
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [alertsOpen, setAlertsOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
   const alertPanelRef = useRef<HTMLDivElement>(null);
+  const morePanelRef = useRef<HTMLDivElement>(null);
 
   const { alerts, unreadCount, markRead, markAllRead } = useAlerts(60_000);
 
-  // Close dropdown on outside click
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       if (alertPanelRef.current && !alertPanelRef.current.contains(e.target as Node)) {
         setAlertsOpen(false);
+      }
+      if (morePanelRef.current && !morePanelRef.current.contains(e.target as Node)) {
+        setMoreOpen(false);
       }
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
-  const navItems = [
+  // Primary nav — always visible on desktop
+  const primaryNav: NavItem[] = [
     { path: '/', label: 'Dashboard', icon: BarChart3 },
     { path: '/ideas', label: 'Ideas', icon: TrendingUp },
-    { path: '/suggestions', label: 'Suggestions', icon: Lightbulb },
     { path: '/screener', label: 'Screener', icon: Filter },
     { path: '/sectors', label: 'Sectors', icon: PieChart },
-    { path: '/backtest', label: 'Backtest', icon: FlaskConical },
     { path: '/portfolio', label: 'Portfolio', icon: Zap },
     { path: '/watchlist', label: 'Watchlist', icon: Star, badge: watchlistCount },
+    { path: '/backtest', label: 'Backtest', icon: FlaskConical },
+  ];
+
+  // Secondary nav — collapsed into "More" dropdown
+  const secondaryNav: NavItem[] = [
+    { path: '/suggestions', label: 'Suggestions', icon: Lightbulb },
     { path: '/compare', label: 'Compare', icon: GitCompare },
     { path: '/analytics', label: 'Analytics', icon: Activity },
     { path: '/system', label: 'System', icon: Settings },
     { path: '/about', label: 'About', icon: Info },
   ];
+
+  const allNav = [...primaryNav, ...secondaryNav];
+  const isMoreActive = secondaryNav.some(n => location.pathname === n.path);
 
   const severityColor = (severity: string) => {
     if (severity === 'critical') return 'text-red-600';
@@ -73,16 +93,14 @@ export default function Header() {
           <Link to="/" className="flex items-center space-x-2 flex-shrink-0">
             <TrendingUp className="h-8 w-8 text-primary-600" />
             <div>
-              <h1 className="text-xl font-bold text-gray-900">
-                AI Hedge Fund
-              </h1>
+              <h1 className="text-xl font-bold text-gray-900">AI Hedge Fund</h1>
               <p className="text-xs text-gray-500">Indian Stock Analysis</p>
             </div>
           </Link>
 
           {/* Desktop Navigation */}
-          <nav className="hidden lg:flex items-center space-x-1 overflow-x-auto" aria-label="Main navigation">
-            {navItems.map(({ path, label, icon: Icon, badge }) => (
+          <nav className="hidden lg:flex items-center space-x-1" aria-label="Main navigation">
+            {primaryNav.map(({ path, label, icon: Icon, badge }) => (
               <Link
                 key={path}
                 to={path}
@@ -107,18 +125,54 @@ export default function Header() {
                 )}
               </Link>
             ))}
+
+            {/* "More" dropdown for secondary pages */}
+            <div className="relative" ref={morePanelRef}>
+              <button
+                onClick={() => setMoreOpen(o => !o)}
+                aria-expanded={moreOpen}
+                className={cn(
+                  'flex items-center space-x-1 px-2 py-2 rounded-md text-sm font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-1',
+                  isMoreActive
+                    ? 'bg-primary-50 text-primary-700'
+                    : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+                )}
+              >
+                <span>More</span>
+                <ChevronDown className={cn('h-3 w-3 transition-transform', moreOpen && 'rotate-180')} />
+              </button>
+
+              {moreOpen && (
+                <div className="absolute right-0 top-10 w-44 bg-white border border-gray-200 rounded-lg shadow-xl z-50 py-1">
+                  {secondaryNav.map(({ path, label, icon: Icon }) => (
+                    <Link
+                      key={path}
+                      to={path}
+                      onClick={() => setMoreOpen(false)}
+                      className={cn(
+                        'flex items-center gap-2 px-4 py-2 text-sm transition-colors',
+                        location.pathname === path
+                          ? 'bg-primary-50 text-primary-700 font-medium'
+                          : 'text-gray-700 hover:bg-gray-50'
+                      )}
+                    >
+                      <Icon className="h-4 w-4 flex-shrink-0" />
+                      {label}
+                    </Link>
+                  ))}
+                </div>
+              )}
+            </div>
           </nav>
 
-          {/* Right section: Market Regime + Alerts + Mobile Menu Button */}
+          {/* Right section: Market Regime + Alerts + Mobile toggle */}
           <div className="flex items-center gap-3">
             {/* Market Regime Badge */}
             {marketRegime && (
               <div className="hidden sm:flex items-center space-x-2">
                 <div className="text-right">
                   <div className="text-xs text-gray-500">Market</div>
-                  <div className="text-sm font-semibold text-gray-900">
-                    {marketRegime.trend}
-                  </div>
+                  <div className="text-sm font-semibold text-gray-900">{marketRegime.trend}</div>
                 </div>
                 <div className={cn(
                   'px-3 py-1 rounded-full text-xs font-medium border',
@@ -146,7 +200,6 @@ export default function Header() {
                 )}
               </button>
 
-              {/* Alerts dropdown */}
               {alertsOpen && (
                 <div className="absolute right-0 top-10 w-80 bg-white border border-gray-200 rounded-lg shadow-xl z-50 overflow-hidden">
                   <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
@@ -154,10 +207,7 @@ export default function Header() {
                       Alerts {unreadCount > 0 && <span className="text-red-500">({unreadCount} new)</span>}
                     </span>
                     {unreadCount > 0 && (
-                      <button
-                        onClick={() => markAllRead()}
-                        className="text-xs text-blue-600 hover:underline"
-                      >
+                      <button onClick={() => markAllRead()} className="text-xs text-blue-600 hover:underline">
                         Mark all read
                       </button>
                     )}
@@ -210,11 +260,11 @@ export default function Header() {
         </div>
       </div>
 
-      {/* Mobile menu */}
+      {/* Mobile menu — full list */}
       {mobileMenuOpen && (
         <div className="lg:hidden absolute top-16 left-0 right-0 bg-white border-b border-gray-200 shadow-lg z-50">
           <nav className="flex flex-col py-2" aria-label="Mobile navigation">
-            {navItems.map(({ path, label, icon: Icon, badge }) => (
+            {allNav.map(({ path, label, icon: Icon, badge }) => (
               <Link
                 key={path}
                 to={path}
