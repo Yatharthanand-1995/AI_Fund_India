@@ -18,6 +18,13 @@ Volatility Source (India-specific):
   Secondary: 30-day realized vol (backward-looking, always available)
   Blend    : 70% VIX + 30% realized when VIX is available; 100% realized as fallback.
   India VIX responds faster to FII exodus, election uncertainty, and global shocks.
+
+FII Flow Integration (2026-05):
+  FII net 30-day flow from NSE is used as a third regime confirmation input.
+  Heavy FII selling during a BULL regime caps confidence (prevents overconfident
+  momentum weights when foreigners are structurally exiting). Conversely, strong
+  FII buying during a BEAR regime reduces conviction in defensive positioning.
+  Thresholds: ±₹10,000 Cr 30d = strong signal, ±₹5,000 Cr = moderate.
 """
 
 import pandas as pd
@@ -25,6 +32,10 @@ import numpy as np
 from typing import Dict, Optional, Tuple
 from datetime import datetime, timedelta
 import logging
+
+from data.fii_dii_provider import get_default_provider as get_fii_provider
+from data.nse_pcr_provider import get_default_provider as get_pcr_provider
+from data.market_breadth_provider import get_default_provider as get_breadth_provider
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +61,10 @@ class MarketRegimeService:
     }
 
     # Volatility thresholds (annualized %)
+    # Calibrated to institutional practice: India VIX >22 triggers defensive rotation
+    # (NSE/BlackRock standard). Prior threshold of 25 missed early stress signals.
     VOLATILITY_THRESHOLDS = {
-        'high': 25,      # >25% = high volatility
+        'high': 22,      # >22% = high volatility (India VIX institutional standard)
         'normal': 15,    # 15-25% = normal
         'low': 12,       # <12% = low volatility (distinct from normal)
     }
@@ -217,6 +230,170 @@ class MarketRegimeService:
         total = sum(blended.values())
         return {k: round(v / total, 4) for k, v in blended.items()}
 
+    def _fetch_fii_regime_signal(self, trend: str) -> Tuple[float, Dict]:
+        """
+        Fetch FII 30-day net flow and compute a confidence modifier for the detected trend.
+
+        Returns (confidence_modifier, fii_metrics):
+          modifier > 0  → FII flow confirms trend (e.g. buying in BULL)
+          modifier < 0  → FII flow contradicts trend (e.g. selling in BULL) — cap confidence
+          modifier = 0  → neutral / data unavailable
+
+        The modifier is applied as: final_confidence = clamp(sma_confidence + modifier, 0.3, 1.0)
+        Max modifier is ±0.25 — FII is a strong but not sole determinant.
+        """
+        try:
+            provider = get_fii_provider()
+            flow = provider.get_flow_data()
+
+            if flow.get('source') == 'default' or flow.get('days_available', 0) == 0:
+                return 0.0, {'fii_signal': 'unavailable'}
+
+            fii_net = flow.get('fii_net_30d', 0.0)
+            fii_trend = flow.get('fii_recent_trend', 'neutral')
+
+            # Magnitude-based modifier (absolute crores)
+            if abs(fii_net) > 10_000:
+                magnitude = 0.25   # strong
+            elif abs(fii_net) > 5_000:
+                magnitude = 0.15   # moderate
+            elif abs(fii_net) > 2_000:
+                magnitude = 0.08   # mild
+            else:
+                magnitude = 0.0    # noise
+
+            if magnitude == 0.0:
+                return 0.0, {'fii_net_30d': fii_net, 'fii_signal': 'neutral'}
+
+            fii_direction = 1.0 if fii_net > 0 else -1.0
+
+            # Does FII direction agree with the trend?
+            # BULL expects FII buying → fii_direction=+1 confirms → positive modifier
+            # BEAR expects FII selling → fii_direction=-1 confirms → positive modifier
+            if trend == 'BULL':
+                modifier = fii_direction * magnitude      # +ve if buying, -ve if selling
+            elif trend == 'BEAR':
+                modifier = -fii_direction * magnitude     # +ve if selling, -ve if buying
+            else:
+                modifier = 0.0  # SIDEWAYS — FII direction doesn't clarify which way
+
+            signal_label = (
+                'confirms' if modifier > 0
+                else 'contradicts' if modifier < 0
+                else 'neutral'
+            )
+            logger.info(
+                f"  FII regime signal: {fii_net:+,.0f} Cr 30d ({fii_trend}) "
+                f"→ {signal_label} {trend} trend (modifier={modifier:+.2f})"
+            )
+            return modifier, {
+                'fii_net_30d': fii_net,
+                'fii_recent_trend': fii_trend,
+                'fii_regime_modifier': round(modifier, 3),
+                'fii_signal': signal_label,
+            }
+        except Exception as e:
+            logger.debug(f"FII regime signal fetch failed: {e}")
+            return 0.0, {'fii_signal': 'error'}
+
+    def _fetch_pcr_regime_signal(self, trend: str) -> Tuple[float, Dict]:
+        """
+        Fetch NIFTY Put/Call Ratio and compute a confidence modifier.
+
+        PCR is a contrarian indicator:
+          High PCR (fear) during BULL → confirms oversold bounce, boosts confidence
+          High PCR (fear) during BEAR → everyone hedged, potential reversal risk
+          Low PCR (greed) during BULL → complacency, reduces confidence
+          Low PCR (greed) during BEAR → no hedging = further downside risk
+
+        Returns (modifier, pcr_metrics). Max modifier ±0.10 — smaller than FII
+        because PCR is noisier (expiry week distortions, strike anchoring effects).
+        """
+        try:
+            provider = get_pcr_provider()
+            pcr_data = provider.get_pcr()
+
+            if pcr_data.get('source') == 'default':
+                return 0.0, {'pcr_signal': 'unavailable'}
+
+            pcr = pcr_data.get('pcr', 1.0)
+            signal = pcr_data.get('signal', 'neutral')
+            raw_modifier = pcr_data.get('regime_modifier', 0.0)
+
+            # PCR modifier interpretation is regime-direction-dependent
+            # Fear (high PCR) is bullish for BULL (confirms buy-the-dip), bearish for BEAR (capitulation not yet)
+            # Greed (low PCR) is bearish for BULL (crowded longs), bullish for BEAR (short squeeze risk)
+            if trend == 'BULL':
+                modifier = raw_modifier   # fear=+, greed=-
+            elif trend == 'BEAR':
+                modifier = -raw_modifier  # fear=- (no capitulation), greed=+ (short squeeze)
+            else:
+                modifier = 0.0  # SIDEWAYS — PCR doesn't clarify direction
+
+            # Cap at ±0.10 (PCR is noisier than FII flows)
+            modifier = float(np.clip(modifier, -0.10, 0.10))
+
+            logger.info(
+                f"  PCR regime signal: {pcr:.2f} ({signal}) "
+                f"→ modifier={modifier:+.2f} for {trend} trend"
+            )
+            return modifier, {
+                'nifty_pcr': pcr,
+                'pcr_signal': signal,
+                'pcr_regime_modifier': round(modifier, 3),
+            }
+        except Exception as e:
+            logger.debug(f"PCR regime signal failed: {e}")
+            return 0.0, {'pcr_signal': 'error'}
+
+    def _fetch_breadth_regime_signal(self, trend: str) -> Tuple[float, Dict]:
+        """
+        Fetch NIFTY50 market breadth (% stocks above 200-SMA) and compute a confidence modifier.
+
+        Breadth confirms or contradicts the index-level SMA trend:
+          BULL + broad_bull (>70%) → fully confirmed, boost confidence
+          BULL + broad_bear (<30%) → narrow market rally, reduce confidence significantly
+          BEAR + broad_bear → fully confirmed
+          BEAR + broad_bull → divergence, BEAR may be premature
+
+        Returns (modifier, breadth_metrics). Breadth is the most reliable
+        confirmation signal because it can't be distorted by a single large-cap.
+        """
+        try:
+            provider = get_breadth_provider()
+            breadth_data = provider.get_breadth()
+
+            if breadth_data.get('source') == 'default':
+                return 0.0, {'breadth_signal': 'unavailable'}
+
+            breadth_pct = breadth_data.get('breadth_pct', 50.0)
+            signal = breadth_data.get('signal', 'unknown')
+            raw_modifier = breadth_data.get('regime_modifier', 0.0)
+
+            # Breadth modifier interpretation is trend-direction-aware
+            if trend == 'BULL':
+                modifier = raw_modifier    # wide breadth confirms bull; narrow breadth warns
+            elif trend == 'BEAR':
+                modifier = -raw_modifier   # wide breadth contradicts bear; narrow confirms
+            else:
+                # SIDEWAYS: breadth at extremes suggests the next break direction
+                modifier = raw_modifier * 0.5  # halved — less directional conviction
+
+            modifier = float(np.clip(modifier, -0.15, 0.15))
+
+            logger.info(
+                f"  Breadth regime signal: {breadth_pct:.0f}% above 200-SMA ({signal}) "
+                f"→ modifier={modifier:+.2f} for {trend} trend"
+            )
+            return modifier, {
+                'breadth_pct': breadth_pct,
+                'breadth_signal': signal,
+                'breadth_regime_modifier': round(modifier, 3),
+            }
+        except Exception as e:
+            logger.debug(f"Breadth regime signal failed: {e}")
+            return 0.0, {'breadth_signal': 'error'}
+
     def get_current_regime(
         self,
         nifty_data: Optional[pd.DataFrame] = None,
@@ -294,12 +471,32 @@ class MarketRegimeService:
             # Get base regime weights
             base_weights = self.ADAPTIVE_WEIGHTS.get(regime, self.ADAPTIVE_WEIGHTS['SIDEWAYS_NORMAL'])
 
-            # Compute confidence and blend toward neutral for uncertain/transitioning regimes
-            confidence = self._compute_regime_confidence(trend, trend_metrics)
+            # Compute confidence from SMA gap/price position
+            sma_confidence = self._compute_regime_confidence(trend, trend_metrics)
+
+            # FII flow: third confirmation input — adjusts confidence up or down
+            fii_modifier, fii_metrics = self._fetch_fii_regime_signal(trend)
+
+            # PCR: fourth input — extreme put/call positioning flags sentiment extremes
+            pcr_modifier, pcr_metrics = self._fetch_pcr_regime_signal(trend)
+
+            # Breadth: fifth input — % of NIFTY50 stocks above 200-SMA (most reliable)
+            breadth_modifier, breadth_metrics = self._fetch_breadth_regime_signal(trend)
+
+            # Combined confidence: SMA base + FII + PCR + Breadth, floored at 0.3
+            # Breadth is cached 4h so it's cheap; FII/PCR are 15-60min cached
+            confidence = float(np.clip(
+                sma_confidence + fii_modifier + pcr_modifier + breadth_modifier, 0.3, 1.0
+            ))
+
             weights = self._blend_weights(base_weights, alpha=confidence)
 
-            logger.info(f"   Regime confidence: {confidence:.2f} "
-                        f"({'established' if confidence >= 0.7 else 'transitioning' if confidence >= 0.4 else 'borderline'})")
+            logger.info(
+                f"   Regime confidence: {confidence:.2f} "
+                f"(sma={sma_confidence:.2f}, fii={fii_modifier:+.2f}, "
+                f"pcr={pcr_modifier:+.2f}, breadth={breadth_modifier:+.2f}) "
+                f"[{'established' if confidence >= 0.7 else 'transitioning' if confidence >= 0.4 else 'borderline'}]"
+            )
             if confidence < 1.0:
                 logger.info(f"   Blended weights (alpha={confidence:.2f}): "
                             f"F={weights['fundamentals']:.0%} M={weights['momentum']:.0%} "
@@ -314,9 +511,13 @@ class MarketRegimeService:
                 'weights': weights,
                 'base_weights': base_weights,  # unblended, for inspection
                 'regime_confidence': confidence,
+                'sma_confidence': sma_confidence,
                 'metrics': {
                     **trend_metrics,
-                    **vol_metrics
+                    **vol_metrics,
+                    **fii_metrics,
+                    **pcr_metrics,
+                    **breadth_metrics,
                 },
                 'timestamp': datetime.now().isoformat(),
                 'cached': False

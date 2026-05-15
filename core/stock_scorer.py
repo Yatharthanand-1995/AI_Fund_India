@@ -154,6 +154,94 @@ class StockScorer:
     }
     _USDINR_CACHE_TTL_SECONDS = 3600  # Refresh at most once per hour
 
+    # ── Crude oil sector sensitivity (India-specific) ─────────────────────────
+    # Positive = benefits from HIGH crude (E&P, oilfield services).
+    # Negative = hurt by HIGH crude (OMCs buy crude, airlines burn jet fuel, auto via input costs).
+    # Thresholds: >$90/bbl = high, <$70/bbl = low (Brent range context for India).
+    # OMCs (BPCL, HPCL, IOC) live in 'Energy' — they are IMPORTERS, hurt by high crude.
+    # ONGC/Oil India are E&P producers — benefit. But Yahoo Finance puts them all under 'Energy'.
+    # We use a mild negative for 'Energy' overall (OMCs outweigh E&P in NIFTY weight).
+    _SECTOR_CRUDE_SENSITIVITY: Dict[str, float] = {
+        'Energy':           -0.6,  # OMC-dominated in NIFTY (BPCL, HPCL hurt; ONGC partially offsets)
+        'Consumer Cyclical': -0.5, # Auto: input cost pressure (rubber, plastics, logistics)
+        'Industrials':      -0.3,  # Logistics, chemicals: energy input cost
+        'Consumer Defensive': -0.2, # FMCG: packaging/logistics cost creep
+        'Basic Materials':  +0.3,  # Petrochemicals, specialty chemicals: margin expansion
+        # Technology, Healthcare, Financial Services: oil-agnostic
+    }
+    _CRUDE_CACHE_TTL_SECONDS = 3600  # 1-hour cache — crude moves daily, not intraday
+
+    def _get_crude_price(self) -> Optional[Dict]:
+        """
+        Fetch Brent crude 20-day trend from yfinance (BZ=F).
+        Returns {'price': float, 'trend_pct': float, 'level': str} or None on failure.
+        level: 'high' (>$90), 'moderate' ($70-90), 'low' (<$70)
+        Cached for 1 hour.
+        """
+        now = datetime.now()
+        cache = getattr(self, '_crude_cache', None)
+        cache_ts = getattr(self, '_crude_cache_ts', None)
+        if (
+            cache is not None and cache_ts is not None
+            and (now - cache_ts).total_seconds() < self._CRUDE_CACHE_TTL_SECONDS
+        ):
+            return cache
+
+        try:
+            import yfinance as yf
+            brent = yf.Ticker("BZ=F").history(period="30d")
+            if len(brent) < 20:
+                return None
+            current = float(brent['Close'].iloc[-1])
+            past = float(brent['Close'].iloc[-20])
+            trend_pct = (current - past) / past * 100
+            level = 'high' if current > 90 else 'low' if current < 70 else 'moderate'
+            result = {'price': round(current, 2), 'trend_pct': round(trend_pct, 2), 'level': level}
+            self._crude_cache = result
+            self._crude_cache_ts = now
+            logger.debug(f"Brent crude: ${current:.1f}/bbl ({level}), 20d trend {trend_pct:+.1f}%")
+            return result
+        except Exception as e:
+            logger.debug(f"Crude price fetch failed (skipping crude adjustment): {e}")
+            return None
+
+    def _compute_crude_adjustment(self, sector: Optional[str], crude: Optional[Dict]) -> float:
+        """
+        Returns a score adjustment (pts, capped ±3) based on Brent crude level + trend and sector.
+
+        Two components:
+        1. Level effect: current price vs $70-90 neutral band (structural headwind/tailwind)
+        2. Trend effect: 20-day price momentum (directional near-term signal)
+
+        Only applied when crude is outside the $70-90 neutral band OR trend is >5% in 20 days.
+        """
+        if not sector or not crude:
+            return 0.0
+        sensitivity = self._SECTOR_CRUDE_SENSITIVITY.get(sector, 0.0)
+        if sensitivity == 0.0:
+            return 0.0
+
+        price = crude.get('price', 80.0)
+        trend_pct = crude.get('trend_pct', 0.0)
+        level = crude.get('level', 'moderate')
+
+        # Level component: how far outside neutral band
+        if level == 'high':
+            level_signal = min(1.0, (price - 90) / 20)   # 0→1 as crude goes $90→$110
+        elif level == 'low':
+            level_signal = max(-1.0, (price - 70) / 20)  # 0→-1 as crude goes $70→$50
+        else:
+            level_signal = 0.0
+
+        # Trend component: only meaningful when >5% move in 20 days
+        trend_signal = 0.0
+        if abs(trend_pct) > 5.0:
+            trend_signal = float(np.clip(trend_pct / 30, -0.5, 0.5))
+
+        combined_signal = 0.6 * level_signal + 0.4 * trend_signal
+        raw_adj = sensitivity * combined_signal * 5.0  # scale: full signal → ±3 pts
+        return round(float(np.clip(raw_adj, -3.0, 3.0)), 2)
+
     def _get_usdinr_trend(self) -> Optional[Dict]:
         """
         Fetch 20-day USD/INR change from yfinance (INR=X).
@@ -249,9 +337,9 @@ class StockScorer:
             accel = rs3 - rs6          # positive = momentum building
 
             if accel > 5.0:
-                return float(np.clip(accel * 0.5, 2.0, 10.0))   # +2 to +10 pts
+                return float(np.clip(accel * 0.25, 1.0, 5.0))   # +1 to +5 pts (halved — momentum agent already has RS)
             elif accel < -10.0:
-                return float(np.clip(accel * 0.4, -10.0, -2.0)) # -2 to -10 pts
+                return float(np.clip(accel * 0.2, -5.0, -1.0))  # -1 to -5 pts
             return 0.0
 
         except Exception:
@@ -318,9 +406,9 @@ class StockScorer:
 
             acceleration = g1 - g2   # positive = earnings growing faster
             if acceleration > 0.15:
-                return float(np.clip(acceleration * 30, 2.0, 8.0))   # +2 to +8 pts
+                return float(np.clip(acceleration * 15, 1.0, 4.0))   # +1 to +4 pts (halved — fundamentals agent already has earnings growth)
             elif acceleration < -0.15:
-                return float(np.clip(acceleration * 25, -8.0, -2.0)) # -2 to -8 pts
+                return float(np.clip(acceleration * 12, -4.0, -1.0)) # -1 to -4 pts
             return 0.0
 
         except Exception:
@@ -515,38 +603,59 @@ class StockScorer:
                 weights
             )
 
-            # Step 5b: USD/INR sector adjustment (India-specific overlay, ±4 pts max)
+            # Steps 5b–5f: Alpha overlays — compute all, then apply combined cap of ±10 pts.
+            # Individual caps prevent double-counting with agent signals.
+            # Combined cap prevents overlay stacking from inflating scores (e.g. TCS→98 bug).
+
             stock_sector = cached_data.get('sector')
+
+            # 5b: USD/INR sector adjustment (±4 pts max)
             usdinr_data = self._get_usdinr_trend()
             currency_adj = self._compute_currency_adjustment(stock_sector, usdinr_data)
             if currency_adj != 0.0:
-                composite_score = float(np.clip(composite_score + currency_adj, 0.0, 100.0))
                 logger.debug(f"  Currency adjustment ({stock_sector}): {currency_adj:+.2f} pts "
                              f"(USD/INR {usdinr_data['direction']} {usdinr_data['trend_pct']:+.1f}%)")
 
-            # Step 5c: RBI rate cycle sector adjustment (India-specific overlay, ±3 pts max)
+            # 5c: RBI rate cycle sector adjustment (±3 pts max)
             rbi_adj = self._rbi_provider.get_sector_adjustment(stock_sector)
             if rbi_adj != 0.0:
-                composite_score = float(np.clip(composite_score + rbi_adj, 0.0, 100.0))
                 rbi_info = self._rbi_provider.get_rate_info()
                 logger.debug(f"  RBI rate adjustment ({stock_sector}): {rbi_adj:+.2f} pts "
                              f"(cycle={rbi_info['cycle']}, repo={rbi_info['repo_rate']}%)")
 
-            # Step 5d: Earnings Acceleration adjustment (±8 pts max)
-            # Rewards stocks with accelerating QoQ EPS; penalises decelerating ones.
-            # Catches value recovery (HDFCBANK type) and avoids extended PE stocks.
+            # 5d: Earnings Acceleration adjustment (±4 pts — reduced to avoid
+            # double-counting fundamentals agent's earnings_growth/quarterly_growth scores)
             earnings_acc_adj = self._compute_earnings_acceleration(symbol, cached_data)
+            earnings_acc_adj = float(np.clip(earnings_acc_adj, -4.0, 4.0))
             if earnings_acc_adj != 0.0:
-                composite_score = float(np.clip(composite_score + earnings_acc_adj, 0.0, 100.0))
                 logger.debug(f"  Earnings acceleration ({symbol}): {earnings_acc_adj:+.2f} pts")
 
-            # Step 5e: RS Acceleration adjustment (±10 pts max)
-            # Rewards building momentum vs NIFTY (3M RS > 6M RS),
-            # penalises fading momentum (extended run, mean-reversion risk).
+            # 5e: RS Acceleration adjustment (±5 pts — reduced to avoid
+            # double-counting momentum agent's relative_strength_score)
             rs_accel_adj = self._compute_rs_acceleration(price_data, nifty_data)
+            rs_accel_adj = float(np.clip(rs_accel_adj, -5.0, 5.0))
             if rs_accel_adj != 0.0:
-                composite_score = float(np.clip(composite_score + rs_accel_adj, 0.0, 100.0))
                 logger.debug(f"  RS acceleration ({symbol}): {rs_accel_adj:+.2f} pts")
+
+            # 5f: Crude oil sector adjustment (±3 pts max)
+            # Hurts OMCs/auto/industrials when Brent is high; helps petrochems.
+            crude_data = self._get_crude_price()
+            crude_adj = self._compute_crude_adjustment(stock_sector, crude_data)
+            if crude_adj != 0.0:
+                logger.debug(f"  Crude adjustment ({stock_sector}): {crude_adj:+.2f} pts "
+                             f"(Brent ${crude_data['price']:.1f}, {crude_data['level']})")
+
+            # Combined overlay: cap total at ±10 pts regardless of individual values
+            total_overlay = float(np.clip(
+                currency_adj + rbi_adj + earnings_acc_adj + rs_accel_adj + crude_adj,
+                -10.0, 10.0
+            ))
+            if total_overlay != 0.0:
+                composite_score = float(np.clip(composite_score + total_overlay, 0.0, 100.0))
+                logger.info(f"  Total overlay: {total_overlay:+.2f} pts "
+                            f"(currency={currency_adj:+.1f}, rbi={rbi_adj:+.1f}, "
+                            f"earnings={earnings_acc_adj:+.1f}, rs={rs_accel_adj:+.1f}, "
+                            f"crude={crude_adj:+.1f})")
 
             # Step 6: Determine recommendation
             recommendation = self._get_recommendation(composite_score, composite_confidence)
@@ -595,6 +704,9 @@ class StockScorer:
                 'rbi_rate_cycle': self._rbi_provider.get_rate_info().get('cycle'),
                 'earnings_acceleration_adj': earnings_acc_adj if 'earnings_acc_adj' in locals() else 0.0,
                 'rs_acceleration_adj': rs_accel_adj if 'rs_accel_adj' in locals() else 0.0,
+                'crude_adjustment': crude_adj if 'crude_adj' in locals() else 0.0,
+                'crude_price': crude_data.get('price') if 'crude_data' in locals() and crude_data else None,
+                'total_overlay_adj': total_overlay if 'total_overlay' in locals() else 0.0,
             }
 
             # Update stats
