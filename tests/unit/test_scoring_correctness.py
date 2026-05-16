@@ -76,7 +76,12 @@ class TestSentimentScoreRange:
         assert result['score'] == pytest.approx(100.0, abs=0.01)
 
     def test_worst_data_reaches_near_zero(self):
-        """Strong Sell (rec=5.0), large downside (-30%), 0 analysts → near 0."""
+        """Strong Sell (rec=5.0), large downside (-30%), 0 analysts.
+
+        With thin-coverage guard (<3 analysts): score=None so the composite
+        re-normalises weights rather than being anchored by a noisy 0-analyst signal.
+        For meaningful low scores, use ≥3 analysts — score will be near 0.
+        """
         info = {
             'recommendationMean': 5.0,
             'targetMeanPrice': 700.0,
@@ -84,21 +89,34 @@ class TestSentimentScoreRange:
             'numberOfAnalystOpinions': 0,
         }
         result = self._run(info)
-        # rec=0, target=0, coverage=0 → 0
-        assert result['score'] == pytest.approx(0.0, abs=0.01)
+        # 0 analysts < 3 threshold → thin-coverage guard returns score=None
+        assert result['score'] is None
+        assert result['status'] == 'no_data'
+
+    def test_worst_data_with_adequate_coverage_near_zero(self):
+        """Strong Sell (rec=5.0), large downside (-30%), 5 analysts → near 0."""
+        info = {
+            'recommendationMean': 5.0,
+            'targetMeanPrice': 700.0,
+            'currentPrice': 1000.0,  # -30% downside
+            'numberOfAnalystOpinions': 5,
+        }
+        result = self._run(info)
+        assert result['score'] is not None
+        assert result['score'] <= 20.0, f"Strong sell with downside should be low, got {result['score']}"
 
     def test_score_always_in_range(self):
-        """Score must be in [0, 100] for all boundary combinations."""
+        """Score must be in [0, 100] (or None for thin coverage) for all boundary combinations."""
         test_cases = [
-            # (rec_mean, target, current, analysts)
-            (1.0, 1500, 1000, 30),   # best case
-            (5.0, 700,  1000, 0),    # worst case
-            (2.5, 1100, 1000, 10),   # moderate
-            (3.5, 990,  1000, 5),    # slight downside
-            (4.5, 800,  1000, 1),    # sell leaning
-            (None, None, None, None), # all None
+            # (rec_mean, target, current, analysts, expect_none)
+            (1.0, 1500, 1000, 30,   False),  # best case
+            (5.0, 700,  1000, 0,    True),   # 0 analysts → thin-coverage guard
+            (2.5, 1100, 1000, 10,   False),  # moderate
+            (3.5, 990,  1000, 5,    False),  # slight downside
+            (4.5, 800,  1000, 1,    True),   # 1 analyst → thin-coverage guard
+            (None, None, None, None, True),  # all None → no sentiment data
         ]
-        for rec, tgt, cur, analysts in test_cases:
+        for rec, tgt, cur, analysts, expect_none in test_cases:
             info = {}
             if rec is not None:
                 info['recommendationMean'] = rec
@@ -109,9 +127,14 @@ class TestSentimentScoreRange:
             if analysts is not None:
                 info['numberOfAnalystOpinions'] = analysts
             result = self._run(info)
-            assert 0.0 <= result['score'] <= 100.0, (
-                f"Score {result['score']} out of range for {info}"
-            )
+            if expect_none:
+                assert result['score'] is None, (
+                    f"Expected score=None (thin coverage) for {info}, got {result['score']}"
+                )
+            else:
+                assert 0.0 <= result['score'] <= 100.0, (
+                    f"Score {result['score']} out of range for {info}"
+                )
 
     def test_neutral_breakdown_sums_to_score(self):
         """_neutral_result breakdown must sum to 50 (== score)."""
