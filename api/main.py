@@ -683,6 +683,8 @@ async def analyze_stock(body: AnalyzeRequest, request: Request):
                 agent_scores=result.get('agent_scores', {}),
                 weights=result.get('weights_used', {}),
                 market_regime=result.get('market_regime'),
+                price=result.get('current_price'),
+                sector=result.get('sector'),
                 narrative=narrative_text
             )
 
@@ -1937,7 +1939,9 @@ async def compare_stocks(request: CompareRequest):
                             confidence=result.get('composite_confidence', result.get('confidence', 0.0)),
                             agent_scores=result.get('agent_scores', {}),
                             weights=result.get('weights_used', {}),
-                            market_regime=result.get('market_regime')
+                            market_regime=result.get('market_regime'),
+                            price=result.get('current_price'),
+                            sector=result.get('sector')
                         )
                     except Exception as e:
                         logger.warning(f"Failed to save analysis to database: {e}")

@@ -43,7 +43,7 @@ export function useScreener(_initialFilters: ScreenerFilters = {}) {
       if (filters.institutionalFlowMin !== undefined) params.institutional_min = filters.institutionalFlowMin;
 
       const response = await api.get('/screener', { params });
-      const stocks: StockAnalysis[] = (response as any).results || [];
+      const stocks: StockAnalysis[] = (response as any).data?.results || [];
 
       setAllStocks(stocks);
 

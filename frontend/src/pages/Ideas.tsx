@@ -9,7 +9,7 @@
  * - Export functionality (CSV/JSON)
  */
 
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useRef } from 'react';
 import { Lightbulb, Download, Filter, RefreshCw, LayoutGrid, Table, GitCompare } from 'lucide-react';
 import { useStore } from '@/store/useStore';
 import api from '@/lib/api';
@@ -62,6 +62,7 @@ export default function Ideas() {
   const [showFilters, setShowFilters] = useState(false);
   const [page, setPage] = useState(1);
   const PAGE_SIZE = 10;
+  const fetchingRef = useRef(false);
 
   // Persist all filter changes to URL
   const persistFilters = (overrides: Partial<IdeasFilters> = {}) => {
@@ -81,6 +82,8 @@ export default function Ideas() {
   }, []);
 
   const loadIdeas = async (forceRefresh = false) => {
+    if (!forceRefresh && fetchingRef.current) return;
+
     const fetchCount = Math.max(topCount, 50); // fetch at least 50 so filters have enough data
     const cacheKey = `${fetchCount}:false`;
 
@@ -94,6 +97,7 @@ export default function Ideas() {
       }
     }
 
+    fetchingRef.current = true;
     setLoading('topPicks', true);
     setCacheAge(null);
 
@@ -118,6 +122,7 @@ export default function Ideas() {
         message: error.message || 'Failed to load investment ideas',
       });
     } finally {
+      fetchingRef.current = false;
       setLoading('topPicks', false);
     }
   };

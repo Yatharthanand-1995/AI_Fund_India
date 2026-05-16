@@ -87,7 +87,14 @@ class APIClient {
         if (error.response) {
           // Server responded with error — FastAPI uses "detail", others use "error" or "message"
           const data = error.response.data as Record<string, unknown>;
-          const message = (data?.detail as string) || (data?.error as string) || (data?.message as string) || error.message;
+          const raw = data?.detail ?? data?.error ?? data?.message;
+          const message = typeof raw === 'string'
+            ? raw
+            : Array.isArray(raw)
+              ? (raw as any[]).map(e => e?.msg ?? JSON.stringify(e)).join('; ')
+              : raw != null
+                ? String(raw)
+                : error.message;
           throw new Error(message);
         } else if (error.request) {
           throw new Error('No response from server. Please check if the API is running.');

@@ -311,6 +311,17 @@ function SignalCard({ s, buyThreshold = 65, sellThreshold = 50 }: {
 function StopProximity({ current, stop }: { current: number | undefined; stop: number | null | undefined }) {
   if (!current || !stop) return <span className="text-slate-600 text-xs">—</span>;
   const distPct = ((current - stop) / current) * 100;
+  // stop > current means stop has already been breached (or stale data)
+  if (distPct < 0) {
+    return (
+      <div className="flex flex-col gap-0.5">
+        <span className="font-mono text-xs text-slate-300">{price(stop)}</span>
+        <span className="text-[10px] flex items-center gap-0.5 text-red-500">
+          <ShieldAlert className="w-2.5 h-2.5" /> Stop breached
+        </span>
+      </div>
+    );
+  }
   const danger = distPct < 5;
   const warning = distPct < 10;
   return (
