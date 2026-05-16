@@ -189,12 +189,15 @@ export interface StockAnalysis {
   narrative?: Narrative;
   timestamp: string;
   cached?: boolean;
-  // Signal adjustments — each contributes to composite score
+  // Signal adjustments — formula: composite = agents×weights + regime_adj + overlays
+  regime_adjustment?: number;      // additive regime modifier (BULL +≤3, BEAR −≤3, scaled by confidence)
   currency_adjustment?: number;
   rbi_adjustment?: number;
   rbi_rate_cycle?: string;
   earnings_acceleration_adj?: number;
   rs_acceleration_adj?: number;
+  crude_adjustment?: number;
+  total_overlay_adj?: number;
   usdinr_trend?: { trend_pct: number; direction: string } | null;
   composite_confidence?: number;
   analysis_time_seconds?: number;

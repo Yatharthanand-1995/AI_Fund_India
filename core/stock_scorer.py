@@ -560,30 +560,16 @@ class StockScorer:
                             'error': str(e)
                         }
 
-            # Apply regime-aware score adjustment to each agent's score
-            # Skip when adaptive weights are active (regime already captured in weights)
-            if not self.use_adaptive_weights:
-                _REGIME_AGENT_MULTIPLIERS = {
-                    'BULL': {
-                        'fundamentals': 1.05, 'momentum': 1.08, 'quality': 0.97,
-                        'sentiment': 1.00, 'institutional_flow': 1.02
-                    },
-                    'BEAR': {
-                        'fundamentals': 0.92, 'momentum': 0.88, 'quality': 1.08,
-                        'sentiment': 1.05, 'institutional_flow': 1.00
-                    },
-                    'SIDEWAYS': {
-                        'fundamentals': 1.0, 'momentum': 1.0, 'quality': 1.0,
-                        'sentiment': 1.0, 'institutional_flow': 1.0
-                    },
-                }
-                _agent_multipliers = _REGIME_AGENT_MULTIPLIERS.get(regime_trend, {})
-                if _agent_multipliers:
-                    for _agent_name, _result in agent_results.items():
-                        _m = _agent_multipliers.get(_agent_name, 1.0)
-                        if _m != 1.0 and _result.get('status') != 'error' and _result.get('score') is not None:
-                            _result['regime_adjusted_score'] = round(min(100.0, max(0.0, _result['score'] * _m)), 2)
-                    logger.info(f"  Applied agent-specific regime multipliers ({regime_trend})")
+            # NOTE: We deliberately do NOT apply per-agent regime multipliers here.
+            # Prior approach multiplied each agent's score before compositing (e.g. momentum
+            # 78 → 84.2 in BULL), but kept showing the raw 78 in the UI — creating an
+            # invisible gap that made composite > sum(agent_scores × weights).
+            #
+            # Correct approach: composite = weighted average of the EXACT scores shown to
+            # the user, then ONE transparent regime_adjustment is added on top.
+            # This makes the formula verifiable: agents×weights + regime_adj + overlays = final.
+            #
+            # The regime_adjustment is computed in Step 5g below after the composite is formed.
 
             # Extract results (maintain backward compatibility)
             fundamentals_result = agent_results['fundamentals']
@@ -657,6 +643,20 @@ class StockScorer:
                             f"earnings={earnings_acc_adj:+.1f}, rs={rs_accel_adj:+.1f}, "
                             f"crude={crude_adj:+.1f})")
 
+            # Step 5g: Regime adjustment — single transparent additive modifier.
+            # Replaces the old per-agent multiplier approach (which was invisible in the UI).
+            # BULL + high confidence → +3 pts max; BEAR + high confidence → -3 pts max.
+            # Scaled by regime confidence so weak signals barely move the needle.
+            _REGIME_COMPOSITE_ADJ = {'BULL': +3.0, 'BEAR': -3.0, 'SIDEWAYS': 0.0}
+            regime_adj = _REGIME_COMPOSITE_ADJ.get(regime_trend, 0.0)
+            # Scale by confidence: at 50% confidence the adjustment is halved
+            regime_adj = round(regime_adj * max(0.0, (regime_confidence - 0.3) / 0.7), 2)
+            if regime_adj != 0.0 and not self.use_adaptive_weights:
+                composite_score = float(np.clip(composite_score + regime_adj, 0.0, 100.0))
+                logger.info(f"  Regime adjustment ({regime_trend}, conf={regime_confidence:.0%}): {regime_adj:+.2f} pts")
+            else:
+                regime_adj = 0.0  # adaptive weights already bake in regime; no double-dip
+
             # Step 6: Determine recommendation
             recommendation = self._get_recommendation(composite_score, composite_confidence)
 
@@ -698,6 +698,9 @@ class StockScorer:
                 'timestamp': datetime.now().isoformat(),
                 'analysis_time_seconds': round(analysis_time, 2),
                 'data_provider': cached_data.get('provider'),
+                # --- Score breakdown (verifiable formula) ---
+                # composite_score = agents×weights + regime_adj + total_overlay_adj
+                'regime_adjustment': regime_adj if 'regime_adj' in locals() else 0.0,
                 'currency_adjustment': currency_adj if 'currency_adj' in locals() else 0.0,
                 'usdinr_trend': usdinr_data if 'usdinr_data' in locals() else None,
                 'rbi_adjustment': rbi_adj if 'rbi_adj' in locals() else 0.0,
@@ -841,11 +844,12 @@ class StockScorer:
             name: weights[name] / raw_weight_sum for name in successful_agents
         }
 
-        # Calculate weighted composite score from successful agents only
-        # Use regime_adjusted_score when present (set by regime multiplier path),
-        # keeping result['score'] intact so breakdown values remain consistent.
+        # Calculate weighted composite score from successful agents only.
+        # Always use result['score'] — the raw score shown to the user in the UI.
+        # Regime effect is applied AFTER as a single transparent additive adjustment
+        # so that: composite = agents×weights + regime_adj + overlays (user-verifiable).
         composite_score = sum(
-            normalized_weights[name] * result.get('regime_adjusted_score', result['score'])
+            normalized_weights[name] * result['score']
             for name, result in successful_agents.items()
         )
 

@@ -54,10 +54,12 @@ const AGENT_META: Record<string, { label: string; desc: string; color: string }>
 
 // Human-readable labels for signal adjustments
 const ADJ_META: Record<string, { label: string; desc: string }> = {
-  rs_acceleration_adj:      { label: 'RS Acceleration',   desc: '3M vs 6M relative strength vs NIFTY — rewards building momentum' },
-  earnings_acceleration_adj:{ label: 'Earnings Accel',    desc: 'QoQ EPS growth trend — rewards accelerating earnings' },
-  rbi_adjustment:            { label: 'RBI Rate Cycle',    desc: 'Sector adjustment based on RBI cutting/hiking cycle' },
-  currency_adjustment:       { label: 'USD/INR Overlay',   desc: '20-day INR trend × sector currency sensitivity' },
+  regime_adjustment:         { label: 'Market Regime',     desc: 'Additive regime modifier: BULL +≤3 pts, BEAR −≤3 pts, scaled by regime confidence' },
+  rs_acceleration_adj:       { label: 'RS Acceleration',   desc: '3M vs 6M relative strength vs NIFTY — rewards building momentum' },
+  earnings_acceleration_adj: { label: 'Earnings Accel',    desc: 'QoQ EPS growth trend — rewards accelerating earnings' },
+  rbi_adjustment:             { label: 'RBI Rate Cycle',   desc: 'Sector adjustment based on RBI cutting/hiking cycle' },
+  currency_adjustment:        { label: 'USD/INR Overlay',  desc: '20-day INR trend × sector currency sensitivity' },
+  crude_adjustment:           { label: 'Crude Oil',         desc: 'Brent price level and trend × sector oil sensitivity' },
 };
 
 // Sub-metrics to show when an agent row is expanded
@@ -226,12 +228,15 @@ export function ScoreBreakdown({ analysis, compact = false, className }: ScoreBr
   const weights = analysis.weights_used ?? analysis.weights ?? {};
   const agents = analysis.agent_scores ?? {};
 
-  // Signal adjustments from the scorer
+  // Signal adjustments from the scorer — listed in application order.
+  // Formula: composite = Σ(agent_score × weight) + regime_adj + overlays
   const adjustments = [
+    { key: 'regime_adjustment',         value: analysis.regime_adjustment ?? 0 },
     { key: 'rs_acceleration_adj',       value: analysis.rs_acceleration_adj ?? 0 },
     { key: 'earnings_acceleration_adj', value: analysis.earnings_acceleration_adj ?? 0 },
     { key: 'rbi_adjustment',            value: analysis.rbi_adjustment ?? 0 },
     { key: 'currency_adjustment',       value: analysis.currency_adjustment ?? 0 },
+    { key: 'crude_adjustment',          value: analysis.crude_adjustment ?? 0 },
   ].filter(a => a.value !== 0);
 
   const rawScore = analysis.raw_composite_score ?? null;
@@ -328,23 +333,36 @@ export function ScoreBreakdown({ analysis, compact = false, className }: ScoreBr
         </div>
       )}
 
-      {/* Regime + cycle footnote */}
-      {!compact && (analysis.market_regime || analysis.rbi_rate_cycle) && (
-        <div className="border-t border-slate-700/40 px-4 py-2 flex flex-wrap gap-3 text-[10px] text-slate-500">
-          {analysis.market_regime && (
-            <span>Regime: <span className="text-slate-300 font-medium">{analysis.market_regime.regime}</span></span>
-          )}
-          {analysis.rbi_rate_cycle && (
-            <span>RBI cycle: <span className={cn('font-medium',
-              analysis.rbi_rate_cycle === 'cutting' ? 'text-emerald-400' :
-              analysis.rbi_rate_cycle === 'hiking'  ? 'text-red-400' : 'text-slate-300'
-            )}>{analysis.rbi_rate_cycle}</span></span>
-          )}
-          {analysis.usdinr_trend && (
-            <span>USD/INR: <span className="text-slate-300 font-medium">
-              {analysis.usdinr_trend.direction} {analysis.usdinr_trend.trend_pct > 0 ? '+' : ''}{analysis.usdinr_trend.trend_pct.toFixed(1)}%
-            </span></span>
-          )}
+      {/* Score formula + regime/cycle footnote */}
+      {!compact && (
+        <div className="border-t border-slate-700/40 px-4 py-2 space-y-1.5">
+          {/* Verifiable formula */}
+          <div className="text-[10px] text-slate-600 font-mono">
+            Score = agents×weights
+            {adjustments.length > 0 && (
+              <span className="text-slate-500">
+                {' '}+ adjustments ({adjustments.reduce((s, a) => s + a.value, 0) >= 0 ? '+' : ''}{adjustments.reduce((s, a) => s + a.value, 0).toFixed(1)} pts)
+              </span>
+            )}
+            {' '}= <span className="text-slate-300 font-semibold">{analysis.composite_score.toFixed(1)}</span>
+          </div>
+          {/* Context tags */}
+          <div className="flex flex-wrap gap-3 text-[10px] text-slate-500">
+            {analysis.market_regime && (
+              <span>Regime: <span className="text-slate-300 font-medium">{analysis.market_regime.regime}</span></span>
+            )}
+            {analysis.rbi_rate_cycle && (
+              <span>RBI cycle: <span className={cn('font-medium',
+                analysis.rbi_rate_cycle === 'cutting' ? 'text-emerald-400' :
+                analysis.rbi_rate_cycle === 'hiking'  ? 'text-red-400' : 'text-slate-300'
+              )}>{analysis.rbi_rate_cycle}</span></span>
+            )}
+            {analysis.usdinr_trend && (
+              <span>USD/INR: <span className="text-slate-300 font-medium">
+                {analysis.usdinr_trend.direction} {analysis.usdinr_trend.trend_pct > 0 ? '+' : ''}{analysis.usdinr_trend.trend_pct.toFixed(1)}%
+              </span></span>
+            )}
+          </div>
         </div>
       )}
     </div>
