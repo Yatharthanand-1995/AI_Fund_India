@@ -47,7 +47,9 @@ Two positions drove the majority of drawdown:
 - **Rule:** If stock's RS rank (vs NIFTY50 universe) falls below 30th percentile for 3 consecutive monthly reviews → exit
 - **Expected MaxDD improvement:** -3 to -4pp
 - **File:** `scripts/portfolio_backtest.py` — `run_signal_simulation()`
-- **Status:** ⬜ Not started
+- **Status:** ✅ Implemented & validated
+- **Actual result:** MaxDD -27.2% → -23.9% (-3.3pp), CAGR 12.9% → 13.1% (+0.2pp), Sharpe 0.42 → 0.45
+- **Run:** `5y_v4_M1_rs_exit` (2026-06-02)
 
 ### M2 — 12M Price Momentum Override
 - **Problem:** ITC value trap — fundamentals OK but price dead for 31 months
@@ -121,7 +123,7 @@ Run each mechanism isolated first (vs baseline), then stack:
 | Date | Run name | CAGR | Sharpe | MaxDD | Alpha | Notes |
 |------|----------|------|--------|-------|-------|-------|
 | 2026-06-02 | `5y_v4_b60s38_backtestscorer` *(baseline)* | 12.9% | 0.42 | -27.2% | +5.5% | v4 baseline |
-| | | | | | | |
+| 2026-06-02 | `5y_v4_M1_rs_exit` | 13.1% | 0.45 | **-23.9%** | +5.4% | M1 alone — MaxDD -3.3pp ✅ |
 
 ---
 
