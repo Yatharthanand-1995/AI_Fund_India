@@ -47,9 +47,10 @@ Two positions drove the majority of drawdown:
 - **Rule:** If stock's RS rank (vs NIFTY50 universe) falls below 30th percentile for 3 consecutive monthly reviews → exit
 - **Expected MaxDD improvement:** -3 to -4pp
 - **File:** `scripts/portfolio_backtest.py` — `run_signal_simulation()`
-- **Status:** ✅ Implemented & validated
-- **Actual result:** MaxDD -27.2% → -23.9% (-3.3pp), CAGR 12.9% → 13.1% (+0.2pp), Sharpe 0.42 → 0.45
-- **Run:** `5y_v4_M1_rs_exit` (2026-06-02)
+- **Status:** ✅ Implemented & tuned — best config: `--rs-percentile 0.35 --rs-strikes 3`
+- **Tuning results:** p30/s3 → -23.9% (initial), **p35/s3 → -22.7%, CAGR 14.6%, Sharpe 0.53** (best)
+- **Insight:** 35th percentile catches stocks ranked 31-35th that were chronically weak but evading the 30th threshold. 3-strike grace handles volatility — 2 strikes is too hair-trigger (-1.8pp CAGR cost).
+- **M4/M5 verdict:** Both shelved. In monthly rebalancing, macro-timing mechanisms react *after* the loss is already realised. M4 circuit trims good holdings during the bad month then misses recovery. M5 VIX threshold too low for India (VIX typically 14-18) — fires almost every month, bleeding alpha without protection.
 
 ### M2 — 12M Price Momentum Override
 - **Problem:** ITC value trap — fundamentals OK but price dead for 31 months
@@ -123,7 +124,13 @@ Run each mechanism isolated first (vs baseline), then stack:
 | Date | Run name | CAGR | Sharpe | MaxDD | Alpha | Notes |
 |------|----------|------|--------|-------|-------|-------|
 | 2026-06-02 | `5y_v4_b60s38_backtestscorer` *(baseline)* | 12.9% | 0.42 | -27.2% | +5.5% | v4 baseline |
-| 2026-06-02 | `5y_v4_M1_rs_exit` | 13.1% | 0.45 | **-23.9%** | +5.4% | M1 alone — MaxDD -3.3pp ✅ |
+| 2026-06-02 | `5y_v4_M1_rs_exit` (p30 s3) | 13.1% | 0.45 | -23.9% | +5.4% | M1 p30/s3 |
+| 2026-06-02 | `5y_v4_M4_circuit` | 12.5% | 0.40 | -27.2% | +5.5% | M4 alone — no effect ❌ |
+| 2026-06-02 | `5y_v4_M5_vix` | 10.1% | 0.27 | -27.0% | +3.2% | M5 alone — hurts CAGR ❌ |
+| 2026-06-02 | `5y_v4_M1M4M5_fixed` | 11.7% | 0.37 | -25.5% | +4.7% | M4+M5 net negative vs M1 ❌ |
+| 2026-06-02 | `5y_v4_M1_p30_s2` | 11.6% | 0.37 | -23.9% | +5.1% | Too trigger-happy ❌ |
+| 2026-06-02 | **`5y_v4_M1_p35_s3`** | **14.6%** | **0.53** | **-22.7%** | **+7.6%** | **Best config ✅** |
+| 2026-06-02 | `5y_v4_M1_p35_s2` | 11.1% | 0.32 | -25.4% | +3.9% | Too aggressive ❌ |
 
 ---
 

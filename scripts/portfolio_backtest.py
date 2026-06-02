@@ -704,6 +704,49 @@ def fetch_usdinr_prices(years: int) -> pd.Series:
     return series
 
 
+def fetch_vix_prices(years: int) -> pd.Series:
+    """Pre-fetch India VIX (^INDIAVIX) for M5 position-sizing scalar."""
+    import yfinance as yf
+    print(f"  Fetching India VIX history …")
+    raw = yf.download("^INDIAVIX", period=f"{years + 1}y", auto_adjust=True, progress=False)
+    if raw.empty:
+        print("  WARNING: India VIX data unavailable — VIX scalar disabled")
+        return pd.Series(dtype=float)
+    if isinstance(raw.columns, pd.MultiIndex):
+        close = raw['Close']
+        col = '^INDIAVIX' if '^INDIAVIX' in close.columns else close.columns[0]
+        series = close[col].dropna()
+    else:
+        series = raw['Close'].dropna()
+    print(f"  India VIX: {len(series)} trading days fetched")
+    return series
+
+
+def vix_scalar_at(vix_prices: pd.Series, as_of_date: pd.Timestamp) -> float:
+    """Return position-count and sizing scalar based on India VIX level.
+
+    VIX < 15:   full deployment (1.00)
+    VIX 15-20:  mild caution   (0.85)
+    VIX 20-25:  reduce risk    (0.65)
+    VIX > 25:   defensive      (0.40)
+    """
+    if vix_prices.empty:
+        return 1.0
+    idx = vix_prices.index.get_indexer([as_of_date], method='ffill')[0]
+    if idx < 0:
+        return 1.0
+    vix = float(vix_prices.iloc[idx])
+    # Thresholds calibrated for India VIX (structurally 12-20 vs US 12-25)
+    if vix < 18:
+        return 1.0
+    elif vix < 22:
+        return 0.85
+    elif vix < 26:
+        return 0.65
+    else:
+        return 0.40
+
+
 def load_rbi_history() -> List[Dict]:
     """Load MPC decision history from rbi_rate_config.json."""
     config_path = project_root / 'data' / 'rbi_rate_config.json'
@@ -1485,6 +1528,13 @@ def run_signal_simulation(
     rs_exit_enabled: bool = False,
     rs_exit_percentile: float = 0.30,
     rs_exit_strikes: int = 3,
+    m2_exit_enabled: bool = False,
+    m2_underperform_threshold: float = 0.15,
+    m2_exit_strikes: int = 2,
+    m4_circuit_enabled: bool = False,
+    m4_dd_threshold: float = 0.08,
+    m5_vix_enabled: bool = False,
+    vix_prices: Optional[pd.Series] = None,
 ) -> Tuple[pd.Series, pd.DataFrame]:
     """
     Signal-driven portfolio simulation v4 — fully live-system aligned.
@@ -1525,6 +1575,14 @@ def run_signal_simulation(
     trade_log: List[Dict] = []
     # M1: consecutive months each held stock has been in the bottom rs_exit_percentile
     rs_strike_count: Dict[str, int] = {}
+    # M2: consecutive months each held stock has underperformed NIFTY 12M return by > threshold
+    m2_strike_count: Dict[str, int] = {}
+    m2_latest_lag: Dict[str, float] = {}  # most recent underperformance value for exit message
+    # M4: monthly drawdown circuit breaker state
+    m4_in_circuit: bool = False          # True when circuit is active
+    m4_circuit_pv: float = 100.0         # portfolio value when circuit was triggered
+    last_period_ret: float = 0.0         # return of the just-completed period
+    _vix_prices: pd.Series = vix_prices if vix_prices is not None else pd.Series(dtype=float)
 
     for i in range(len(rebal_dates) - 1):
         date_t  = rebal_dates[i]
@@ -1539,6 +1597,28 @@ def run_signal_simulation(
         }
         effective_max_positions = min(max_positions, dma_info['max_positions'])
         dma_regime = dma_info['regime']
+
+        # ── M5: India VIX scalar — preventive position count reduction ───────
+        # Reduces effective_max_positions before the market moves (forward-looking
+        # signal, fires 2-3 weeks before 200-DMA breaks in typical crash sequences).
+        if m5_vix_enabled:
+            vix_s = vix_scalar_at(_vix_prices, date_t)
+            effective_max_positions = max(2, round(effective_max_positions * vix_s))
+        else:
+            vix_s = 1.0
+
+        # ── M4: Monthly drawdown circuit breaker — reactive risk control ─────
+        # If the PREVIOUS period lost > m4_dd_threshold → activate circuit:
+        # hard-cap positions to 2 and skip all new entries this period.
+        # Circuit clears once portfolio recovers above the trigger level.
+        if m4_circuit_enabled:
+            if last_period_ret < -m4_dd_threshold and not m4_in_circuit:
+                m4_in_circuit = True
+                m4_circuit_pv  = pv
+            if m4_in_circuit and pv >= m4_circuit_pv * (1 - m4_dd_threshold * 0.5):
+                m4_in_circuit = False
+            if m4_in_circuit:
+                effective_max_positions = min(effective_max_positions, 2)
 
         # ── Event calendar risk scalar ──────────────────────────────────────
         ev_scalar = event_risk_scalar(date_t) if use_event_calendar else 1.0
@@ -1705,6 +1785,40 @@ def run_signal_simulation(
                 else:
                     rs_strike_count[sym] = 0
 
+        # ── M2: 12M price momentum override — update strike counts ──────────
+        # Compare each held stock's 12M trailing return vs NIFTY 12M return.
+        # Stocks lagging NIFTY by > m2_underperform_threshold for m2_exit_strikes
+        # consecutive months exit as momentum_trap (catches ITC-style value traps).
+        nifty_12m_ret: Optional[float] = None
+        if m2_exit_enabled:
+            idx_bench_now = bench.index.get_indexer([date_t], method='ffill')[0]
+            idx_bench_12m = idx_bench_now - 252  # ~12 months of trading days
+            if idx_bench_now >= 0 and idx_bench_12m >= 0:
+                b_now = float(bench.iloc[idx_bench_now])
+                b_12m = float(bench.iloc[idx_bench_12m])
+                if b_12m > 0:
+                    nifty_12m_ret = (b_now - b_12m) / b_12m
+
+            for sym in list(holdings.keys()):
+                p_ser = prices.get(sym)
+                if p_ser is None or nifty_12m_ret is None:
+                    continue
+                idx_now = p_ser.index.get_indexer([date_t], method='ffill')[0]
+                idx_12m = idx_now - 252
+                if idx_now < 0 or idx_12m < 0:
+                    continue
+                p_now = float(p_ser.iloc[idx_now])
+                p_12m = float(p_ser.iloc[idx_12m])
+                if p_12m <= 0:
+                    continue
+                stock_12m_ret = (p_now - p_12m) / p_12m
+                underperform = nifty_12m_ret - stock_12m_ret
+                m2_latest_lag[sym] = underperform
+                if underperform > m2_underperform_threshold:
+                    m2_strike_count[sym] = m2_strike_count.get(sym, 0) + 1
+                else:
+                    m2_strike_count[sym] = 0
+
         # ── Update peak_price high watermark for all holdings ────────────────
         for sym, h in holdings.items():
             p_ser = prices.get(sym)
@@ -1732,6 +1846,21 @@ def run_signal_simulation(
                 if sym not in exits:
                     exits.append(sym)
                     exit_reasons[sym] = 'event_trim'
+
+        # ── Step 1a-M4: Circuit breaker trim — reduce existing holdings ────────
+        # Fires when the PREVIOUS period return was below -m4_dd_threshold.
+        # Actively exits bottom-scored positions until holdings ≤ circuit cap (2),
+        # freeing capital to cash. Without this, "cap new entries" alone doesn't
+        # reduce existing exposure and misses the bad month entirely.
+        if m4_circuit_enabled and m4_in_circuit and len(holdings) > 2:
+            circuit_cap = 2
+            held_not_exiting = [(s, score_map.get(s, h.get('entry_score', 0)))
+                                 for s, h in holdings.items() if s not in exits]
+            held_not_exiting.sort(key=lambda x: x[1])
+            trim_count = len(held_not_exiting) - circuit_cap
+            for sym, _ in held_not_exiting[:max(0, trim_count)]:
+                exits.append(sym)
+                exit_reasons[sym] = f'circuit_trim(dd>{m4_dd_threshold*100:.0f}%)'
 
         # ── Step 1b: Hard exits — stop-loss, profit-protect, thesis-broken ───
         for sym, h in list(holdings.items()):
@@ -1777,6 +1906,15 @@ def run_signal_simulation(
                 pct_rank = rs_pct_rank.get(sym, 0.0) * 100
                 exit_reasons[sym] = f'rs_degradation(rank{pct_rank:.0f}th,{rs_strike_count[sym]}mo)'
 
+            # Priority 2.7: M2 — 12M momentum trap exit
+            # Fires when stock has underperformed NIFTY by > threshold for consecutive
+            # months. Complements M1 (rank-based) with an absolute benchmark test —
+            # catches ITC-style stocks that look cheap but bleed alpha for 2+ years.
+            elif m2_exit_enabled and m2_strike_count.get(sym, 0) >= m2_exit_strikes:
+                exits.append(sym)
+                lag = m2_latest_lag.get(sym, 0.0)
+                exit_reasons[sym] = f'momentum_trap(lag{lag*100:.0f}%,{m2_strike_count[sym]}mo)'
+
             # Priority 3: Score thesis broken — requires min_hold to prevent false exits
             elif current_score < sell_threshold:
                 if months_held >= min_hold_months:
@@ -1786,7 +1924,9 @@ def run_signal_simulation(
 
         for sym in exits:
             holdings.pop(sym, None)
-            rs_strike_count.pop(sym, None)  # reset so re-entry starts fresh
+            rs_strike_count.pop(sym, None)
+            m2_strike_count.pop(sym, None)
+            m2_latest_lag.pop(sym, None)
 
         # ── Step 2: Effective entry gate (regime + event calendar) ───────────
         # BEAR regime raises buy bar by 10pts; SIDEWAYS +3pts
@@ -1836,6 +1976,7 @@ def run_signal_simulation(
         # ── Step 4: Cash month ───────────────────────────────────────────────
         if not holdings:
             pv = pv * (1 + CASH_MONTHLY_RATE)
+            last_period_ret = CASH_MONTHLY_RATE
             portfolio_values.append((date_t1, round(pv, 4)))
             trade_log.append({
                 'date': date_t.strftime('%Y-%m'), 'regime': dma_regime,
@@ -1875,6 +2016,7 @@ def run_signal_simulation(
 
         port_ret -= cost
         pv = pv * (1 + port_ret)
+        last_period_ret = port_ret  # M4 reads this at start of next iteration
         portfolio_values.append((date_t1, round(pv, 4)))
 
         b0 = bench_at.get(date_t) or (bench.iloc[bench_idx] if bench_idx >= 0 else None)
@@ -2176,6 +2318,21 @@ def main():
                         help='M1: RS rank percentile threshold (default 0.30 = bottom 30%%)')
     parser.add_argument('--rs-strikes',      type=int,   default=3,
                         help='M1: consecutive months below RS threshold before exit (default 3)')
+    # M2: 12M momentum trap exit
+    parser.add_argument('--m2-exit',         action='store_true',
+                        help='M2: exit when stock underperforms NIFTY 12M by > --m2-threshold for --m2-strikes months')
+    parser.add_argument('--m2-threshold',    type=float, default=0.15,
+                        help='M2: underperformance vs NIFTY 12M to trigger a strike (default 0.15 = 15%%)')
+    parser.add_argument('--m2-strikes',      type=int,   default=2,
+                        help='M2: consecutive months of underperformance before exit (default 2)')
+    # M4: monthly portfolio drawdown circuit breaker
+    parser.add_argument('--m4-circuit',      action='store_true',
+                        help='M4: activate circuit breaker when monthly portfolio loss > --m4-threshold')
+    parser.add_argument('--m4-threshold',    type=float, default=0.08,
+                        help='M4: monthly loss threshold to trigger circuit (default 0.08 = 8%%)')
+    # M5: India VIX position-sizing scalar
+    parser.add_argument('--m5-vix',          action='store_true',
+                        help='M5: scale max positions by India VIX level (preventive, forward-looking)')
     args = parser.parse_args()
 
     if args.compare:
@@ -2218,6 +2375,12 @@ def main():
         print(f"  ProfitProtect: trigger={args.profit_trigger*100:.0f}%, trail={args.profit_trail*100:.0f}% from peak")
         if args.rs_exit:
             print(f"  M1 RS-Exit: ON  (bottom {args.rs_percentile*100:.0f}th pct for {args.rs_strikes} months → exit)")
+        if args.m2_exit:
+            print(f"  M2 Momentum-Trap: ON  (underperforms NIFTY by >{args.m2_threshold*100:.0f}% for {args.m2_strikes} months → exit)")
+        if args.m4_circuit:
+            print(f"  M4 Circuit: ON  (monthly loss >{args.m4_threshold*100:.0f}% → cap to 2 positions next period)")
+        if args.m5_vix:
+            print(f"  M5 VIX Scalar: ON  (VIX<15→1.0, 15-20→0.85, 20-25→0.65, >25→0.40)")
     else:
         print(f"  Mode: Calendar  |  Top-{args.top} stocks")
     sector_cap_str = f"{int(args.sector_cap * 100)}% cap" if args.sector_cap > 0 else "no cap"
@@ -2243,6 +2406,8 @@ def main():
         rbi_history = load_rbi_history()
         rbi_msg = f"{len(rbi_history)} MPC decisions loaded" if rbi_history else "no RBI data"
         print(f"  RBI rate cycle: {rbi_msg}")
+
+    vix_prices: pd.Series = fetch_vix_prices(args.years) if args.m5_vix else pd.Series(dtype=float)
 
     if bench.empty:
         print("  WARNING: NIFTY50 benchmark data unavailable — relative metrics will be skipped")
@@ -2318,6 +2483,13 @@ def main():
             rs_exit_enabled=args.rs_exit,
             rs_exit_percentile=args.rs_percentile,
             rs_exit_strikes=args.rs_strikes,
+            m2_exit_enabled=args.m2_exit,
+            m2_underperform_threshold=args.m2_threshold,
+            m2_exit_strikes=args.m2_strikes,
+            m4_circuit_enabled=args.m4_circuit,
+            m4_dd_threshold=args.m4_threshold,
+            m5_vix_enabled=args.m5_vix,
+            vix_prices=vix_prices,
         )
     else:
         print(f"\n  Running monthly simulation (top-{args.top}) …")
