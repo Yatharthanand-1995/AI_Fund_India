@@ -6,7 +6,6 @@ import api from '@/lib/api';
 import Loading from '@/components/ui/Loading';
 import { StockCardSkeleton, ChartSkeleton } from '@/components/ui/SkeletonLoader';
 import StockCard from '@/components/StockCard';
-import MarketRegimeCard from '@/components/MarketRegimeCard';
 import { StockPriceChart } from '@/components/charts/StockPriceChart';
 import { AgentScoresRadar } from '@/components/charts/AgentScoresRadar';
 import ChartErrorBoundary from '@/components/charts/ChartErrorBoundary';
@@ -129,6 +128,14 @@ export default function Dashboard() {
         <p className="text-lg text-gray-600">
           Comprehensive analysis using 5 specialized AI agents
         </p>
+        {systemStats && (
+          <p className="text-xs text-gray-400">
+            Data as of{' '}
+            {new Date(systemStats.timestamp).toLocaleString('en-IN', {
+              day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit',
+            })}
+          </p>
+        )}
       </div>
 
       {/* Market Overview — always visible when regime is available */}
@@ -198,9 +205,15 @@ export default function Dashboard() {
               <div>
                 <p className="text-sm text-gray-600">Cache Hit Rate</p>
                 <p className="text-2xl font-bold text-gray-900 mt-1">
-                  {systemStats?.cache_hit_rate?.toFixed(1) || '—'}%
+                  {systemStats != null
+                    ? `${systemStats.cache_hit_rate.toFixed(1)}%`
+                    : '—'}
                 </p>
-                <p className="text-xs text-gray-500 mt-1">API efficiency</p>
+                <p className="text-xs text-gray-500 mt-1">
+                  {systemStats != null
+                    ? `${systemStats.total_requests} requests`
+                    : 'API efficiency'}
+                </p>
               </div>
               <TrendingUp className="w-8 h-8 text-purple-500" />
             </div>
@@ -319,13 +332,6 @@ export default function Dashboard() {
             height={250}
             showWeights={false}
           />
-        </div>
-      )}
-
-      {/* Market Regime Card */}
-      {marketRegime && !analysis && (
-        <div className="max-w-4xl mx-auto">
-          <MarketRegimeCard regime={marketRegime} />
         </div>
       )}
 
@@ -460,13 +466,13 @@ export default function Dashboard() {
             </h3>
             <p className="text-gray-600 mb-4">
               Enter a stock symbol above to get comprehensive AI-powered analysis,
-              or check out our top picks from NIFTY 50
+              or explore AI-ranked investment ideas from NIFTY 50
             </p>
             <button
-              onClick={() => navigate('/top-picks')}
+              onClick={() => navigate('/ideas')}
               className="bg-primary-600 hover:bg-primary-700 text-white font-semibold py-3 px-6 rounded-lg transition-colors"
             >
-              View Top Picks
+              Browse Investment Ideas
             </button>
           </div>
 

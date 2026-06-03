@@ -14,6 +14,7 @@ import Card from '@/components/ui/Card';
 import Loading from '@/components/ui/Loading';
 import SuggestionCard from '@/components/suggestions/SuggestionCard';
 import { useWatchlist } from '@/hooks/useWatchlist';
+import { useStore } from '@/store/useStore';
 import api from '@/lib/api';
 import { logger } from '@/lib/logger';
 import type { StockAnalysis } from '@/types';
@@ -30,6 +31,7 @@ type SuggestionCategory = 'personalized' | 'diversification' | 'trending' | 'all
 
 export default function Suggestions() {
   const { watchlist } = useWatchlist();
+  const { getCachedTopPicks, cacheTopPicks } = useStore();
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState<PortfolioProfile | null>(null);
   const [suggestions, setSuggestions] = useState<{
@@ -51,9 +53,18 @@ export default function Suggestions() {
   const loadSuggestions = async () => {
     setLoading(true);
     try {
-      // Load all stocks for analysis
-      const response = await api.getTopPicks(100, false);
-      const stocks = response.top_picks || [];
+      // Use cached top picks first (App.tsx pre-fetches 50:false on startup)
+      const CACHE_KEY = '50:false';
+      // Skip watchlist analysis if empty — only compute trending suggestions
+      const cached = getCachedTopPicks(CACHE_KEY);
+      let stocks: StockAnalysis[];
+      if (cached) {
+        stocks = cached.top_picks || [];
+      } else {
+        const response = await api.getTopPicks(50, false);
+        cacheTopPicks(CACHE_KEY, response);
+        stocks = response.top_picks || [];
+      }
 
       // Load watchlist stock analyses
       const watchlistSymbols = watchlist.map(w => w.symbol);

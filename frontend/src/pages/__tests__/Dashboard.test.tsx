@@ -110,8 +110,8 @@ describe('Dashboard', () => {
     renderDashboard();
 
     await waitFor(() => {
-      // KPI cards should be visible
-      expect(screen.queryByText(/Total Analyses|Watchlist|Cache Hit Rate/i)).toBeTruthy();
+      // KPI cards or watchlist widget should be visible
+      expect(screen.queryAllByText(/Total Analyses|Watchlist|Cache Hit Rate/i).length).toBeGreaterThan(0);
     });
   });
 });

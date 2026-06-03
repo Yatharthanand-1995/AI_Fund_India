@@ -500,6 +500,10 @@ export interface WatchlistItem {
   latest_score?: number;
   latest_recommendation?: string;
   latest_sector?: string;
+  entry_price?: number | null;
+  current_price?: number | null;
+  quantity?: number | null;
+  notes?: string | null;
 }
 
 export interface BacktestRunsResponse {

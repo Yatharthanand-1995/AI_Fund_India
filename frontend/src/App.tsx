@@ -106,7 +106,6 @@ function App() {
               <Routes>
                 <Route path="/" element={<ErrorBoundary><Dashboard /></ErrorBoundary>} />
                 <Route path="/ideas" element={<ErrorBoundary><Ideas /></ErrorBoundary>} />
-                <Route path="/top-picks" element={<ErrorBoundary><Ideas /></ErrorBoundary>} /> {/* Legacy redirect */}
                 <Route path="/screener" element={<ErrorBoundary><Screener /></ErrorBoundary>} />
                 <Route path="/suggestions" element={<ErrorBoundary><Suggestions /></ErrorBoundary>} />
                 <Route path="/stock/:symbol" element={<ErrorBoundary><StockDetails /></ErrorBoundary>} />
