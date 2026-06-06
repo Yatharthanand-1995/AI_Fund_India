@@ -35,7 +35,7 @@ import logging
 import argparse
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -184,6 +184,102 @@ NIFTY50_SECTORS: Dict[str, str] = {
     'LUPIN.NS':       'Pharma',       # Lupin — removed 2019
     'AMBUJA.NS':      'Construction', # Ambuja Cements — removed 2019
 }
+
+# ── Factor buckets for M7 HHI concentration monitoring ───────────────────────
+# 5 buckets capture the dominant factor exposures present in NIFTY50.
+# A stock can only be in one bucket; 'other' is the catch-all.
+# Used by portfolio_factor_hhi() to block new entries when a factor is crowded.
+FACTOR_BUCKETS: Dict[str, str] = {
+    # Defensive Value: high ROE + low P/E + stable dividend (ITC-style)
+    'ITC.NS':         'def_value',
+    'BRITANNIA.NS':   'def_value',
+    'NESTLEIND.NS':   'def_value',
+    'HINDUNILVR.NS':  'def_value',
+    'TATACONSUM.NS':  'def_value',
+    'ASIANPAINT.NS':  'def_value',
+    # PSU / Commodity: state-owned or commodity-driven earnings (incl. large integrated energy)
+    'RELIANCE.NS':    'psu_commodity',
+    'COALINDIA.NS':   'psu_commodity',
+    'NTPC.NS':        'psu_commodity',
+    'POWERGRID.NS':   'psu_commodity',
+    'ONGC.NS':        'psu_commodity',
+    'BPCL.NS':        'psu_commodity',
+    'GAIL.NS':        'psu_commodity',
+    'BEL.NS':         'psu_commodity',
+    'SBIN.NS':        'psu_commodity',
+    # Tech / Growth: IT services + high revenue growth
+    'TCS.NS':         'tech',
+    'INFY.NS':        'tech',
+    'HCLTECH.NS':     'tech',
+    'WIPRO.NS':       'tech',
+    'TECHM.NS':       'tech',
+    'LTIM.NS':        'tech',
+    'LTI.NS':         'tech',
+    # Cyclical Growth: banks, auto, industrials — earnings tied to GDP cycle
+    'HDFCBANK.NS':    'cyclical_growth',
+    'ICICIBANK.NS':   'cyclical_growth',
+    'AXISBANK.NS':    'cyclical_growth',
+    'KOTAKBANK.NS':   'cyclical_growth',
+    'BAJFINANCE.NS':  'cyclical_growth',
+    'BAJAJFINSV.NS':  'cyclical_growth',
+    'HDFC.NS':        'cyclical_growth',
+    'INDUSINDBK.NS':  'cyclical_growth',
+    'TATAMOTORS.NS':  'cyclical_growth',
+    'MARUTI.NS':      'cyclical_growth',
+    'HEROMOTOCO.NS':  'cyclical_growth',
+    'EICHERMOT.NS':   'cyclical_growth',
+    'BAJAJ-AUTO.NS':  'cyclical_growth',
+    'M&M.NS':         'cyclical_growth',
+    'JSWSTEEL.NS':    'cyclical_growth',
+    'TATASTEEL.NS':   'cyclical_growth',
+    'HINDALCO.NS':    'cyclical_growth',
+    'VEDL.NS':        'cyclical_growth',
+    'LT.NS':          'cyclical_growth',
+    # Other: pharma, telecom, consumer discretionary, specialty
+    'SUNPHARMA.NS':   'other',
+    'DIVISLAB.NS':    'other',
+    'CIPLA.NS':       'other',
+    'DRREDDY.NS':     'other',
+    'APOLLOHOSP.NS':  'other',
+    'LUPIN.NS':       'other',
+    'BHARTIARTL.NS':  'other',
+    'INFRATEL.NS':    'other',
+    'ADANIPORTS.NS':  'other',
+    'ADANIENT.NS':    'other',
+    'GRASIM.NS':      'other',
+    'ULTRACEMCO.NS':  'other',
+    'TITAN.NS':       'other',
+    'TRENT.NS':       'other',
+    'SBILIFE.NS':     'other',
+    'HDFCLIFE.NS':    'other',
+    'UPL.NS':         'other',
+    'ZEEL.NS':        'other',
+    'SHREECEM.NS':    'other',
+    'AMBUJA.NS':      'other',
+}
+
+
+def portfolio_factor_hhi(holdings_syms: set, score_weights: Dict[str, float]) -> tuple:
+    """
+    Compute portfolio Herfindahl-Hirschman Index across factor buckets.
+
+    Returns (hhi, bucket_weights_dict).
+    HHI = sum of squared bucket weight fractions (0-1 scale).
+    HHI = 0.20 means 5 equally-weighted buckets (diverse).
+    HHI = 1.00 means all weight in one bucket (fully concentrated).
+    """
+    from collections import defaultdict
+    bucket_w: Dict[str, float] = defaultdict(float)
+    total_w = sum(score_weights.get(s, 0.0) for s in holdings_syms)
+    if total_w <= 0:
+        return 0.0, {}
+    for sym in holdings_syms:
+        w = score_weights.get(sym, 0.0) / total_w
+        bucket = FACTOR_BUCKETS.get(sym, 'other')
+        bucket_w[bucket] += w
+    hhi = sum(v ** 2 for v in bucket_w.values())
+    return hhi, dict(bucket_w)
+
 
 # ── Macro overlay: USD/INR sector sensitivity (backtest sector names) ─────────
 # Positive = benefits from INR depreciation (USD earner), negative = hurt by it
@@ -546,21 +642,185 @@ def get_point_in_time_fundamentals(
                 if pe_info is not None and 0 < pe_info < 200:
                     pe = float(pe_info)
                 # Store revenue growth directly (no TTM revenue needed)
+                # Also compute FCF yield and pledge from info while we have it
                 if rev_growth_info is not None:
+                    _fcf_y = None
+                    try:
+                        _raw_fcf = info.get('freeCashflow')
+                        _raw_mc  = info.get('marketCap')
+                        if _raw_fcf is not None and _raw_mc and _raw_mc > 0:
+                            _fcf_y = float(_raw_fcf) / float(_raw_mc) * 100
+                    except Exception:
+                        pass
+                    _pledge = None
+                    try:
+                        _rp = info.get('promoterSharesPledgedPercent')
+                        if _rp is not None:
+                            _pledge = float(_rp) * 100
+                    except Exception:
+                        pass
+                    # Earnings surprise for the info-fallback path
+                    _surp_pct, _surp_days = None, None
+                    try:
+                        ed = ticker.earnings_dates
+                        if ed is not None and not ed.empty:
+                            ed_utc = ed.copy()
+                            if ed_utc.index.tz is not None:
+                                ed_utc.index = ed_utc.index.tz_convert('UTC')
+                            else:
+                                ed_utc.index = ed_utc.index.tz_localize('UTC')
+                            as_of_utc = as_of_date.tz_localize('UTC') if as_of_date.tz is None else as_of_date.tz_convert('UTC')
+                            past_ed = ed_utc[ed_utc.index <= as_of_utc].dropna(
+                                subset=['Reported EPS', 'EPS Estimate']
+                            )
+                            if not past_ed.empty:
+                                latest_ann = past_ed.sort_index(ascending=False).iloc[0]
+                                days_since = (as_of_utc - latest_ann.name).days
+                                if days_since <= 90:
+                                    if ('Surprise(%)' in latest_ann.index
+                                            and pd.notna(latest_ann['Surprise(%)'])):
+                                        _surp_pct = float(latest_ann['Surprise(%)'])
+                                    else:
+                                        actual = float(latest_ann['Reported EPS'])
+                                        est = float(latest_ann['EPS Estimate'])
+                                        if abs(est) > 0.001:
+                                            _surp_pct = (actual - est) / abs(est) * 100
+                                    _surp_days = days_since
+                    except Exception:
+                        pass
                     results[sym] = {
-                        'ttm_revenue':    None,
-                        'roe':            roe,
-                        'dte':            dte,
-                        'pe':             pe,
-                        'rev_growth_direct': float(rev_growth_info),
+                        'ttm_revenue':            None,
+                        'roe':                    roe,
+                        'dte':                    dte,
+                        'pe':                     pe,
+                        'rev_growth_direct':      float(rev_growth_info),
+                        'fcf_yield':              _fcf_y,
+                        'pledge_pct':             _pledge,
+                        'earnings_surprise_pct':  _surp_pct,
+                        'earnings_surprise_days': _surp_days,
                     }
                     continue
 
+            # ── FCF Yield: Free Cash Flow / Market Cap ───────────────────────
+            # yfinance quarterly cashflow exposes 'Free Cash Flow' directly.
+            # Falls back to ticker.info['freeCashflow'] for older snapshots.
+            fcf_yield: Optional[float] = None
+            try:
+                cf = ticker.quarterly_cashflow
+                ttm_fcf: Optional[float] = None
+
+                if cf is not None and not cf.empty:
+                    past_cf = [c for c in cf.columns if pd.Timestamp(c) <= as_of_date]
+                    if len(past_cf) >= 4:
+                        if 'Free Cash Flow' in cf.index:
+                            ttm_fcf = float(cf.loc['Free Cash Flow', past_cf[:4]].sum())
+                        else:
+                            ttm_ocf, ttm_capex = None, None
+                            for ocf_key in ['Operating Cash Flow', 'Cash From Operations']:
+                                if ocf_key in cf.index:
+                                    ttm_ocf = float(cf.loc[ocf_key, past_cf[:4]].sum())
+                                    break
+                            for cx_key in ['Capital Expenditure']:
+                                if cx_key in cf.index:
+                                    ttm_capex = float(cf.loc[cx_key, past_cf[:4]].sum())
+                                    break
+                            if ttm_ocf is not None:
+                                ttm_fcf = ttm_ocf - abs(ttm_capex or 0)
+
+                # Fallback: use ticker.info for snapshots where quarterly CF is unavailable
+                if ttm_fcf is None:
+                    info_cf = ticker.info
+                    raw_fcf = info_cf.get('freeCashflow')
+                    if raw_fcf is not None:
+                        ttm_fcf = float(raw_fcf)
+
+                if ttm_fcf is not None:
+                    # Market cap: price × shares if available, else ticker.info.marketCap
+                    mktcap: Optional[float] = None
+                    p_ser = all_prices.get(f"{sym}.NS")
+                    if p_ser is not None and not p_ser.empty:
+                        idx_mc = p_ser.index.get_indexer([as_of_date], method='ffill')[0]
+                        if idx_mc >= 0:
+                            price_mc = float(p_ser.iloc[idx_mc])
+                            sh_mc: Optional[float] = None
+                            if inc is not None and not inc.empty:
+                                pi = [c for c in inc.columns if pd.Timestamp(c) <= as_of_date]
+                                if pi:
+                                    for sh_k in ['Diluted Average Shares', 'Basic Average Shares']:
+                                        if sh_k in inc.index:
+                                            v = inc.loc[sh_k, pi[0]]
+                                            if pd.notna(v) and float(v) > 0:
+                                                sh_mc = float(v)
+                                                break
+                            if sh_mc and sh_mc > 0:
+                                mktcap = price_mc * sh_mc
+                    if mktcap is None:
+                        mc_raw = ticker.info.get('marketCap')
+                        if mc_raw and mc_raw > 0:
+                            mktcap = float(mc_raw)
+                    if mktcap and mktcap > 0:
+                        fcf_yield = (ttm_fcf / mktcap) * 100
+            except Exception:
+                pass
+
+            # ── Promoter pledge % (India-specific forced-selling risk) ────────
+            pledge_pct: Optional[float] = None
+            try:
+                raw_pledge = ticker.info.get('promoterSharesPledgedPercent')
+                if raw_pledge is not None:
+                    pledge_pct = float(raw_pledge) * 100
+            except Exception:
+                pass
+
+            # ── Earnings surprise — point-in-time EPS beat/miss ─────────────
+            # Uses ticker.earnings_dates filtered to announcements on or before
+            # as_of_date AND within the prior 90 days. This is truly PIT:
+            # we only know about surprises that had already been announced.
+            earnings_surprise_pct: Optional[float] = None
+            earnings_surprise_days: Optional[int] = None
+            try:
+                ed = ticker.earnings_dates
+                if ed is not None and not ed.empty:
+                    # Normalize to UTC for comparison
+                    ed_utc = ed.copy()
+                    if ed_utc.index.tz is not None:
+                        ed_utc.index = ed_utc.index.tz_convert('UTC')
+                    else:
+                        ed_utc.index = ed_utc.index.tz_localize('UTC')
+                    as_of_utc = as_of_date.tz_localize('UTC') if as_of_date.tz is None else as_of_date.tz_convert('UTC')
+
+                    # Past announcements only (genuine PIT)
+                    past_ed = ed_utc[ed_utc.index <= as_of_utc].dropna(
+                        subset=['Reported EPS', 'EPS Estimate']
+                    )
+                    if not past_ed.empty:
+                        latest_ann = past_ed.sort_index(ascending=False).iloc[0]
+                        ann_date = latest_ann.name
+                        days_since_ann = (as_of_utc - ann_date).days
+
+                        # Only apply within 90-day drift window
+                        if days_since_ann <= 90:
+                            if ('Surprise(%)' in latest_ann.index
+                                    and pd.notna(latest_ann['Surprise(%)'])):
+                                earnings_surprise_pct = float(latest_ann['Surprise(%)'])
+                            else:
+                                actual = float(latest_ann['Reported EPS'])
+                                est    = float(latest_ann['EPS Estimate'])
+                                if abs(est) > 0.001:
+                                    earnings_surprise_pct = (actual - est) / abs(est) * 100
+                            earnings_surprise_days = days_since_ann
+            except Exception:
+                pass
+
             results[sym] = {
-                'ttm_revenue': ttm_revenue,
-                'roe':         roe,
-                'dte':         dte,
-                'pe':          pe,
+                'ttm_revenue':           ttm_revenue,
+                'roe':                   roe,
+                'dte':                   dte,
+                'pe':                    pe,
+                'fcf_yield':             fcf_yield,
+                'pledge_pct':            pledge_pct,
+                'earnings_surprise_pct': earnings_surprise_pct,
+                'earnings_surprise_days': earnings_surprise_days,
             }
         except Exception:
             results[sym] = {}
@@ -633,12 +893,16 @@ def build_annual_fundamentals_cache(
             quality_raw = round(roe_s + dte_s, 1)
 
             enriched[sym_ns] = {
-                'pe':          pe,
-                'roe':         roe,
-                'dte':         dte,
-                'rev_growth':  rev_growth,
-                'roe_growth':  roe_growth,
-                'quality_raw': quality_raw,  # for legacy quality lookup
+                'pe':                    pe,
+                'roe':                   roe,
+                'dte':                   dte,
+                'rev_growth':            rev_growth,
+                'roe_growth':            roe_growth,
+                'quality_raw':           quality_raw,
+                'fcf_yield':             c.get('fcf_yield'),
+                'pledge_pct':            c.get('pledge_pct'),
+                'earnings_surprise_pct':  c.get('earnings_surprise_pct'),
+                'earnings_surprise_days': c.get('earnings_surprise_days'),
             }
 
         cache[snap_date] = enriched
@@ -1262,6 +1526,77 @@ def get_rebalance_dates(prices: Dict[str, pd.Series], bench: pd.Series) -> List[
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Correlation Guard
+# ─────────────────────────────────────────────────────────────────────────────
+
+def portfolio_correlation_guard(
+    candidate: str,
+    holdings: Dict[str, Any],
+    prices: Dict[str, pd.Series],
+    as_of_date: pd.Timestamp,
+    window: int = 60,
+    max_corr: float = 0.70,
+    max_correlated_peers: int = 2,
+) -> bool:
+    """
+    Return True (block entry) when the candidate stock has correlation > max_corr
+    with more than max_correlated_peers stocks already held.
+
+    Motivation: Jan-2025 -10% month happened because SUNPHARMA, TCS, ITC, BEL
+    all fell together — 4 defensives with hidden pairwise correlation. A rolling
+    60-day window captures the regime-specific correlation that sector labels miss
+    (e.g. PSU stocks all move together during government budget uncertainty even
+    if they are in different sectors).
+
+    Parameters
+    ----------
+    candidate        : symbol to evaluate for entry
+    holdings         : current held stocks dict
+    prices           : all price series (keyed by sym.NS or plain sym)
+    as_of_date       : evaluation date
+    window           : rolling daily return window (default 60 trading days)
+    max_corr         : pairwise correlation threshold (default 0.70)
+    max_correlated_peers : block if candidate correlates > max_corr with this
+                           many current holdings (default 2)
+    """
+    if len(holdings) < 2:
+        return False  # need at least 2 existing holdings to form a meaningful check
+
+    def _ret_series(sym: str) -> Optional[pd.Series]:
+        # Try sym.NS first then bare sym
+        for key in (f"{sym}.NS", sym):
+            p = prices.get(key)
+            if p is not None and not p.empty:
+                idx = p.index.get_indexer([as_of_date], method='ffill')[0]
+                if idx >= window:
+                    rets = p.iloc[idx - window: idx + 1].pct_change().dropna()
+                    if len(rets) >= window // 2:
+                        return rets
+        return None
+
+    cand_rets = _ret_series(candidate)
+    if cand_rets is None:
+        return False  # no data → don't block
+
+    high_corr_count = 0
+    for held_sym in holdings:
+        held_rets = _ret_series(held_sym)
+        if held_rets is None:
+            continue
+        # Align on common dates
+        common = cand_rets.index.intersection(held_rets.index)
+        if len(common) < window // 2:
+            continue
+        corr = float(np.corrcoef(cand_rets.loc[common], held_rets.loc[common])[0, 1])
+        if corr > max_corr:
+            high_corr_count += 1
+            if high_corr_count >= max_correlated_peers:
+                return True  # block
+
+    return False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Main simulation
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1535,6 +1870,28 @@ def run_signal_simulation(
     m4_dd_threshold: float = 0.08,
     m5_vix_enabled: bool = False,
     vix_prices: Optional[pd.Series] = None,
+    # M3: maximum holding period with progressive score hurdle
+    m3_maxhold_enabled: bool = False,
+    m3_12m_decay: float = 10.0,   # pts below entry_score allowed at 12M
+    m3_18m_decay: float = 5.0,    # pts below entry_score allowed at 18M
+    # M6: opportunity cost active rotation
+    m6_rotation_enabled: bool = False,
+    m6_rotation_gap: float = 12.0,  # min score gap to trigger rotation
+    # M7: factor concentration HHI gate
+    m7_hhi_enabled: bool = False,
+    m7_hhi_threshold: float = 0.35,  # HHI > this blocks new entry in crowded bucket
+    # M3 re-entry cooldown: block re-entry for N months after an M3 exit
+    m3_cooldown_months: int = 0,      # 0 = disabled; 6 = aligned with live system
+    # M1 sector rotation guard: pause strike accumulation when a stock's entire
+    # sector is beating NIFTY on 3M basis — avoids exiting sector-trough dips
+    m1_sector_guard: bool = False,
+    # Correlation guard: block entry when candidate correlates > corr_max_threshold
+    # with more than corr_max_peers existing holdings (60-day rolling window)
+    corr_guard_enabled: bool = True,
+    corr_max_threshold: float = 0.70,
+    corr_max_peers: int = 2,
+    # Earnings surprise: disable the ±8pt PIT adjustment in BacktestScorer
+    use_earnings_surprise_disabled: bool = False,
 ) -> Tuple[pd.Series, pd.DataFrame]:
     """
     Signal-driven portfolio simulation v4 — fully live-system aligned.
@@ -1550,7 +1907,10 @@ def run_signal_simulation(
          (locks in gains — avoids "turned winner into loser" scenario)
       3. Score thesis broken: score < sell_threshold AND held ≥ min_hold_months → exit
          (min_hold prevents false exits in volatile months during new positions)
+      3.5 M3 max hold: score must clear progressive hurdle at 12M / 18M / 24M (optional)
       4. Budget/event trim: reduce positions before budget day / big event windows
+      M6 rotation (optional): replace lowest-scoring held stock if better candidate exists
+      M7 HHI gate (optional): blocks new entries that would crowd a factor bucket
 
     Entry logic:
       STRONG BUY (score ≥ strong_buy_threshold): 1.3× weight, labeled STRONG_BUY
@@ -1578,6 +1938,8 @@ def run_signal_simulation(
     # M2: consecutive months each held stock has underperformed NIFTY 12M return by > threshold
     m2_strike_count: Dict[str, int] = {}
     m2_latest_lag: Dict[str, float] = {}  # most recent underperformance value for exit message
+    # M3 re-entry cooldown: {sym → earliest date it may re-enter after an M3 exit}
+    m3_cooldown_until: Dict[str, pd.Timestamp] = {}
     # M4: monthly drawdown circuit breaker state
     m4_in_circuit: bool = False          # True when circuit is active
     m4_circuit_pv: float = 100.0         # portfolio value when circuit was triggered
@@ -1731,13 +2093,40 @@ def run_signal_simulation(
                 qual_raw   = active_quality.get(sym, 25.0)
                 qual_score = float(min(100.0, qual_raw / 75.0 * 100.0))
 
+                # Earnings surprise adjustment (±8 pts, 90-day decay)
+                # PIT-safe: only uses surprise announcements on or before as_of_date.
+                # Mirrors live SentimentAgent._score_earnings_surprise() logic.
+                # Applied at 0.09 weight (sentiment agent proxy) scaled to ±8 pts.
+                surp_pct  = fund.get('earnings_surprise_pct')
+                surp_days = fund.get('earnings_surprise_days')
+                earnings_adj = 0.0
+                if (not use_earnings_surprise_disabled
+                        and surp_pct is not None
+                        and surp_days is not None
+                        and surp_days <= 90):
+                    decay = max(0.0, 1.0 - surp_days / 90.0)
+                    if surp_pct >= 10:
+                        base = 8.0
+                    elif surp_pct >= 5:
+                        base = 5.0
+                    elif surp_pct >= 2:
+                        base = 2.5
+                    elif surp_pct >= -1:
+                        base = 0.0
+                    elif surp_pct >= -5:
+                        base = -4.0
+                    else:
+                        base = -8.0
+                    earnings_adj = round(base * decay, 2)
+
                 composite = float(np.clip(
                     0.36 * fund_score
                     + 0.27 * mom_raw
                     + 0.18 * qual_score
                     + 9.5           # 0.09×50 (sentiment neutral) + 0.10×50 (inst_flow neutral)
                     + m_adj
-                    + rs_adj,
+                    + rs_adj
+                    + earnings_adj,
                     0.0, 100.0
                 ))
             else:
@@ -1754,20 +2143,33 @@ def run_signal_simulation(
         # Compute 6M trailing return rank (percentile) for all PIT universe stocks.
         # Held stocks below rs_exit_percentile accumulate a strike; above resets to 0.
         # Three consecutive strikes → RS degradation exit (catches value/momentum traps).
+        #
+        # Sector rotation guard (m1_sector_guard=True):
+        # If the held stock's SECTOR has positive 3M RS vs NIFTY, pause strike
+        # accumulation for stocks in that sector. A stock ranking low because its
+        # whole sector was in a cyclical trough (e.g., IT in 2024) should not be
+        # exited — it's waiting for a sector re-rating, not deteriorating individually.
         if rs_exit_enabled:
             rs_6m_returns: List[Tuple[str, float]] = []
+            # Also collect 3M returns for sector RS guard
+            rs_3m_by_sym: Dict[str, float] = {}
             for sym in pit_universe:
                 p_ser = prices.get(sym)
                 if p_ser is None:
                     continue
                 idx_now = p_ser.index.get_indexer([date_t], method='ffill')[0]
-                idx_6m  = idx_now - 126  # ~6 calendar months of trading days
+                idx_6m  = idx_now - 126  # ~6 months of trading days
+                idx_3m  = idx_now - 63   # ~3 months
                 if idx_now < 0 or idx_6m < 0:
                     continue
                 p_now = float(p_ser.iloc[idx_now])
                 p_6m  = float(p_ser.iloc[idx_6m])
                 if p_6m > 0:
                     rs_6m_returns.append((sym, (p_now - p_6m) / p_6m))
+                if idx_3m >= 0:
+                    p_3m = float(p_ser.iloc[idx_3m])
+                    if p_3m > 0:
+                        rs_3m_by_sym[sym] = (p_now - p_3m) / p_3m
 
             rs_6m_returns.sort(key=lambda x: x[1])
             n_rs = len(rs_6m_returns)
@@ -1776,11 +2178,43 @@ def run_signal_simulation(
                 for rank, (sym, _) in enumerate(rs_6m_returns)
             }
 
+            # Compute sector 3M RS vs NIFTY (for sector rotation guard)
+            sector_recovering: Dict[str, bool] = {}
+            if m1_sector_guard:
+                bench_idx_now = bench.index.get_indexer([date_t], method='ffill')[0]
+                bench_idx_3m  = bench_idx_now - 63
+                nifty_3m = 0.0
+                if bench_idx_now >= 0 and bench_idx_3m >= 0:
+                    b_now = float(bench.iloc[bench_idx_now])
+                    b_3m  = float(bench.iloc[bench_idx_3m])
+                    nifty_3m = (b_now - b_3m) / b_3m if b_3m > 0 else 0.0
+
+                # Average 3M return per sector across all universe stocks
+                sector_returns: Dict[str, List[float]] = {}
+                for sym in pit_universe:
+                    sec = NIFTY50_SECTORS.get(sym, 'Other')
+                    r3m = rs_3m_by_sym.get(sym)
+                    if r3m is not None:
+                        sector_returns.setdefault(sec, []).append(r3m)
+                for sec, rets in sector_returns.items():
+                    avg_3m = sum(rets) / len(rets) if rets else 0.0
+                    # Sector is "recovering" if its avg 3M return beats NIFTY 3M
+                    sector_recovering[sec] = avg_3m > nifty_3m
+
             for sym in list(holdings.keys()):
                 rank = rs_pct_rank.get(sym)
                 if rank is None:
                     continue
                 if rank < rs_exit_percentile:
+                    # Sector guard: pause strike if the stock's sector is recovering
+                    if m1_sector_guard:
+                        sec = NIFTY50_SECTORS.get(sym, 'Other')
+                        if sector_recovering.get(sec, False):
+                            # Sector is outperforming NIFTY — this stock's low rank
+                            # may be temporary sector rotation, not permanent decay.
+                            # Don't accumulate a strike this month.
+                            rs_strike_count[sym] = max(0, rs_strike_count.get(sym, 0) - 1)
+                            continue
                     rs_strike_count[sym] = rs_strike_count.get(sym, 0) + 1
                 else:
                     rs_strike_count[sym] = 0
@@ -1915,6 +2349,38 @@ def run_signal_simulation(
                 lag = m2_latest_lag.get(sym, 0.0)
                 exit_reasons[sym] = f'momentum_trap(lag{lag*100:.0f}%,{m2_strike_count[sym]}mo)'
 
+            # Priority 2.9: M3 — Maximum holding period with progressive score hurdle
+            # After 12M a position must still "earn" its place vs its own entry conviction.
+            # At 24M it must beat the 75th percentile of the universe — still-excellent
+            # stocks will pass; sideways value traps (ITC) will fail and be exited.
+            # Fires only if no higher-priority exit has already been triggered.
+            elif m3_maxhold_enabled:
+                m3_fired = False
+                if months_held >= 24:
+                    sorted_scores = sorted(score_map.values())
+                    idx_75 = int(len(sorted_scores) * 0.75)
+                    universe_75th = sorted_scores[idx_75] if idx_75 < len(sorted_scores) else sell_threshold
+                    if current_score < universe_75th:
+                        exits.append(sym)
+                        exit_reasons[sym] = f'm3_24mo({current_score:.0f}<75p:{universe_75th:.0f})'
+                        m3_fired = True
+                elif months_held >= 18:
+                    min_score_18m = max(sell_threshold, h['entry_score'] - m3_18m_decay)
+                    if current_score < min_score_18m:
+                        exits.append(sym)
+                        exit_reasons[sym] = f'm3_18mo_decay({current_score:.0f}<{min_score_18m:.0f})'
+                        m3_fired = True
+                elif months_held >= 12:
+                    min_score_12m = max(sell_threshold, h['entry_score'] - m3_12m_decay)
+                    if current_score < min_score_12m:
+                        exits.append(sym)
+                        exit_reasons[sym] = f'm3_12mo_decay({current_score:.0f}<{min_score_12m:.0f})'
+                        m3_fired = True
+                # Below 12 months: M3 does not apply (min-hold window)
+                # Set re-entry cooldown so the exited stock can't immediately re-enter
+                if m3_fired and m3_cooldown_months > 0:
+                    m3_cooldown_until[sym] = date_t + pd.DateOffset(months=m3_cooldown_months)
+
             # Priority 3: Score thesis broken — requires min_hold to prevent false exits
             elif current_score < sell_threshold:
                 if months_held >= min_hold_months:
@@ -1927,6 +2393,39 @@ def run_signal_simulation(
             rs_strike_count.pop(sym, None)
             m2_strike_count.pop(sym, None)
             m2_latest_lag.pop(sym, None)
+            # Note: m3_cooldown_until is NOT cleared here — it persists intentionally
+            # so the stock stays locked out for cooldown_months after an M3 exit.
+
+        # ── Step 2.5: M6 — Opportunity cost active rotation ──────────────────
+        # If the best unowned candidate scores > m6_rotation_gap pts above the
+        # lowest-scoring held stock that has cleared min-hold, rotate the pair.
+        # Mirrors NSE Momentum 30: bottom-ranked held stock is always evicted when
+        # a better-ranked candidate exists. One rotation per rebalance period.
+        if m6_rotation_enabled and len(holdings) > 0:
+            held_eligible = {
+                s: score_map.get(s, 0.0)
+                for s, h in holdings.items()
+                if (date_t - h.get('entry_date', date_t)).days / 30.5 >= min_hold_months
+            }
+            if held_eligible:
+                worst_sym   = min(held_eligible, key=held_eligible.get)
+                worst_score = held_eligible[worst_sym]
+                not_held_candidates = {
+                    s: score_map.get(s, 0.0)
+                    for s in score_map
+                    if s not in holdings and s in prices
+                }
+                if not_held_candidates:
+                    best_sym   = max(not_held_candidates, key=not_held_candidates.get)
+                    best_score = not_held_candidates[best_sym]
+                    gap = best_score - worst_score
+                    if gap >= m6_rotation_gap:
+                        exits.append(worst_sym)
+                        exit_reasons[worst_sym] = (
+                            f'm6_rotation(gap:{gap:.0f},in:{best_sym.replace(".NS","")}'
+                            f',score:{worst_score:.0f}→{best_score:.0f})'
+                        )
+                        holdings.pop(worst_sym, None)
 
         # ── Step 2: Effective entry gate (regime + event calendar) ───────────
         # BEAR regime raises buy bar by 10pts; SIDEWAYS +3pts
@@ -1957,6 +2456,32 @@ def run_signal_simulation(
             override_ok = sec_counts.get(sec, 0) < override_max.get(sec, max_per_sec)
             if not (general_ok and override_ok):
                 continue
+            # M3 re-entry cooldown gate
+            # If this stock was M3-exited, block re-entry until cooldown expires.
+            if m3_cooldown_months > 0 and sym in m3_cooldown_until:
+                if date_t < m3_cooldown_until[sym]:
+                    continue  # still in cooldown window — skip
+            # M7: factor concentration HHI gate
+            # Simulate adding this stock and check if it pushes HHI over threshold.
+            # Uses equal weights as a proxy (vol-weights not yet computed at entry).
+            # Guard: skip HHI check when portfolio has < 2 stocks — a single stock
+            # always produces HHI = 1.0 (100% in one bucket), which would block
+            # every entry into an empty portfolio.
+            if m7_hhi_enabled and len(holdings) >= 2:
+                trial_syms = set(holdings.keys()) | {sym}
+                equal_w = {s: 1.0 / len(trial_syms) for s in trial_syms}
+                trial_hhi, _ = portfolio_factor_hhi(trial_syms, equal_w)
+                if trial_hhi > m7_hhi_threshold:
+                    continue  # skip — would over-concentrate a factor bucket
+            # Correlation guard: skip entry if candidate correlates > threshold
+            # with too many existing holdings (detects hidden cross-sector clusters
+            # like PSU/defensives that fall together during macro selloffs)
+            if corr_guard_enabled and portfolio_correlation_guard(
+                sym, holdings, prices, date_t,
+                max_corr=corr_max_threshold,
+                max_correlated_peers=corr_max_peers,
+            ):
+                continue  # too correlated with existing portfolio
             p_series = prices[sym]
             idx_t = p_series.index.get_indexer([date_t], method='ffill')[0]
             if idx_t < 0:
@@ -2207,7 +2732,55 @@ def print_summary(m: Dict, bm: Dict, pv: pd.Series, bench: pd.Series, log: pd.Da
 
 RESULTS_LOG = Path(__file__).parent / 'backtest_results.csv'
 
-def save_run_result(name: str, config: Dict, m: Dict, bm: Dict) -> None:
+_EXPERIMENT_LOG = Path(__file__).parent.parent / 'docs' / 'EXPERIMENT_LOG.md'
+
+# v4 baseline metrics used to compute deltas in the experiment log.
+_BASELINE = {'cagr': 0.129, 'sharpe': 0.42, 'max_drawdown': -0.272, 'alpha_ann': 0.055}
+
+
+def append_to_experiment_log(name: str, params_str: str, m: Dict, hypothesis: str = '') -> None:
+    """Append one structured entry to docs/EXPERIMENT_LOG.md after every backtest run."""
+    delta_cagr   = m['cagr']        - _BASELINE['cagr']
+    delta_maxdd  = m['max_drawdown'] - _BASELINE['max_drawdown']
+    delta_sharpe = m['sharpe']       - _BASELINE['sharpe']
+    delta_alpha  = m['alpha_ann']    - _BASELINE['alpha_ann']
+
+    if delta_sharpe > 0.02 and delta_maxdd >= -0.02:
+        verdict = '✅ IMPROVED'
+    elif delta_sharpe > 0:
+        verdict = '⚠️  MIXED'
+    else:
+        verdict = '❌ WORSE'
+
+    entry = (
+        f"\n## {datetime.now().strftime('%Y-%m-%d %H:%M')} — {name}\n"
+        f"**Params:** {params_str}  \n"
+        f"**CAGR:** {m['cagr']:.1%} ({delta_cagr:+.1%} vs v4 baseline)  \n"
+        f"**Sharpe:** {m['sharpe']:.2f} ({delta_sharpe:+.2f})  \n"
+        f"**MaxDD:** {m['max_drawdown']:.1%} ({delta_maxdd:+.1%})  \n"
+        f"**Alpha/yr:** {m['alpha_ann']:.1%} ({delta_alpha:+.1%})  \n"
+        f"**WinRate:** {m['win_rate']:.1%}  \n"
+        f"**Hypothesis:** {hypothesis or '—'}  \n"
+        f"**Verdict:** {verdict}\n"
+        f"\n---\n"
+    )
+    try:
+        if not _EXPERIMENT_LOG.exists():
+            _EXPERIMENT_LOG.parent.mkdir(parents=True, exist_ok=True)
+            _EXPERIMENT_LOG.write_text(
+                "# Experiment Log — Indian Stock Fund Backtest\n"
+                "Auto-appended by scripts/portfolio_backtest.py after every run.\n"
+                "v4 baseline: CAGR 12.9% | Sharpe 0.42 | MaxDD -27.2% | Alpha +5.5%/yr\n\n"
+                "---\n"
+            )
+        with open(_EXPERIMENT_LOG, 'a') as f:
+            f.write(entry)
+        print(f"  ✓ Experiment log updated → docs/EXPERIMENT_LOG.md")
+    except Exception as e:
+        print(f"  ⚠ Could not write experiment log: {e}")
+
+
+def save_run_result(name: str, config: Dict, m: Dict, bm: Dict, hypothesis: str = '') -> None:
     """Append this run's key metrics to backtest_results.csv."""
     row = {
         'run_at':        datetime.now().strftime('%Y-%m-%d %H:%M'),
@@ -2219,6 +2792,11 @@ def save_run_result(name: str, config: Dict, m: Dict, bm: Dict) -> None:
         'score_decay':       config.get('score_decay', 0),
         'quality':           'yes' if config['quality'] else 'no',
         'costs':             'yes' if config['costs'] else 'no',
+        # Signal-mode parameters (empty for calendar-mode runs)
+        'buy_threshold':     config.get('buy_threshold', ''),
+        'sell_threshold':    config.get('sell_threshold', ''),
+        'stop_loss_pct':     config.get('stop_loss', ''),
+        'mechanisms':        config.get('mechanisms', ''),
         # Strategy
         'total_return_pct':   round(m['total_return'] * 100, 1),
         'cagr_pct':           round(m['cagr'] * 100, 1),
@@ -2242,6 +2820,13 @@ def save_run_result(name: str, config: Dict, m: Dict, bm: Dict) -> None:
         df_all = df_new
     df_all.to_csv(RESULTS_LOG, index=False)
     print(f"\n  ✓ Results saved → scripts/backtest_results.csv  (row #{len(df_all)})")
+    # Build params summary for experiment log
+    params_str = (
+        f"buy={config.get('buy_threshold', '?')} sell={config.get('sell_threshold', '?')} "
+        f"sl={config.get('stop_loss', '?')} years={config.get('years', '?')} "
+        f"mechanisms={config.get('mechanisms', '—')}"
+    )
+    append_to_experiment_log(name, params_str, m, hypothesis=hypothesis)
 
 
 def print_comparison_table() -> None:
@@ -2318,6 +2903,8 @@ def main():
                         help='M1: RS rank percentile threshold (default 0.30 = bottom 30%%)')
     parser.add_argument('--rs-strikes',      type=int,   default=3,
                         help='M1: consecutive months below RS threshold before exit (default 3)')
+    parser.add_argument('--m1-sector-guard', action='store_true',
+                        help='M1: pause strike count when stock sector is beating NIFTY 3M (prevents IT-rally misses)')
     # M2: 12M momentum trap exit
     parser.add_argument('--m2-exit',         action='store_true',
                         help='M2: exit when stock underperforms NIFTY 12M by > --m2-threshold for --m2-strikes months')
@@ -2333,6 +2920,41 @@ def main():
     # M5: India VIX position-sizing scalar
     parser.add_argument('--m5-vix',          action='store_true',
                         help='M5: scale max positions by India VIX level (preventive, forward-looking)')
+    # M3: maximum holding period with progressive score hurdle
+    parser.add_argument('--m3-maxhold',      action='store_true',
+                        help='M3: require held stocks to clear rising score bar at 12M/18M/24M')
+    parser.add_argument('--m3-12m-decay',    type=float, default=10.0,
+                        help='M3: max score decay (pts below entry_score) allowed at 12M (default 10)')
+    parser.add_argument('--m3-18m-decay',    type=float, default=5.0,
+                        help='M3: max score decay allowed at 18M (default 5)')
+    parser.add_argument('--m3-cooldown',     type=int,   default=0,
+                        help='M3: months to block re-entry after an M3 exit (default 0=off; live system uses 6)')
+    # M6: opportunity cost active rotation
+    parser.add_argument('--m6-rotation',     action='store_true',
+                        help='M6: replace lowest-scoring held stock when better candidate exists')
+    parser.add_argument('--m6-gap',          type=float, default=12.0,
+                        help='M6: minimum score gap (pts) to trigger rotation (default 12)')
+    # M7: factor concentration HHI gate
+    parser.add_argument('--m7-hhi',          action='store_true',
+                        help='M7: block new entries that push portfolio factor HHI above threshold')
+    parser.add_argument('--m7-threshold',    type=float, default=0.35,
+                        help='M7: HHI threshold above which a factor bucket is considered crowded (default 0.35)')
+    # Earnings surprise signal
+    parser.add_argument('--no-earnings-surprise', action='store_true',
+                        help='Disable earnings surprise adjustment in BacktestScorer '
+                             '(enabled by default; ±8 pts, 90-day decay from announcement)')
+    # Correlation guard
+    parser.add_argument('--no-corr-guard',   action='store_true',
+                        help='Disable correlation guard (enabled by default; blocks entry when '
+                             'candidate correlates >0.70 with 2+ held stocks on 60d window)')
+    parser.add_argument('--corr-threshold',  type=float, default=0.70,
+                        help='Correlation guard: max pairwise correlation allowed (default 0.70)')
+    parser.add_argument('--corr-peers',      type=int,   default=2,
+                        help='Correlation guard: max number of held stocks candidate may exceed '
+                             'threshold with before being blocked (default 2)')
+    # Experiment logging
+    parser.add_argument('--hypothesis',      type=str,   default='',
+                        help='Free-text hypothesis for this run — appended to EXPERIMENT_LOG.md')
     args = parser.parse_args()
 
     if args.compare:
@@ -2374,13 +2996,23 @@ def main():
               f"StrongBuy≥{args.strong_buy:.0f}  MinHold={args.min_hold}mo")
         print(f"  ProfitProtect: trigger={args.profit_trigger*100:.0f}%, trail={args.profit_trail*100:.0f}% from peak")
         if args.rs_exit:
-            print(f"  M1 RS-Exit: ON  (bottom {args.rs_percentile*100:.0f}th pct for {args.rs_strikes} months → exit)")
+            guard_str = "  +SectorGuard" if args.m1_sector_guard else ""
+            print(f"  M1 RS-Exit: ON  (bottom {args.rs_percentile*100:.0f}th pct for {args.rs_strikes} months → exit{guard_str})")
         if args.m2_exit:
             print(f"  M2 Momentum-Trap: ON  (underperforms NIFTY by >{args.m2_threshold*100:.0f}% for {args.m2_strikes} months → exit)")
         if args.m4_circuit:
             print(f"  M4 Circuit: ON  (monthly loss >{args.m4_threshold*100:.0f}% → cap to 2 positions next period)")
         if args.m5_vix:
             print(f"  M5 VIX Scalar: ON  (VIX<15→1.0, 15-20→0.85, 20-25→0.65, >25→0.40)")
+        if args.m3_maxhold:
+            cooldown_str = f", cooldown={args.m3_cooldown}mo" if args.m3_cooldown > 0 else ""
+            print(f"  M3 MaxHold: ON  (12M: decay≤{args.m3_12m_decay:.0f}pts, 18M: ≤{args.m3_18m_decay:.0f}pts, 24M: beat 75th pct{cooldown_str})")
+        if args.m6_rotation:
+            print(f"  M6 Rotation: ON  (gap≥{args.m6_gap:.0f}pts → rotate worst held for best candidate)")
+        if args.m7_hhi:
+            print(f"  M7 HHI Gate: ON  (HHI threshold={args.m7_threshold:.2f} — blocks factor-crowding entries)")
+        if args.hypothesis:
+            print(f"  Hypothesis: {args.hypothesis}")
     else:
         print(f"  Mode: Calendar  |  Top-{args.top} stocks")
     sector_cap_str = f"{int(args.sector_cap * 100)}% cap" if args.sector_cap > 0 else "no cap"
@@ -2490,6 +3122,19 @@ def main():
             m4_dd_threshold=args.m4_threshold,
             m5_vix_enabled=args.m5_vix,
             vix_prices=vix_prices,
+            m3_maxhold_enabled=args.m3_maxhold,
+            m3_12m_decay=args.m3_12m_decay,
+            m3_18m_decay=args.m3_18m_decay,
+            m3_cooldown_months=args.m3_cooldown,
+            m1_sector_guard=args.m1_sector_guard,
+            m6_rotation_enabled=args.m6_rotation,
+            m6_rotation_gap=args.m6_gap,
+            m7_hhi_enabled=args.m7_hhi,
+            m7_hhi_threshold=args.m7_threshold,
+            corr_guard_enabled=not args.no_corr_guard,
+            corr_max_threshold=args.corr_threshold,
+            corr_max_peers=args.corr_peers,
+            use_earnings_surprise_disabled=args.no_earnings_surprise,
         )
     else:
         print(f"\n  Running monthly simulation (top-{args.top}) …")
@@ -2526,6 +3171,17 @@ def main():
         print("  Run with --no-quality for a fully price-based backtest.")
         print("="*64 + "\n")
 
+    # Build mechanism tag for experiment log
+    mechs = []
+    if args.signal_mode:
+        if getattr(args, 'rs_exit', False):      mechs.append('M1')
+        if getattr(args, 'm2_exit', False):      mechs.append('M2')
+        if getattr(args, 'm3_maxhold', False):   mechs.append('M3')
+        if getattr(args, 'm4_circuit', False):   mechs.append('M4')
+        if getattr(args, 'm5_vix', False):       mechs.append('M5')
+        if getattr(args, 'm6_rotation', False):  mechs.append('M6')
+        if getattr(args, 'm7_hhi', False):       mechs.append('M7')
+
     # Save run to results log
     save_run_result(run_name, {
         'years':          args.years,
@@ -2535,7 +3191,11 @@ def main():
         'score_decay':    args.score_decay if not args.signal_mode else args.sell_threshold,
         'quality':        not args.no_quality,
         'costs':          not args.no_costs,
-    }, m, bm)
+        'buy_threshold':  args.buy_threshold if args.signal_mode else None,
+        'sell_threshold': args.sell_threshold if args.signal_mode else None,
+        'stop_loss':      args.stop_loss if args.signal_mode else None,
+        'mechanisms':     '+'.join(mechs) if mechs else 'none',
+    }, m, bm, hypothesis=getattr(args, 'hypothesis', ''))
 
     print(f"  Run --compare to see all saved runs side-by-side.\n")
 

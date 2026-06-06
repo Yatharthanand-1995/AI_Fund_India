@@ -19,6 +19,8 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import numpy as np
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -105,17 +107,98 @@ def _get_sector(symbol: str) -> str:
     return NIFTY50_SECTORS.get(_clean_symbol(symbol), 'Other')
 
 
+def _live_correlation_guard(
+    candidate_sym: str,
+    held_symbols: List[str],
+    price_history_fn,
+    max_corr: float = 0.70,
+    max_peers: int = 2,
+    window: int = 60,
+) -> Tuple[bool, str]:
+    """
+    Return (blocked, reason) for a candidate stock entry.
+
+    Uses a callable price_history_fn(symbol) → pd.Series of daily closes
+    to compute 60-day rolling return correlations between the candidate
+    and all currently held positions.
+
+    Blocks entry when candidate correlates > max_corr with max_peers or
+    more existing holdings — prevents the Jan-2025 style 4-defensive-stock
+    simultaneous crash.
+    """
+    if len(held_symbols) < max_peers:
+        return False, ''
+
+    try:
+        import pandas as pd
+
+        cand_prices = price_history_fn(candidate_sym)
+        if cand_prices is None or len(cand_prices) < window:
+            return False, ''
+        cand_rets = cand_prices.pct_change().dropna().iloc[-window:]
+
+        high_corr_peers = []
+        for held in held_symbols:
+            try:
+                held_prices = price_history_fn(held)
+                if held_prices is None or len(held_prices) < window:
+                    continue
+                held_rets = held_prices.pct_change().dropna().iloc[-window:]
+                common = cand_rets.index.intersection(held_rets.index)
+                if len(common) < window // 2:
+                    continue
+                corr = float(np.corrcoef(
+                    cand_rets.loc[common].values,
+                    held_rets.loc[common].values
+                )[0, 1])
+                if corr > max_corr:
+                    high_corr_peers.append(f"{held}({corr:.2f})")
+            except Exception:
+                continue
+
+        if len(high_corr_peers) >= max_peers:
+            return True, (f"Correlation guard: {candidate_sym} correlates >{max_corr:.0%} "
+                          f"with {', '.join(high_corr_peers)}")
+    except Exception:
+        pass
+
+    return False, ''
+
+
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
 
 @dataclass
 class PortfolioConfig:
-    buy_threshold: float = 65.0
-    sell_threshold: float = 50.0
-    stop_loss_pct: float = 0.10
+    # ── Core thresholds (Config A values) ────────────────────────────────
+    buy_threshold: float = 60.0    # was 65 — aligned with BacktestScorer v4 calibration
+    sell_threshold: float = 38.0   # was 50 — wider hold zone, reduces churn
+    stop_loss_pct: float = 0.10    # 10% hard stop from entry
     max_positions: int = 10
     sector_cap_pct: float = 0.30
+
+    # ── Config A: min-hold and profit protection ──────────────────────────
+    min_hold_months: int = 3           # no SELL_SCORE within first 3 months
+    profit_trigger_pct: float = 0.20   # profit % to activate trailing stop
+    profit_trail_pct: float = 0.12     # trail % from peak once activated
+
+    # ── Config A: M1 — relative rank (RS) exit ───────────────────────────
+    # Uses composite_score cross-sectional rank as a live proxy for RS rank.
+    # Bottom-35th percentile of scores ≈ bottom-35th percentile of RS.
+    rs_exit_enabled: bool = True
+    rs_exit_percentile: float = 0.35   # fire when below this fraction of universe
+    rs_exit_strikes: int = 3           # consecutive evaluations below threshold
+
+    # ── Config A: M3 — max holding period with progressive score hurdle ───
+    m3_maxhold_enabled: bool = True
+    m3_12m_decay: float = 8.0    # at 12M: score must not decay more than this from entry
+    m3_18m_decay: float = 3.0    # at 18M: tighter decay allowance
+    # at 24M: must beat 75th pct of current universe (hardcoded, no config needed)
+
+    # ── M3 re-entry cooldown ──────────────────────────────────────────────
+    m3_cooldown_months: int = 6    # block re-entry for this many months after M3 exit
+
     updated_at: str = ''
 
     def to_dict(self) -> Dict:
@@ -220,11 +303,21 @@ class PortfolioDatabase:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS portfolio_config (
                     id INTEGER PRIMARY KEY DEFAULT 1,
-                    buy_threshold REAL DEFAULT 65.0,
-                    sell_threshold REAL DEFAULT 50.0,
+                    buy_threshold REAL DEFAULT 60.0,
+                    sell_threshold REAL DEFAULT 38.0,
                     stop_loss_pct REAL DEFAULT 0.10,
                     max_positions INTEGER DEFAULT 10,
                     sector_cap_pct REAL DEFAULT 0.30,
+                    min_hold_months INTEGER DEFAULT 3,
+                    profit_trigger_pct REAL DEFAULT 0.20,
+                    profit_trail_pct REAL DEFAULT 0.12,
+                    rs_exit_enabled INTEGER DEFAULT 1,
+                    rs_exit_percentile REAL DEFAULT 0.35,
+                    rs_exit_strikes INTEGER DEFAULT 3,
+                    m3_maxhold_enabled INTEGER DEFAULT 1,
+                    m3_12m_decay REAL DEFAULT 8.0,
+                    m3_18m_decay REAL DEFAULT 3.0,
+                    m3_cooldown_months INTEGER DEFAULT 6,
                     updated_at TEXT
                 );
 
@@ -238,7 +331,16 @@ class PortfolioDatabase:
                     entry_date TEXT NOT NULL,
                     sector TEXT NOT NULL DEFAULT 'Other',
                     status TEXT NOT NULL DEFAULT 'open',
-                    trailing_stop_price REAL
+                    trailing_stop_price REAL,
+                    peak_price REAL,
+                    rs_strike_count INTEGER DEFAULT 0
+                );
+
+                CREATE TABLE IF NOT EXISTS portfolio_cooldowns (
+                    symbol TEXT PRIMARY KEY,
+                    cooldown_until TEXT NOT NULL,
+                    exit_reason TEXT,
+                    exited_at TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS portfolio_closed_trades (
@@ -267,15 +369,37 @@ class PortfolioDatabase:
                     regime TEXT
                 );
             """)
-            # Migration: add trailing_stop_price if it doesn't exist yet
-            cols = [r[1] for r in conn.execute(
+            # ── Migrations: add new columns to existing tables without data loss ──
+            holding_cols = [r[1] for r in conn.execute(
                 "PRAGMA table_info(portfolio_holdings)"
             ).fetchall()]
-            if 'trailing_stop_price' not in cols:
-                conn.execute(
-                    "ALTER TABLE portfolio_holdings ADD COLUMN trailing_stop_price REAL"
-                )
-                logger.info("Migrated portfolio_holdings: added trailing_stop_price column")
+            for col, defn in [
+                ('trailing_stop_price', 'REAL'),
+                ('peak_price',          'REAL'),
+                ('rs_strike_count',     'INTEGER DEFAULT 0'),
+            ]:
+                if col not in holding_cols:
+                    conn.execute(f"ALTER TABLE portfolio_holdings ADD COLUMN {col} {defn}")
+                    logger.info(f"Migrated portfolio_holdings: added {col}")
+
+            config_cols = [r[1] for r in conn.execute(
+                "PRAGMA table_info(portfolio_config)"
+            ).fetchall()]
+            for col, defn in [
+                ('min_hold_months',    'INTEGER DEFAULT 3'),
+                ('profit_trigger_pct', 'REAL DEFAULT 0.20'),
+                ('profit_trail_pct',   'REAL DEFAULT 0.12'),
+                ('rs_exit_enabled',    'INTEGER DEFAULT 1'),
+                ('rs_exit_percentile', 'REAL DEFAULT 0.35'),
+                ('rs_exit_strikes',    'INTEGER DEFAULT 3'),
+                ('m3_maxhold_enabled', 'INTEGER DEFAULT 1'),
+                ('m3_12m_decay',       'REAL DEFAULT 8.0'),
+                ('m3_18m_decay',       'REAL DEFAULT 3.0'),
+                ('m3_cooldown_months', 'INTEGER DEFAULT 6'),
+            ]:
+                if col not in config_cols:
+                    conn.execute(f"ALTER TABLE portfolio_config ADD COLUMN {col} {defn}")
+                    logger.info(f"Migrated portfolio_config: added {col}")
 
     # ── Config ────────────────────────────────────────────────────────────
 
@@ -283,19 +407,35 @@ class PortfolioDatabase:
         with self._conn() as conn:
             row = conn.execute("SELECT * FROM portfolio_config WHERE id=1").fetchone()
             if row:
+                d = dict(row)
                 return PortfolioConfig(
-                    buy_threshold=row['buy_threshold'],
-                    sell_threshold=row['sell_threshold'],
-                    stop_loss_pct=row['stop_loss_pct'],
-                    max_positions=row['max_positions'],
-                    sector_cap_pct=row['sector_cap_pct'],
-                    updated_at=row['updated_at'] or '',
+                    buy_threshold=d.get('buy_threshold', 60.0),
+                    sell_threshold=d.get('sell_threshold', 38.0),
+                    stop_loss_pct=d.get('stop_loss_pct', 0.10),
+                    max_positions=d.get('max_positions', 10),
+                    sector_cap_pct=d.get('sector_cap_pct', 0.30),
+                    min_hold_months=d.get('min_hold_months', 3),
+                    profit_trigger_pct=d.get('profit_trigger_pct', 0.20),
+                    profit_trail_pct=d.get('profit_trail_pct', 0.12),
+                    rs_exit_enabled=bool(d.get('rs_exit_enabled', 1)),
+                    rs_exit_percentile=d.get('rs_exit_percentile', 0.35),
+                    rs_exit_strikes=d.get('rs_exit_strikes', 3),
+                    m3_maxhold_enabled=bool(d.get('m3_maxhold_enabled', 1)),
+                    m3_12m_decay=d.get('m3_12m_decay', 8.0),
+                    m3_18m_decay=d.get('m3_18m_decay', 3.0),
+                    m3_cooldown_months=d.get('m3_cooldown_months', 6),
+                    updated_at=d.get('updated_at') or '',
                 )
             return PortfolioConfig()
 
     def update_config(self, **kwargs) -> PortfolioConfig:
-        allowed = {'buy_threshold', 'sell_threshold', 'stop_loss_pct',
-                   'max_positions', 'sector_cap_pct'}
+        allowed = {
+            'buy_threshold', 'sell_threshold', 'stop_loss_pct',
+            'max_positions', 'sector_cap_pct',
+            'min_hold_months', 'profit_trigger_pct', 'profit_trail_pct',
+            'rs_exit_enabled', 'rs_exit_percentile', 'rs_exit_strikes',
+            'm3_maxhold_enabled', 'm3_12m_decay', 'm3_18m_decay', 'm3_cooldown_months',
+        }
         updates = {k: v for k, v in kwargs.items() if k in allowed}
         updates['updated_at'] = datetime.now(timezone.utc).isoformat()
         set_clause = ', '.join(f"{k}=?" for k in updates)
@@ -405,6 +545,57 @@ class PortfolioDatabase:
             ).fetchall()
             return [dict(r) for r in rows]
 
+    # ── Peak price tracking ───────────────────────────────────────────────
+
+    def update_peak_price(self, symbol: str, new_peak: float) -> None:
+        """Ratchet up the peak_price high-watermark for a holding."""
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE portfolio_holdings SET peak_price=? WHERE symbol=? AND status='open'",
+                (round(new_peak, 2), symbol)
+            )
+
+    def update_rs_strikes(self, symbol: str, count: int) -> None:
+        """Persist the M1 consecutive-strike count for a holding."""
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE portfolio_holdings SET rs_strike_count=? WHERE symbol=? AND status='open'",
+                (count, symbol)
+            )
+
+    # ── Re-entry cooldown (M3 exits) ──────────────────────────────────────
+
+    def set_cooldown(self, symbol: str, months: int, exit_reason: str) -> None:
+        """Block re-entry for `months` months after an M3-triggered exit."""
+        from datetime import timedelta
+        now = datetime.now(timezone.utc)
+        until = (now + timedelta(days=30 * months)).isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT OR REPLACE INTO portfolio_cooldowns
+                   (symbol, cooldown_until, exit_reason, exited_at) VALUES (?,?,?,?)""",
+                (symbol, until, exit_reason, now.isoformat())
+            )
+
+    def is_in_cooldown(self, symbol: str) -> bool:
+        """Return True if the symbol is still in M3 re-entry cooldown."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT cooldown_until FROM portfolio_cooldowns WHERE symbol=?",
+                (symbol,)
+            ).fetchone()
+            if not row:
+                return False
+            return datetime.now(timezone.utc).isoformat() < row['cooldown_until']
+
+    def get_cooldowns(self) -> List[Dict]:
+        """Return all active cooldowns."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM portfolio_cooldowns ORDER BY exited_at DESC"
+            ).fetchall()
+            return [dict(r) for r in rows]
+
 
 # ---------------------------------------------------------------------------
 # Signal evaluation engine
@@ -418,6 +609,15 @@ class PortfolioManager:
 
     def __init__(self, db_path: str = "data/portfolio.db"):
         self.db = PortfolioDatabase(db_path)
+        # Optional: caller can populate this dict {symbol: pd.Series of daily closes}
+        # before calling evaluate() to enable the correlation guard.
+        self._price_history_cache: Dict = {}
+
+    def set_price_history(self, price_map: Dict) -> None:
+        """Supply recent price history for correlation guard in evaluate().
+        price_map: {symbol_str: pd.Series of daily closing prices}
+        """
+        self._price_history_cache = price_map
 
     # ── Public API ────────────────────────────────────────────────────────
 
@@ -436,6 +636,10 @@ class PortfolioManager:
     def get_signal_history(self, limit: int = 100) -> List[Dict]:
         return self.db.get_signal_history(limit)
 
+    def get_cooldowns(self) -> List[Dict]:
+        """Return all M3 re-entry cooldowns (active and expired)."""
+        return self.db.get_cooldowns()
+
     def manual_buy(self, symbol: str, entry_price: float,
                    entry_score: float) -> Dict:
         config = self.db.get_config()
@@ -451,73 +655,202 @@ class PortfolioManager:
     def evaluate(self, stock_scores: List[Dict],
                  regime: str = 'UNKNOWN') -> EvaluationResult:
         """
-        Core signal evaluation.
+        Core signal evaluation — Config A aligned (M1+M3_tight).
 
         stock_scores: list of score_stock() result dicts (from batch or screener).
         Each dict must have: symbol, composite_score, current_price, recommendation.
 
-        Returns EvaluationResult with buy/hold/sell signals and applies
-        exits and entries to the DB automatically.
+        Exit priority order (mirrors backtest run_signal_simulation):
+          1. Hard stop-loss: price < entry × (1 - stop_loss_pct)
+          2. Profit protection: peak ≥ entry×(1+trigger) AND price < peak×(1-trail)
+          3. M1 RS exit: bottom-35th-pct composite score for 3 consecutive evaluations
+          4. M3 max-hold: score decay beyond threshold at 12M/18M/24M hurdles
+          5. Score exit: score < sell_threshold AND held ≥ min_hold_months
+          6. HOLD otherwise
+
+        Entry guards (all must pass):
+          - score ≥ effective_buy_threshold (regime-boosted)
+          - not in M3 re-entry cooldown
+          - sector cap allows
+          - regime position count allows
+          - not F&O expiry window
         """
         config = self.db.get_config()
-        now = datetime.now(timezone.utc).isoformat()
+        now    = datetime.now(timezone.utc)
+        now_iso = now.isoformat()
 
-        # Build lookup by clean symbol
+        # ── Build score lookup by clean symbol ────────────────────────────
         score_map: Dict[str, Dict] = {}
         for r in stock_scores:
             sym = _clean_symbol(r.get('symbol', ''))
             if sym:
                 score_map[sym] = r
 
+        # ── Derive position cap from market regime (200-DMA gate) ─────────
+        # regime string format: "BULL_*" | "BEAR_*" | "SIDEWAYS_*" | "UNKNOWN"
+        trend = regime.split('_')[0].upper() if regime else 'SIDEWAYS'
+        regime_position_cap = {'BEAR': 4, 'SIDEWAYS': 7, 'BULL': 10}.get(trend, config.max_positions)
+        effective_max_positions = min(config.max_positions, regime_position_cap)
+
+        # ── Cross-sectional RS percentile (M1 proxy) ─────────────────────
+        # The live composite_score already incorporates momentum (27% weight),
+        # so the score percentile is a reliable proxy for price RS rank.
+        all_scores = sorted(score_map.values(), key=lambda r: r.get('composite_score', 0))
+        rs_threshold_score = 0.0
+        if all_scores:
+            idx = int(len(all_scores) * config.rs_exit_percentile)
+            rs_threshold_score = all_scores[min(idx, len(all_scores)-1)].get('composite_score', 0)
+
         open_holdings = self.db.get_open_holdings()
-        held_symbols = {_clean_symbol(h['symbol']) for h in open_holdings}
-
+        held_symbols  = {_clean_symbol(h['symbol']) for h in open_holdings}
         signals: List[SignalItem] = []
-        max_per_sector = max(1, int(config.max_positions * config.sector_cap_pct))
 
-        # Regime-aware sector overrides (relax in bull, tighten cyclicals in bear)
+        # Regime-aware sector overrides
         regime_overrides = _get_sector_overrides(regime)
+        max_per_sector   = max(1, int(effective_max_positions * config.sector_cap_pct))
 
-        # ── Step 1: evaluate current holdings → HOLD / SELL ───────────────
+        # ── Step 1: evaluate current holdings ─────────────────────────────
         for h in open_holdings:
-            sym = _clean_symbol(h['symbol'])
-            analysis = score_map.get(sym)
-            score = analysis['composite_score'] if analysis else 0.0
-            price = (analysis or {}).get('current_price') or h['entry_price']
-            rec   = (analysis or {}).get('recommendation', '')
-            ret   = (price - h['entry_price']) / h['entry_price'] * 100
+            sym       = _clean_symbol(h['symbol'])
+            analysis  = score_map.get(sym)
+            score     = float(analysis['composite_score']) if analysis else 0.0
+            price     = float((analysis or {}).get('current_price') or h['entry_price'])
+            rec       = (analysis or {}).get('recommendation', '')
+            ret       = (price - h['entry_price']) / h['entry_price'] * 100
 
-            # Update trailing stop: ratchet up when price moves in our favour
+            # months_held — used by min-hold, M3
+            try:
+                entry_dt   = datetime.fromisoformat(h['entry_date'].replace('Z', '+00:00'))
+                months_held = (now - entry_dt).days / 30.5
+            except Exception:
+                months_held = 0.0
+
+            # ── Update peak_price high-watermark ─────────────────────────
+            current_peak = h.get('peak_price') or h['entry_price']
+            if price > current_peak:
+                current_peak = price
+                self.db.update_peak_price(h['symbol'], current_peak)
+
+            # ── Hard stop-loss (Priority 1) ───────────────────────────────
+            hard_stop     = h['entry_price'] * (1.0 - config.stop_loss_pct)
+            stop_triggered = price < hard_stop
+
+            # ── Profit protection trailing stop (Priority 2) ──────────────
+            # Only activates once peak reached entry × (1 + profit_trigger_pct).
+            # Then trails: if price pulls back > profit_trail_pct from peak → exit.
+            profit_trail_triggered = (
+                current_peak >= h['entry_price'] * (1.0 + config.profit_trigger_pct)
+                and price < current_peak * (1.0 - config.profit_trail_pct)
+            )
+
+            # ── M1 RS exit strike tracking (Priority 3) ───────────────────
+            current_strikes = int(h.get('rs_strike_count') or 0)
+            if config.rs_exit_enabled and months_held >= config.min_hold_months:
+                # A strike is earned when this stock's score is below the
+                # rs_exit_percentile threshold of the full scored universe.
+                in_bottom = score <= rs_threshold_score
+                new_strikes = (current_strikes + 1) if in_bottom else 0
+                if new_strikes != current_strikes:
+                    self.db.update_rs_strikes(h['symbol'], new_strikes)
+                current_strikes = new_strikes
+
+            rs_exit_triggered = (
+                config.rs_exit_enabled
+                and months_held >= config.min_hold_months
+                and current_strikes >= config.rs_exit_strikes
+            )
+
+            # ── M3 max-hold score hurdle (Priority 4) ─────────────────────
+            m3_exit_triggered = False
+            m3_exit_reason    = ''
+            if config.m3_maxhold_enabled and months_held >= 12.0:
+                universe_scores = sorted(r.get('composite_score', 0) for r in score_map.values())
+                if months_held >= 24.0:
+                    idx_75 = int(len(universe_scores) * 0.75)
+                    pct_75 = universe_scores[idx_75] if idx_75 < len(universe_scores) else config.sell_threshold
+                    if score < pct_75:
+                        m3_exit_triggered = True
+                        m3_exit_reason    = f'm3_24mo({score:.0f}<75p:{pct_75:.0f})'
+                elif months_held >= 18.0:
+                    hurdle = max(config.sell_threshold, h['entry_score'] - config.m3_18m_decay)
+                    if score < hurdle:
+                        m3_exit_triggered = True
+                        m3_exit_reason    = f'm3_18mo(score:{score:.0f}<{hurdle:.0f})'
+                else:  # 12-18M
+                    hurdle = max(config.sell_threshold, h['entry_score'] - config.m3_12m_decay)
+                    if score < hurdle:
+                        m3_exit_triggered = True
+                        m3_exit_reason    = f'm3_12mo(score:{score:.0f}<{hurdle:.0f})'
+
+            # ── Score exit with min-hold guard (Priority 5) ───────────────
+            score_exit_triggered = (
+                score < config.sell_threshold
+                and months_held >= config.min_hold_months
+            )
+
+            # ── Update trailing_stop_price (ratchet, informational only) ──
+            # We keep the DB trailing stop in sync with the hard stop floor,
+            # but the ACTUAL exit decision now uses priority-ordered logic above.
             current_trailing = h.get('trailing_stop_price')
-            new_trailing = current_trailing
-            if price > h['entry_price'] and price > 0:
+            if price > h['entry_price']:
                 candidate = round(price * (1.0 - config.stop_loss_pct), 2)
                 if current_trailing is None or candidate > current_trailing:
-                    new_trailing = candidate
                     with self.db._conn() as conn:
                         conn.execute(
                             "UPDATE portfolio_holdings SET trailing_stop_price=? WHERE symbol=? AND status='open'",
-                            (new_trailing, h['symbol'])
+                            (candidate, h['symbol'])
                         )
 
-            # Determine effective stop level (trailing or fixed, whichever is higher)
-            effective_stop = new_trailing if new_trailing is not None else (h['entry_price'] * (1.0 - config.stop_loss_pct))
-            trailing_triggered = price < effective_stop
-
-            if trailing_triggered:
-                stop_type = 'trailing' if (new_trailing is not None and new_trailing > h['entry_price'] * (1.0 - config.stop_loss_pct)) else 'fixed'
+            # ── Determine exit signal ─────────────────────────────────────
+            if stop_triggered:
                 signal = 'SELL_STOP'
-                reason = f"{stop_type.title()} stop-loss: ₹{price:.2f} < stop ₹{effective_stop:.2f} ({ret:+.1f}% from entry)"
-                self.db.close_holding(h['symbol'], price, f'{stop_type}_stop_loss')
+                reason = f"Hard stop-loss: ₹{price:.2f} < stop ₹{hard_stop:.2f} ({ret:+.1f}%)"
+                self.db.close_holding(h['symbol'], price, 'hard_stop_loss')
                 held_symbols.discard(sym)
-            elif score < config.sell_threshold:
+
+            elif profit_trail_triggered:
+                peak_gain = (current_peak / h['entry_price'] - 1) * 100
+                pullback  = (1 - price / current_peak) * 100
+                signal = 'SELL_STOP'
+                reason = (f"Profit trail: peak +{peak_gain:.0f}%, "
+                          f"pulled back -{pullback:.0f}% from peak")
+                self.db.close_holding(h['symbol'], price, 'profit_trail_stop')
+                held_symbols.discard(sym)
+
+            elif rs_exit_triggered:
                 signal = 'SELL_SCORE'
-                reason = f"Score {score:.1f} below sell threshold {config.sell_threshold}"
+                reason = (f"M1 RS exit: score {score:.0f} in bottom-"
+                          f"{config.rs_exit_percentile*100:.0f}th pct for "
+                          f"{current_strikes} consecutive evaluations")
+                self.db.close_holding(h['symbol'], price, 'm1_rs_exit')
+                held_symbols.discard(sym)
+
+            elif m3_exit_triggered:
+                signal = 'SELL_SCORE'
+                reason = f"M3 max-hold: {m3_exit_reason} ({months_held:.0f}mo held)"
+                self.db.close_holding(h['symbol'], price, m3_exit_reason)
+                # Set re-entry cooldown so this stock can't immediately re-enter
+                self.db.set_cooldown(sym, config.m3_cooldown_months, m3_exit_reason)
+                held_symbols.discard(sym)
+
+            elif score_exit_triggered:
+                signal = 'SELL_SCORE'
+                reason = (f"Score {score:.1f} below sell threshold {config.sell_threshold} "
+                          f"({months_held:.0f}mo held)")
                 self.db.close_holding(h['symbol'], price, 'score_exit')
                 held_symbols.discard(sym)
+
+            elif score < config.sell_threshold and months_held < config.min_hold_months:
+                # Score weak but still in min-hold window — surface clearly so user knows
+                signal = 'HOLD'
+                reason = (f"Score {score:.1f} weak but min-hold active "
+                          f"({months_held:.1f}/{config.min_hold_months}mo)")
+
             else:
                 signal = 'HOLD'
-                reason = f"Score {score:.1f} in hold zone (stop: ₹{effective_stop:.2f})"
+                peak_note = f', peak ₹{current_peak:.0f}' if current_peak > h['entry_price'] else ''
+                reason = (f"Score {score:.1f} in hold zone "
+                          f"(stop ₹{hard_stop:.0f}{peak_note})")
 
             signals.append(SignalItem(
                 symbol=h['symbol'], signal=signal, composite_score=score,
@@ -527,19 +860,20 @@ class PortfolioManager:
             ))
 
         # ── Step 2: identify BUY candidates ───────────────────────────────
-        # F&O expiry guard: suppress new entries in the 2 days before/on last Thursday
         fno_window = _is_fno_expiry_window()
         if fno_window:
-            logger.info("F&O expiry window active — new BUY entries suppressed (exits still allowed)")
+            logger.info("F&O expiry window active — new BUY entries suppressed")
 
-        # Sector counts from remaining holdings (after exits)
         remaining_holdings = self.db.get_open_holdings()
         sec_counts: Dict[str, int] = {}
         for h in remaining_holdings:
             sec_counts[h['sector']] = sec_counts.get(h['sector'], 0) + 1
         n_held = len(remaining_holdings)
 
-        # Sort all universe stocks by score descending
+        # Regime-aware entry threshold boost (mirrors backtest)
+        regime_threshold_boost = {'BEAR': 10.0, 'SIDEWAYS': 3.0, 'BULL': 0.0}.get(trend, 0.0)
+        effective_buy_threshold = config.buy_threshold + regime_threshold_boost
+
         candidates = sorted(
             [(sym, r) for sym, r in score_map.items()
              if sym not in {_clean_symbol(h['symbol']) for h in remaining_holdings}],
@@ -548,47 +882,57 @@ class PortfolioManager:
         )
 
         for sym, analysis in candidates:
-            score = analysis.get('composite_score', 0)
-            price = analysis.get('current_price')
-            rec   = analysis.get('recommendation', '')
-            sec   = _get_sector(sym)
+            score      = analysis.get('composite_score', 0)
+            price      = analysis.get('current_price')
+            rec        = analysis.get('recommendation', '')
+            sec        = _get_sector(sym)
             native_sym = analysis.get('symbol', sym)
 
-            if score < config.buy_threshold:
-                # Below buy threshold — surface as WATCH if score is respectable
+            if score < effective_buy_threshold:
                 if score >= config.sell_threshold:
+                    buy_reason = f"Score {score:.1f} below threshold {effective_buy_threshold:.0f}"
+                    if regime_threshold_boost > 0:
+                        buy_reason += f" ({trend} regime +{regime_threshold_boost:.0f}pt boost)"
                     signals.append(SignalItem(
                         symbol=native_sym, signal='WATCH', composite_score=score,
                         current_price=price, entry_price=None, return_pct=None,
-                        reason=f"Score {score:.1f} below buy threshold {config.buy_threshold}",
-                        sector=sec, recommendation=rec,
+                        reason=buy_reason, sector=sec, recommendation=rec,
                     ))
                 continue
 
-            if n_held >= config.max_positions:
-                # At capacity — surface as WATCH
+            if n_held >= effective_max_positions:
                 signals.append(SignalItem(
                     symbol=native_sym, signal='WATCH', composite_score=score,
                     current_price=price, entry_price=None, return_pct=None,
-                    reason=f"At capacity ({config.max_positions} positions)",
+                    reason=(f"Regime position cap: {n_held}/{effective_max_positions} "
+                            f"({trend} regime)"),
                     sector=sec, recommendation=rec,
                 ))
                 continue
 
-            # Sector cap check (regime-aware overrides applied)
-            hard_cap = regime_overrides.get(sec, max_per_sector)
+            # M3 re-entry cooldown check
+            if self.db.is_in_cooldown(sym):
+                signals.append(SignalItem(
+                    symbol=native_sym, signal='WATCH', composite_score=score,
+                    current_price=price, entry_price=None, return_pct=None,
+                    reason=f"M3 re-entry cooldown active ({config.m3_cooldown_months}mo block)",
+                    sector=sec, recommendation=rec,
+                ))
+                continue
+
+            # Sector cap (regime-aware)
+            hard_cap    = regime_overrides.get(sec, max_per_sector)
             general_ok  = sec_counts.get(sec, 0) < max_per_sector
             override_ok = sec_counts.get(sec, 0) < hard_cap
             if not (general_ok and override_ok):
                 signals.append(SignalItem(
                     symbol=native_sym, signal='WATCH', composite_score=score,
                     current_price=price, entry_price=None, return_pct=None,
-                    reason=f"Sector cap reached: {sec} ({sec_counts.get(sec,0)} held)",
+                    reason=f"Sector cap: {sec} ({sec_counts.get(sec,0)} held)",
                     sector=sec, recommendation=rec,
                 ))
                 continue
 
-            # F&O expiry window — defer to WATCH, do not execute entry
             if fno_window:
                 signals.append(SignalItem(
                     symbol=native_sym, signal='WATCH', composite_score=score,
@@ -598,44 +942,56 @@ class PortfolioManager:
                 ))
                 continue
 
-            # BUY — use ATR-based stop from scorer's trading_levels when available
-            entry_price = price or 0.0
-            atr_stop = (analysis.get('trading_levels') or {}).get('stop_loss')
-            if entry_price > 0:
-                self.db.add_holding(
-                    native_sym, entry_price, score,
-                    config.stop_loss_pct,
-                    initial_stop_price=atr_stop,
+            # Correlation guard: avoid adding a stock that moves in lockstep
+            # with multiple existing holdings (prevents concentrated macro-regime crashes)
+            held_list = [_clean_symbol(h['symbol']) for h in remaining_holdings]
+            price_history = getattr(self, '_price_history_cache', {})
+            if price_history:
+                blocked, corr_reason = _live_correlation_guard(
+                    sym, held_list,
+                    price_history_fn=lambda s: price_history.get(s),
                 )
+                if blocked:
+                    signals.append(SignalItem(
+                        symbol=native_sym, signal='WATCH', composite_score=score,
+                        current_price=price, entry_price=None, return_pct=None,
+                        reason=corr_reason, sector=sec, recommendation=rec,
+                    ))
+                    continue
+
+            # ── BUY ───────────────────────────────────────────────────────
+            entry_price = price or 0.0
+            atr_stop    = (analysis.get('trading_levels') or {}).get('stop_loss')
+            if entry_price > 0:
+                self.db.add_holding(native_sym, entry_price, score,
+                                    config.stop_loss_pct, initial_stop_price=atr_stop)
             signals.append(SignalItem(
                 symbol=native_sym, signal='BUY', composite_score=score,
                 current_price=price, entry_price=None, return_pct=None,
-                reason=f"Score {score:.1f} ≥ buy threshold {config.buy_threshold}",
+                reason=f"Score {score:.1f} ≥ threshold {effective_buy_threshold:.0f}",
                 sector=sec, recommendation=rec,
             ))
             sec_counts[sec] = sec_counts.get(sec, 0) + 1
             n_held += 1
 
-        # ── Log signals ───────────────────────────────────────────────────
-        self.db.log_signals(signals, regime, now)
+        # ── Log signals & compute P&L ─────────────────────────────────────
+        self.db.log_signals(signals, regime, now_iso)
 
-        # ── Compute portfolio P&L ─────────────────────────────────────────
         final_holdings = self.db.get_open_holdings()
         total_ret = 0.0
         for h in final_holdings:
-            sym = _clean_symbol(h['symbol'])
+            sym   = _clean_symbol(h['symbol'])
             price = (score_map.get(sym) or {}).get('current_price') or h['entry_price']
             total_ret += (price - h['entry_price']) / h['entry_price'] * 100
         avg_ret = total_ret / len(final_holdings) if final_holdings else 0.0
 
-        # Partition signals for the response
-        buys   = [s for s in signals if s.signal == 'BUY']
-        sells  = [s for s in signals if s.signal in ('SELL_SCORE', 'SELL_STOP')]
-        holds  = [s for s in signals if s.signal == 'HOLD']
+        buys    = [s for s in signals if s.signal == 'BUY']
+        sells   = [s for s in signals if s.signal in ('SELL_SCORE', 'SELL_STOP')]
+        holds   = [s for s in signals if s.signal == 'HOLD']
         watches = [s for s in signals if s.signal == 'WATCH']
 
         return EvaluationResult(
-            evaluated_at=now,
+            evaluated_at=now_iso,
             n_holdings=len(final_holdings),
             signals=signals,
             buys=buys, sells=sells, holds=holds, watches=watches,
