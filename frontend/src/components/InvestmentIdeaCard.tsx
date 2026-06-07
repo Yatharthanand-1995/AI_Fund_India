@@ -38,70 +38,35 @@ function InvestmentIdeaCard({ analysis, rank }: InvestmentIdeaCardProps) {
   const { watchlist, add, remove } = useWatchlist();
   const isInWatchlist = watchlist.some(item => item.symbol === symbol);
 
-  // Extract key metrics for "Why This Stock?"
-  const getKeyInsights = () => {
-    const insights: string[] = [];
-
-    // Fundamentals insights
-    const fundamentals = agent_scores?.fundamentals;
-    if (fundamentals && fundamentals.score > 55) {
-      const metrics = fundamentals.metrics;
-      if (metrics?.roe) {
-        insights.push(`Strong fundamentals (ROE ${(metrics.roe as number).toFixed(1)}%)`);
-      } else {
-        insights.push(`Strong fundamentals (score ${fundamentals.score.toFixed(0)}/100)`);
-      }
-    }
-
-    // Momentum insights
-    const momentum = agent_scores?.momentum;
-    if (momentum && momentum.score > 55) {
-      insights.push(`Positive momentum (score ${momentum.score.toFixed(0)}/100)`);
-    }
-
-    // Quality insights
-    const quality = agent_scores?.quality;
-    if (quality && quality.score > 60) {
-      insights.push(`High quality score (${quality.score.toFixed(0)}/100, top decile)`);
-    }
-
-    // Institutional flow
-    const instFlow = agent_scores?.institutional_flow;
-    if (instFlow && instFlow.score > 55) {
-      insights.push(`Strong institutional interest (score ${instFlow.score.toFixed(0)}/100)`);
-    }
-
-    // Sentiment
-    const sentiment = agent_scores?.sentiment;
-    if (sentiment && sentiment.score > 55) {
-      insights.push(`Positive market sentiment (score ${sentiment.score.toFixed(0)}/100)`);
-    }
-
-    return insights.slice(0, 4); // Max 4 insights
+  const AGENT_LABELS: Record<string, string> = {
+    fundamentals: 'Fundamentals',
+    momentum: 'Momentum',
+    quality: 'Quality',
+    sentiment: 'Sentiment',
+    institutional_flow: 'Inst. Flow',
   };
 
-  // Extract risk indicators
-  const getRisks = () => {
-    const risks: string[] = [];
+  // Agents scoring >= 60 — use actual reasoning from the scorer
+  const insights = Object.entries(agent_scores || {})
+    .filter(([, a]) => a && (a as any).score >= 60 && (a as any).reasoning)
+    .sort(([, a], [, b]) => ((b as any).score ?? 0) - ((a as any).score ?? 0))
+    .slice(0, 4)
+    .map(([key, a]) => ({
+      label: AGENT_LABELS[key] ?? key,
+      score: (a as any).score as number,
+      text: (a as any).reasoning as string,
+    }));
 
-    // Check for low scores
-    Object.entries(agent_scores || {}).forEach(([key, agent]) => {
-      if (agent && agent.score < 50) {
-        const name = key.replace('_', ' ');
-        risks.push(`${name.charAt(0).toUpperCase() + name.slice(1)}: Below average (${agent.score.toFixed(0)}/100)`);
-      }
-    });
-
-    // Generic risks if no specific ones
-    if (risks.length === 0 && composite_score < 45) {
-      risks.push('Moderate volatility expected');
-    }
-
-    return risks.slice(0, 3); // Max 3 risks
-  };
-
-  const insights = getKeyInsights();
-  const risks = getRisks();
+  // Agents scoring < 50 — surface actual reasoning as risk
+  const risks = Object.entries(agent_scores || {})
+    .filter(([, a]) => a && (a as any).score < 50 && (a as any).reasoning)
+    .sort(([, a], [, b]) => ((a as any).score ?? 0) - ((b as any).score ?? 0))
+    .slice(0, 3)
+    .map(([key, a]) => ({
+      label: AGENT_LABELS[key] ?? key,
+      score: (a as any).score as number,
+      text: (a as any).reasoning as string,
+    }));
 
   const handleWatchlistToggle = () => {
     if (isInWatchlist) {
@@ -307,11 +272,16 @@ function InvestmentIdeaCard({ analysis, rank }: InvestmentIdeaCardProps) {
               <Lightbulb className="h-5 w-5 text-yellow-500" />
               WHY THIS STOCK?
             </h3>
-            <ul className="space-y-2">
+            <ul className="space-y-2.5">
               {insights.map((insight, idx) => (
-                <li key={idx} className="flex items-start gap-2 text-sm text-gray-700">
-                  <span className="text-green-600 font-bold mt-0.5">✓</span>
-                  <span>{insight}</span>
+                <li key={idx} className="flex items-start gap-2">
+                  <span className="text-green-600 font-bold mt-0.5 shrink-0">✓</span>
+                  <div>
+                    <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                      {insight.label} · {insight.score.toFixed(0)}/100
+                    </span>
+                    <p className="text-sm text-gray-700 leading-snug">{insight.text}</p>
+                  </div>
                 </li>
               ))}
             </ul>
@@ -325,11 +295,16 @@ function InvestmentIdeaCard({ analysis, rank }: InvestmentIdeaCardProps) {
               <AlertTriangle className="h-4 w-4" />
               RISKS TO CONSIDER
             </h3>
-            <ul className="space-y-1">
+            <ul className="space-y-2">
               {risks.map((risk, idx) => (
                 <li key={idx} className="flex items-start gap-2 text-xs text-yellow-800">
-                  <span className="mt-0.5">•</span>
-                  <span>{risk}</span>
+                  <span className="mt-0.5 shrink-0">•</span>
+                  <div>
+                    <span className="font-semibold uppercase tracking-wide">
+                      {risk.label} · {risk.score.toFixed(0)}/100 —
+                    </span>
+                    {' '}{risk.text}
+                  </div>
                 </li>
               ))}
             </ul>

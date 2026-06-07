@@ -42,7 +42,7 @@ export function useScreener(_initialFilters: ScreenerFilters = {}) {
       if (filters.sentimentMin !== undefined) params.sentiment_min = filters.sentimentMin;
       if (filters.institutionalFlowMin !== undefined) params.institutional_min = filters.institutionalFlowMin;
 
-      const response = await api.get('/screener', { params });
+      const response = await api.get('/screener', { params, timeout: 300000 }); // 5 min — first run scores 74 stocks
       const stocks: StockAnalysis[] = (response as any).data?.results || [];
 
       setAllStocks(stocks);

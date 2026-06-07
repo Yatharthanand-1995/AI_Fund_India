@@ -62,42 +62,97 @@ const ADJ_META: Record<string, { label: string; desc: string }> = {
   crude_adjustment:           { label: 'Crude Oil',         desc: 'Brent price level and trend × sector oil sensitivity' },
 };
 
-// Sub-metrics to show when an agent row is expanded
+// Breakdown sub-score metadata: label, max pts, optional description
+// Max values match the scoring agent implementations exactly.
+const BREAKDOWN_META: Record<string, Record<string, { label: string; max: number; desc?: string }>> = {
+  fundamentals: {
+    profitability_score:  { label: 'Profitability',     max: 40, desc: 'ROE, ROA, profit & operating margins' },
+    valuation_score:      { label: 'Valuation',         max: 25, desc: 'P/E, P/B, EV/EBITDA vs sector median' },
+    growth_score:         { label: 'Growth',            max: 15, desc: 'Revenue & earnings growth rates' },
+    health_score:         { label: 'Financial Health',  max: 10, desc: 'Debt ratio, liquidity, cash flow' },
+    dividend_score:       { label: 'Dividend',          max: 5,  desc: 'Dividend yield & payout ratio' },
+    promoter_bonus:       { label: 'Promoter Holding',  max: 5,  desc: 'Bonus for high promoter stake (>50%)' },
+    pledge_penalty:       { label: 'Pledge Penalty',    max: 0,  desc: 'Deduction for pledged promoter shares' },
+    pe_sector_adj:        { label: 'Sector P/E Adj.',   max: 5,  desc: 'P/E premium/discount vs sector peers' },
+    earnings_quality_adj: { label: 'Earnings Quality',  max: 5,  desc: 'Cash conversion ratio quality check' },
+  },
+  momentum: {
+    rsi_score:               { label: 'RSI (14)',          max: 25, desc: 'Relative Strength Index momentum zone' },
+    trend_score:             { label: 'Trend Strength',   max: 27, desc: 'SMA 20/50/200 alignment & slope' },
+    returns_score:           { label: 'Multi-Period Returns', max: 27, desc: 'Weighted 1M/3M/6M/12M returns' },
+    relative_strength_score: { label: 'vs NIFTY',         max: 10, desc: '3M return relative to NIFTY 50' },
+    breakout_bonus:          { label: 'Breakout / Penalty', max: 5, desc: 'Trend bonus or near-52W-high penalty' },
+  },
+  quality: {
+    roe_score:      { label: 'Return on Equity',  max: 40, desc: 'ROE — primary quality signal' },
+    leverage_score: { label: 'Leverage (D/E)',    max: 35, desc: 'Debt-to-equity ratio quality score' },
+    stability_score:{ label: 'EPS Stability',     max: 25, desc: 'Earnings consistency (low variability)' },
+  },
+  sentiment: {
+    diffusion_score:       { label: 'Analyst Consensus',  max: 40, desc: 'Buy/Hold/Sell distribution across analysts' },
+    target_price_score:    { label: 'Price Target Upside', max: 30, desc: 'Analyst target vs current market price' },
+    coverage_score:        { label: 'Analyst Coverage',   max: 20, desc: 'Number of analysts covering the stock' },
+    news_adjustment:       { label: 'News Sentiment',     max: 10, desc: 'Recent news headlines tone (RSS)' },
+    revision_adjustment:   { label: 'Estimate Revisions', max: 5,  desc: '30-day upgrade vs downgrade trend' },
+    earnings_surprise_adj: { label: 'Earnings Surprise',  max: 5,  desc: 'Most recent EPS beat or miss magnitude' },
+  },
+  institutional_flow: {
+    base_score:              { label: 'Base Score',        max: 50 },
+    obv_adjustment:          { label: 'OBV Trend',         max: 15, desc: 'On-Balance Volume accumulation trend' },
+    mfi_adjustment:          { label: 'Money Flow (MFI)',  max: 15, desc: 'Money Flow Index — buying/selling pressure' },
+    cmf_adjustment:          { label: 'Chaikin MF',        max: 10, desc: 'Chaikin Money Flow over 20 periods' },
+    volume_spike_adjustment: { label: 'Volume Surge',      max: 5,  desc: 'Unusual volume spike signal' },
+    vwap_adjustment:         { label: 'VWAP Position',     max: 5,  desc: 'Price position relative to VWAP' },
+    divergence_adjustment:   { label: 'Price-Vol Divergence', max: 5, desc: 'Bullish/bearish price-volume divergence' },
+    fii_dii_adjustment:      { label: 'FII/DII Flows',     max: 15, desc: 'Net institutional buying (₹ crore, 30d)' },
+    delivery_adjustment:     { label: 'Delivery %',        max: 10, desc: 'High delivery % = institutional conviction' },
+    deals_adjustment:        { label: 'Bulk/Block Deals',  max: 5,  desc: 'Large institutional deal activity' },
+  },
+};
+
+// Key data metrics shown below score factors — field names match API exactly
 const AGENT_SUB_METRICS: Record<string, { key: string; label: string; unit?: string }[]> = {
   fundamentals: [
-    { key: 'pe_ratio',            label: 'P/E Ratio' },
-    { key: 'roe',                 label: 'ROE',             unit: '%' },
-    { key: 'revenue_growth',      label: 'Revenue Growth',  unit: '%' },
-    { key: 'debt_to_equity',      label: 'Debt / Equity' },
-    { key: 'profit_margin',       label: 'Profit Margin',   unit: '%' },
+    { key: 'pe_ratio',             label: 'P/E Ratio' },
+    { key: 'roe',                  label: 'ROE',              unit: '%' },
+    { key: 'revenue_growth',       label: 'Revenue Growth',   unit: '%' },
+    { key: 'debt_to_equity',       label: 'Debt / Equity' },
+    { key: 'profit_margin',        label: 'Profit Margin',    unit: '%' },
     { key: 'cash_conversion_ratio',label: 'Cash Conv. Ratio' },
-    { key: 'pe_vs_sector_mid',    label: 'Sector P/E Mid' },
-    { key: 'promoter_holding',    label: 'Promoter Holding', unit: '%' },
-    { key: 'dividend_yield',      label: 'Dividend Yield',  unit: '%' },
+    { key: 'pe_vs_sector_mid',     label: 'Sector P/E Mid' },
+    { key: 'promoter_holding',     label: 'Promoter Holding', unit: '%' },
+    { key: 'dividend_yield',       label: 'Dividend Yield',   unit: '%' },
   ],
   momentum: [
-    { key: 'rsi',                 label: 'RSI (14)' },
-    { key: 'return_1m',           label: '1M Return',       unit: '%' },
-    { key: 'return_3m',           label: '3M Return',       unit: '%' },
-    { key: 'return_6m',           label: '6M Return',       unit: '%' },
-    { key: 'return_12m',          label: '12M Return',      unit: '%' },
-    { key: 'atr',                 label: 'ATR (14)' },
+    { key: 'rsi',       label: 'RSI (14)' },
+    { key: '1m_return', label: '1M Return',  unit: '%' },
+    { key: '3m_return', label: '3M Return',  unit: '%' },
+    { key: '6m_return', label: '6M Return',  unit: '%' },
+    { key: '1y_return', label: '12M Return', unit: '%' },
+    { key: 'pct_from_52w_high', label: 'From 52W High', unit: '%' },
   ],
   quality: [
-    { key: 'volatility',          label: 'Annualised Vol',  unit: '%' },
-    { key: 'max_drawdown',        label: 'Max Drawdown',    unit: '%' },
-    { key: 'return_consistency',  label: 'Return Consistency' },
+    { key: 'roe',               label: 'ROE',             unit: '%' },
+    { key: 'debt_to_equity',    label: 'D/E Ratio' },
+    { key: 'volatility',        label: 'Ann. Volatility', unit: '%' },
+    { key: 'max_drawdown',      label: 'Max Drawdown',    unit: '%' },
+    { key: 'eps_variability',   label: 'EPS Variability' },
+    { key: 'return_consistency',label: 'Return Consistency' },
   ],
   sentiment: [
-    { key: 'analyst_count',       label: 'Analyst Coverage' },
-    { key: 'target_upside_pct',   label: 'Analyst Upside',  unit: '%' },
-    { key: 'buy_pct',             label: 'Buy Ratings',     unit: '%' },
+    { key: 'number_of_analyst_opinions', label: 'Analyst Coverage' },
+    { key: 'upside_percent',             label: 'Analyst Upside',   unit: '%' },
+    { key: 'recommendation_key',         label: 'Consensus' },
+    { key: 'earnings_surprise_pct',      label: 'EPS Surprise',     unit: '%' },
+    { key: 'news_headline_count',        label: 'News Headlines' },
   ],
   institutional_flow: [
-    { key: 'obv_trend',           label: 'OBV Trend' },
-    { key: 'mfi',                 label: 'MFI (14)' },
-    { key: 'delivery_pct',        label: 'Delivery %',      unit: '%' },
-    { key: 'fii_net_30d',         label: 'FII Net 30d (Cr)' },
+    { key: 'obv_trend',       label: 'OBV Trend' },
+    { key: 'mfi',             label: 'MFI (14)' },
+    { key: 'cmf',             label: 'Chaikin MF' },
+    { key: 'delivery_pct',   label: 'Delivery %',      unit: '%' },
+    { key: 'fii_net_30d',    label: 'FII Net 30d',     unit: '₹Cr' },
+    { key: 'price_vs_vwap',  label: 'Price vs VWAP',   unit: '%' },
   ],
 };
 
@@ -175,39 +230,104 @@ function AgentRow({
         </div>
       </button>
 
-      {/* Expanded sub-metrics */}
+      {/* Expanded detail panel */}
       {!compact && expanded && (
-        <div className="mx-3 mb-2 rounded-lg bg-slate-900/60 border border-slate-700/60 p-3 grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-2">
-          {subMetrics.map(({ key, label, unit }) => {
-            const val = metrics[key];
-            if (val == null) return null;
-            return (
-              <div key={key}>
-                <div className="text-[10px] text-slate-500">{label}</div>
-                <div className="text-xs font-mono text-slate-200">
-                  {typeof val === 'number' ? fmt(val, 2) : String(val)}
-                  {unit && <span className="text-slate-500 ml-0.5">{unit}</span>}
-                </div>
-              </div>
-            );
-          })}
-          {/* Breakdown sub-scores */}
+        <div className="mx-3 mb-2 rounded-lg bg-slate-900/60 border border-slate-700/60 overflow-hidden">
+
+          {/* ── Section 1: Score Factors ───────────────────────────── */}
           {Object.keys(breakdown).length > 0 && (
-            <div className="col-span-full border-t border-slate-700/40 mt-1 pt-2 flex flex-wrap gap-x-4 gap-y-1">
-              {Object.entries(breakdown).map(([k, v]) => (
-                <div key={k}>
-                  <span className="text-[10px] text-slate-500">{k.replace(/_score|_adj|_bonus|_penalty/g, '').replace(/_/g, ' ')}: </span>
-                  <span className={cn('text-[10px] font-mono', (v as number) >= 0 ? 'text-slate-300' : 'text-red-400')}>
-                    {(v as number) >= 0 ? '+' : ''}{(v as number).toFixed(1)}
-                  </span>
-                </div>
-              ))}
+            <div className="p-3 space-y-2">
+              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 mb-1">
+                Score Factors
+              </div>
+              {Object.entries(breakdown).map(([k, rawVal]) => {
+                const v = rawVal as number;
+                const bMeta = BREAKDOWN_META[agentKey]?.[k];
+                const label = bMeta?.label ?? k.replace(/_score|_adj|_bonus|_penalty/g, '').replace(/_/g, ' ');
+                const max = bMeta?.max ?? Math.abs(v);
+                const desc = bMeta?.desc;
+                const isNegative = v < 0;
+                const barPct = max > 0 ? Math.min(Math.abs(v) / max * 100, 100) : 0;
+
+                return (
+                  <div key={k} className="group/factor">
+                    <div className="flex items-center gap-2">
+                      {/* Label */}
+                      <div className="w-36 shrink-0">
+                        <span className="text-[11px] text-slate-300">{label}</span>
+                        {desc && (
+                          <span className="ml-1 text-[10px] text-slate-600 hidden group-hover/factor:inline">{desc}</span>
+                        )}
+                      </div>
+                      {/* Bar */}
+                      <div className="flex-1 h-1.5 bg-slate-700/70 rounded-full overflow-hidden">
+                        {max > 0 && (
+                          <div
+                            className={cn('h-full rounded-full transition-all duration-500',
+                              isNegative ? 'bg-red-500/70' : v === 0 ? 'bg-slate-600' : 'bg-emerald-500/80'
+                            )}
+                            style={{ width: `${barPct}%` }}
+                          />
+                        )}
+                      </div>
+                      {/* Value / max */}
+                      <div className="w-16 text-right shrink-0">
+                        <span className={cn('text-[11px] font-mono font-semibold',
+                          isNegative ? 'text-red-400' : v === 0 ? 'text-slate-600' : 'text-slate-200'
+                        )}>
+                          {isNegative ? '' : (v > 0 ? '+' : '')}{v % 1 === 0 ? v.toFixed(0) : v.toFixed(1)}
+                        </span>
+                        {max > 0 && (
+                          <span className="text-[10px] text-slate-600"> / {max}</span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+              {/* Subtotal row */}
+              <div className="flex items-center justify-between pt-1.5 border-t border-slate-700/40 mt-1">
+                <span className="text-[10px] text-slate-500 uppercase tracking-wide">Agent Score</span>
+                <span className={cn('text-sm font-bold font-mono', scoreColor(score))}>
+                  {score % 1 === 0 ? score.toFixed(0) : score.toFixed(1)} / 100
+                </span>
+              </div>
             </div>
           )}
-          {/* Reasoning snippet */}
+
+          {/* ── Section 2: Key Data ───────────────────────────────── */}
+          {subMetrics.length > 0 && (
+            <div className="border-t border-slate-700/40 p-3">
+              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 mb-2">
+                Key Data
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-2">
+                {subMetrics.map(({ key, label, unit }) => {
+                  const val = metrics[key];
+                  if (val == null) return null;
+                  return (
+                    <div key={key}>
+                      <div className="text-[10px] text-slate-500">{label}</div>
+                      <div className="text-xs font-mono text-slate-200">
+                        {typeof val === 'number' ? fmt(val, 2) : String(val)}
+                        {unit && <span className="text-slate-500 ml-0.5">{unit}</span>}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* ── Section 3: Reasoning ─────────────────────────────── */}
           {agentData?.reasoning && (
-            <div className="col-span-full text-[10px] text-slate-500 leading-relaxed border-t border-slate-700/40 mt-1 pt-2 line-clamp-3">
-              {agentData.reasoning}
+            <div className="border-t border-slate-700/40 px-3 py-2.5">
+              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 mb-1">
+                Summary
+              </div>
+              <div className="text-[11px] text-slate-400 leading-relaxed">
+                {agentData.reasoning}
+              </div>
             </div>
           )}
         </div>

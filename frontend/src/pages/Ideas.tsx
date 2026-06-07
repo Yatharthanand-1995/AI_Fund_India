@@ -260,7 +260,7 @@ export default function Ideas() {
         momentum?.rsi?.toFixed(1) || 'N/A',
         momentum?.trend || 'N/A',
         fundamentals?.pe_ratio?.toFixed(1) || 'N/A',
-        sentiment?.analyst_upside_pct?.toFixed(1) || 'N/A',
+        sentiment?.upside_percent?.toFixed(1) || 'N/A',
         pick.agent_scores?.fundamentals?.score?.toFixed(2) || 'N/A',
         pick.agent_scores?.momentum?.score?.toFixed(2) || 'N/A',
         pick.agent_scores?.quality?.score?.toFixed(2) || 'N/A',
