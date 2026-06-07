@@ -1,96 +1,101 @@
-/**
- * Enhanced Analytics Dashboard
- *
- * Comprehensive investment analytics and insights
- * Features:
- * - Portfolio performance tracking
- * - Agent prediction accuracy analysis
- * - Sector performance and rotation
- * - System health metrics
- */
-
 import { useState, Suspense } from 'react';
-import { BarChart3, Activity, PieChart, Settings, TrendingUp } from 'lucide-react';
-import Card from '@/components/ui/Card';
+import { BarChart3, Activity, PieChart, Settings, TrendingUp, Calculator } from 'lucide-react';
 import Loading from '@/components/ui/Loading';
 import PortfolioAnalytics from '@/components/analytics/PortfolioAnalytics';
 import AgentPerformanceAnalytics from '@/components/analytics/AgentPerformanceAnalytics';
 import SectorPerformanceAnalytics from '@/components/analytics/SectorPerformanceAnalytics';
+import HealthMonitor from '@/components/system/HealthMonitor';
+import DataFreshnessIndicator from '@/components/system/DataFreshnessIndicator';
 import PerformanceMetrics from '@/components/system/PerformanceMetrics';
+import ScoringCalculator from '@/components/analytics/ScoringCalculator';
 
-type TabView = 'portfolio' | 'agents' | 'sectors' | 'system';
+type TabView = 'portfolio' | 'agents' | 'sectors' | 'scoring' | 'system';
 
 export default function Analytics() {
   const [activeTab, setActiveTab] = useState<TabView>('portfolio');
 
   const tabs = [
-    { id: 'portfolio' as TabView, label: 'Portfolio Analytics', icon: TrendingUp },
-    { id: 'agents' as TabView, label: 'Agent Performance', icon: Activity },
-    { id: 'sectors' as TabView, label: 'Sector Analysis', icon: PieChart },
-    { id: 'system' as TabView, label: 'System Metrics', icon: Settings },
+    { id: 'portfolio' as TabView, label: 'Portfolio', icon: TrendingUp },
+    { id: 'agents' as TabView,    label: 'Agent Performance', icon: Activity },
+    { id: 'sectors' as TabView,   label: 'Sectors', icon: PieChart },
+    { id: 'scoring' as TabView,   label: 'Scoring Calculator', icon: Calculator },
+    { id: 'system' as TabView,    label: 'System', icon: Settings },
   ];
 
   return (
     <div className="space-y-6">
-      {/* Page Header */}
       <div>
         <h1 className="text-3xl font-bold text-gray-900 flex items-center gap-3">
           <BarChart3 className="h-8 w-8 text-blue-600" />
-          Advanced Analytics
+          Analytics
         </h1>
-        <p className="text-gray-600 mt-2">
-          Deep insights into portfolio performance, agent accuracy, and market trends
+        <p className="text-gray-600 mt-1">
+          Portfolio performance, agent accuracy, sector trends, score decomposition, and system health
         </p>
       </div>
 
       {/* Tab Navigation */}
-      <Card>
-        <div className="border-b border-gray-200">
-          <nav className="flex space-x-8 px-6">
-            {tabs.map(({ id, label, icon: Icon }) => (
-              <button
-                key={id}
-                onClick={() => setActiveTab(id)}
-                className={`
-                  py-4 px-1 border-b-2 font-medium text-sm flex items-center gap-2
-                  ${activeTab === id
-                    ? 'border-blue-500 text-blue-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                  }
-                `}
-              >
-                <Icon className="h-4 w-4" />
-                {label}
-              </button>
-            ))}
-          </nav>
-        </div>
-      </Card>
+      <div className="bg-white border-b border-gray-200 -mx-4 px-4">
+        <nav className="flex space-x-1 overflow-x-auto">
+          {tabs.map(({ id, label, icon: Icon }) => (
+            <button
+              key={id}
+              onClick={() => setActiveTab(id)}
+              className={`flex items-center gap-2 px-4 py-4 border-b-2 text-sm font-medium whitespace-nowrap transition-colors ${
+                activeTab === id
+                  ? 'border-blue-500 text-blue-600'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+              }`}
+            >
+              <Icon className="h-4 w-4" />
+              {label}
+            </button>
+          ))}
+        </nav>
+      </div>
 
       {/* Tab Content */}
-      <Suspense fallback={<div className="py-12"><Loading size="lg" text="Loading analytics..." /></div>}>
+      <Suspense fallback={<div className="py-12"><Loading size="lg" text="Loading..." /></div>}>
         <div>
           {activeTab === 'portfolio' && <PortfolioAnalytics />}
-          {activeTab === 'agents' && <AgentPerformanceAnalytics />}
-          {activeTab === 'sectors' && <SectorPerformanceAnalytics />}
-          {activeTab === 'system' && <PerformanceMetrics />}
+          {activeTab === 'agents'    && <AgentPerformanceAnalytics />}
+          {activeTab === 'sectors'   && <SectorPerformanceAnalytics />}
+          {activeTab === 'scoring'   && <ScoringCalculator />}
+          {activeTab === 'system'    && <SystemPanel />}
         </div>
       </Suspense>
+    </div>
+  );
+}
 
-      {/* Info Panel */}
-      <Card className="bg-blue-50 border-blue-200">
-        <div className="p-4">
-          <h3 className="font-medium text-blue-900 mb-2">
-            💡 Analytics Tips
-          </h3>
-          <ul className="text-sm text-blue-800 space-y-1">
-            <li>• <strong>Portfolio Analytics</strong> - Track your watchlist performance and identify top performers</li>
-            <li>• <strong>Agent Performance</strong> - See which agents are most accurate in predicting positive returns</li>
-            <li>• <strong>Sector Analysis</strong> - Identify sector rotation and best performing industries</li>
-            <li>• <strong>System Metrics</strong> - Monitor system health, uptime, and API performance</li>
-          </ul>
-        </div>
-      </Card>
+function SystemPanel() {
+  const [sub, setSub] = useState<'health' | 'freshness' | 'performance'>('health');
+  const subTabs = [
+    { id: 'health' as const,      label: 'Health Monitor',  icon: Activity },
+    { id: 'freshness' as const,   label: 'Data Freshness',  icon: BarChart3 },
+    { id: 'performance' as const, label: 'Performance',     icon: TrendingUp },
+  ];
+  return (
+    <div className="space-y-4">
+      <div className="flex gap-2 flex-wrap">
+        {subTabs.map(({ id, label, icon: Icon }) => (
+          <button
+            key={id}
+            onClick={() => setSub(id)}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium border transition-colors ${
+              sub === id
+                ? 'bg-blue-50 border-blue-300 text-blue-700'
+                : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'
+            }`}
+          >
+            <Icon className="h-3.5 w-3.5" />
+            {label}
+          </button>
+        ))}
+      </div>
+      {sub === 'health'      && <HealthMonitor />}
+      {sub === 'freshness'   && <DataFreshnessIndicator />}
+      {sub === 'performance' && <PerformanceMetrics />}
     </div>
   );
 }

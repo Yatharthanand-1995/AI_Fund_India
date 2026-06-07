@@ -409,7 +409,7 @@ function ClosedTradesTable({ trades }: { trades: ClosedTrade[] }) {
       <table className="w-full text-sm">
         <thead className="bg-slate-800 text-slate-400 text-xs uppercase tracking-wide">
           <tr>
-            {['Symbol', 'Sector', 'Entry', 'Exit', 'Return', 'Exit Reason', 'Date'].map(h => (
+            {['Symbol', 'Sector', 'Entry', 'Exit', 'Return', 'Tax', 'Exit Reason', 'Date'].map(h => (
               <th key={h} className="px-4 py-3 text-left font-medium">{h}</th>
             ))}
           </tr>
@@ -422,6 +422,19 @@ function ClosedTradesTable({ trades }: { trades: ClosedTrade[] }) {
               <td className="px-4 py-3 font-mono text-slate-300">{price(t.entry_price)}</td>
               <td className="px-4 py-3 font-mono text-slate-300">{price(t.exit_price)}</td>
               <td className="px-4 py-3"><ReturnCell v={t.return_pct} /></td>
+              <td className="px-4 py-3">
+                {(() => {
+                  const holdDays = (new Date(t.exit_date).getTime() - new Date(t.entry_date).getTime()) / 86400000;
+                  const isLTCG = holdDays >= 365;
+                  return (
+                    <span className={cn('text-xs font-semibold px-2 py-0.5 rounded',
+                      isLTCG ? 'bg-emerald-900/40 text-emerald-400' : 'bg-amber-900/40 text-amber-400'
+                    )}>
+                      {isLTCG ? 'LTCG' : 'STCG'}
+                    </span>
+                  );
+                })()}
+              </td>
               <td className="px-4 py-3">
                 <span className={cn('text-xs font-medium px-2 py-0.5 rounded',
                   t.exit_reason === 'stop_loss'
@@ -478,6 +491,130 @@ function PerfBar({ perf }: { perf: PortfolioPerformance | null }) {
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
+// ── Risk View ─────────────────────────────────────────────────────────────────
+
+function RiskView({
+  holdings, closedTrades, perf,
+}: {
+  holdings: PortfolioHolding[];
+  closedTrades: ClosedTrade[];
+  perf: PortfolioPerformance | null;
+}) {
+  // Sector concentration
+  const sectorMap: Record<string, number> = {};
+  holdings.forEach(h => {
+    sectorMap[h.sector || 'Unknown'] = (sectorMap[h.sector || 'Unknown'] ?? 0) + 1;
+  });
+  const totalHoldings = holdings.length || 1;
+  const sectorEntries = Object.entries(sectorMap).sort((a, b) => b[1] - a[1]);
+
+  // STCG vs LTCG breakdown
+  const stcg = closedTrades.filter(t => {
+    const days = (new Date(t.exit_date).getTime() - new Date(t.entry_date).getTime()) / 86400000;
+    return days < 365;
+  });
+  const ltcg = closedTrades.filter(t => {
+    const days = (new Date(t.exit_date).getTime() - new Date(t.entry_date).getTime()) / 86400000;
+    return days >= 365;
+  });
+  const stcgGains = stcg.filter(t => t.return_pct > 0).reduce((s, t) => s + t.return_pct, 0);
+  const ltcgGains = ltcg.filter(t => t.return_pct > 0).reduce((s, t) => s + t.return_pct, 0);
+
+  // Win streak and max drawdown proxy
+  // Derive max drawdown from worst_trade as a proxy (actual portfolio DD not in API)
+  const maxDD = perf ? perf.worst_trade : null;
+  const calmar: number | null = null; // Not yet in API
+
+  return (
+    <div className="space-y-5">
+      <h2 className="text-base font-semibold text-slate-200 flex items-center gap-2">
+        <ShieldAlert className="w-4 h-4 text-amber-400" /> Risk Overview
+      </h2>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+
+        {/* Sector Concentration */}
+        <div className="rounded-xl border border-slate-700 bg-slate-800/40 p-5">
+          <h3 className="text-sm font-semibold text-slate-300 mb-4">Sector Concentration</h3>
+          {holdings.length === 0 ? (
+            <p className="text-sm text-slate-500">No open positions.</p>
+          ) : (
+            <div className="space-y-3">
+              {sectorEntries.map(([sector, count]) => {
+                const pct = (count / totalHoldings) * 100;
+                const over = pct > 30;
+                return (
+                  <div key={sector}>
+                    <div className="flex justify-between text-xs mb-1">
+                      <span className={over ? 'text-amber-400' : 'text-slate-300'}>{sector}</span>
+                      <span className={over ? 'text-amber-400 font-semibold' : 'text-slate-400'}>
+                        {count} / {totalHoldings} ({pct.toFixed(0)}%){over ? ' ⚠' : ''}
+                      </span>
+                    </div>
+                    <div className="h-1.5 bg-slate-700 rounded-full">
+                      <div
+                        className={cn('h-full rounded-full', over ? 'bg-amber-500' : 'bg-blue-500')}
+                        style={{ width: `${Math.min(100, pct)}%` }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Tax Summary */}
+        <div className="rounded-xl border border-slate-700 bg-slate-800/40 p-5">
+          <h3 className="text-sm font-semibold text-slate-300 mb-4">Tax Buckets (Closed Trades)</h3>
+          <div className="space-y-4">
+            <div>
+              <div className="flex justify-between text-xs text-slate-400 mb-1">
+                <span>STCG (&lt;12 months)</span>
+                <span>{stcg.length} trades</span>
+              </div>
+              <p className="text-lg font-bold text-amber-400">{stcgGains > 0 ? '+' : ''}{stcgGains.toFixed(1)}% gains</p>
+              <p className="text-xs text-slate-500 mt-0.5">Taxed at 20% flat (India FY26+)</p>
+            </div>
+            <div className="border-t border-slate-700 pt-4">
+              <div className="flex justify-between text-xs text-slate-400 mb-1">
+                <span>LTCG (≥12 months)</span>
+                <span>{ltcg.length} trades</span>
+              </div>
+              <p className="text-lg font-bold text-emerald-400">{ltcgGains > 0 ? '+' : ''}{ltcgGains.toFixed(1)}% gains</p>
+              <p className="text-xs text-slate-500 mt-0.5">Taxed at 12.5% above ₹1.25L exemption</p>
+            </div>
+          </div>
+        </div>
+
+        {/* Drawdown + Calmar */}
+        <div className="rounded-xl border border-slate-700 bg-slate-800/40 p-5">
+          <h3 className="text-sm font-semibold text-slate-300 mb-4">Strategy Risk Metrics</h3>
+          <div className="space-y-4">
+            <div>
+              <p className="text-xs text-slate-400">Max Drawdown</p>
+              <p className={cn('text-2xl font-bold mt-1', (maxDD ?? 0) < -20 ? 'text-red-400' : 'text-amber-400')}>
+                {maxDD != null ? maxDD.toFixed(1) + '%' : '—'}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs text-slate-400">Calmar Ratio</p>
+              <p className={cn('text-2xl font-bold mt-1', (calmar ?? 0) >= 0.7 ? 'text-emerald-400' : 'text-amber-400')}>
+                {calmar != null ? (calmar as number).toFixed(2) : '—'}
+              </p>
+              <p className="text-xs text-slate-500 mt-0.5">CAGR / |MaxDD| — higher is better</p>
+            </div>
+            <div>
+              <p className="text-xs text-slate-400">Open Positions</p>
+              <p className="text-2xl font-bold text-slate-200 mt-1">{holdings.length} / {perf?.n_open ?? '—'}</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function Portfolio() {
   const [config, setConfig] = useState<PortfolioConfig | null>(null);
   const [holdings, setHoldings] = useState<PortfolioHolding[]>([]);
@@ -487,7 +624,7 @@ export default function Portfolio() {
   const [loading, setLoading] = useState(false);
   const [evaluating, setEvaluating] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'signals' | 'holdings' | 'closed'>('signals');
+  const [activeTab, setActiveTab] = useState<'signals' | 'holdings' | 'closed' | 'risk'>('signals');
   const [initialized, setInitialized] = useState(false);
 
   const loadData = useCallback(async () => {
@@ -642,9 +779,10 @@ export default function Portfolio() {
       {/* Tabs */}
       <div className="flex gap-1 border-b border-slate-700">
         {([
-          ['signals', 'Signals', evalResult ? buys.length + sells.length + holds.length : null],
+          ['signals',  'Signals',        evalResult ? buys.length + sells.length + holds.length : null],
           ['holdings', 'Open Positions', holdings.length],
-          ['closed', 'Trade History', closedTrades.length],
+          ['closed',   'Trade History',  closedTrades.length],
+          ['risk',     'Risk View',      null],
         ] as [typeof activeTab, string, number | null][]).map(([tab, label, count]) => (
           <button
             key={tab}
@@ -772,6 +910,10 @@ export default function Portfolio() {
             : <ClosedTradesTable trades={closedTrades} />
           }
         </div>
+      )}
+
+      {activeTab === 'risk' && (
+        <RiskView holdings={holdings} closedTrades={closedTrades} perf={perf} />
       )}
 
       {/* Methodology note */}

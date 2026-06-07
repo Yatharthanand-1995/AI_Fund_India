@@ -3,15 +3,9 @@ import { Link, useLocation } from 'react-router-dom';
 import {
   TrendingUp,
   BarChart3,
-  Info,
   Activity,
-  PieChart,
   Star,
-  GitCompare,
   FlaskConical,
-  Settings,
-  Filter,
-  Lightbulb,
   Zap,
   Menu,
   X,
@@ -46,17 +40,11 @@ export default function Header() {
 
   const navItems = [
     { path: '/', label: 'Dashboard', icon: BarChart3 },
-    { path: '/ideas', label: 'Ideas', icon: TrendingUp },
-    { path: '/suggestions', label: 'Suggestions', icon: Lightbulb },
-    { path: '/screener', label: 'Screener', icon: Filter },
-    { path: '/sectors', label: 'Sectors', icon: PieChart },
-    { path: '/backtest', label: 'Backtest', icon: FlaskConical },
+    { path: '/research', label: 'Research', icon: TrendingUp },
     { path: '/portfolio', label: 'Portfolio', icon: Zap },
     { path: '/watchlist', label: 'Watchlist', icon: Star, badge: watchlistCount },
-    { path: '/compare', label: 'Compare', icon: GitCompare },
     { path: '/analytics', label: 'Analytics', icon: Activity },
-    { path: '/system', label: 'System', icon: Settings },
-    { path: '/about', label: 'About', icon: Info },
+    { path: '/backtest', label: 'Backtest', icon: FlaskConical },
   ];
 
   const severityColor = (severity: string) => {

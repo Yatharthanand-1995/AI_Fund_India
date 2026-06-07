@@ -16,6 +16,7 @@ import PortfolioMetrics from '@/components/portfolio/PortfolioMetrics';
 import PortfolioHoldingsTable from '@/components/portfolio/PortfolioHoldingsTable';
 import PortfolioInsights from '@/components/portfolio/PortfolioInsights';
 import PortfolioScoreHistory from '@/components/portfolio/PortfolioScoreHistory';
+import SignalFeed from '@/components/SignalFeed';
 
 type ViewTab = 'overview' | 'holdings' | 'insights';
 
@@ -142,6 +143,11 @@ export default function WatchlistEnhanced() {
           <div className="mt-6">
             {activeTab === 'overview' && (
               <div className="space-y-6">
+                {/* Signal Feed */}
+                <div className="bg-white rounded-xl border border-gray-200 p-5">
+                  <SignalFeed maxItems={8} />
+                </div>
+
                 {/* Score History */}
                 <PortfolioScoreHistory watchlist={watchlist} />
 
