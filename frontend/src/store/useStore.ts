@@ -11,6 +11,7 @@ import type {
   StockUniverseResponse,
   TopPicksResponse,
   WatchlistItem,
+  Alert,
 } from '@/types';
 import { generateId } from '@/lib/utils';
 
@@ -43,6 +44,11 @@ export interface TopPicksFilters {
 
 
 interface AppState {
+  // Alerts (singleton — polled in App.tsx to avoid multiple intervals)
+  alerts: Alert[];
+  setAlerts: (alerts: Alert[]) => void;
+  unreadAlertCount: number;
+
   // Market regime
   marketRegime: MarketRegime | null;
   setMarketRegime: (regime: MarketRegime | null) => void;
@@ -124,6 +130,11 @@ interface AppState {
 export const useStore = create<AppState>()(
   persist(
     (set, get) => ({
+  // Alerts
+  alerts: [],
+  setAlerts: (alerts) => set({ alerts, unreadAlertCount: alerts.filter(a => !a.is_read).length }),
+  unreadAlertCount: 0,
+
   // Market regime
   marketRegime: null,
   setMarketRegime: (regime) => set({ marketRegime: regime }),

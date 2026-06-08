@@ -16,7 +16,7 @@ Key Metrics:
 
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Set
 from datetime import datetime, timedelta
 import logging
 from dataclasses import dataclass
@@ -24,6 +24,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from core.stock_scorer import StockScorer
 from data.hybrid_provider import HybridDataProvider
+from data.nifty50_historical import get_nifty50_at_date
 from core.exceptions import DataValidationException
 
 logger = logging.getLogger(__name__)
@@ -111,11 +112,21 @@ class Backtester:
         summary = backtester.generate_summary(results)
     """
 
+    # Default transaction cost model for Indian equities (per leg, as a fraction):
+    #   STT (sell):      0.10%
+    #   Brokerage:       0.03%
+    #   GST on brokerage: ~0.005%
+    #   Stamp + SEBI:    0.015%
+    #   Slippage:        ~0.10%
+    #   Total per leg:  ~0.25%  →  round-trip: ~0.50%
+    DEFAULT_TRANSACTION_COST_PCT = 0.0025  # 0.25% per leg
+
     def __init__(
         self,
         scorer: Optional[StockScorer] = None,
         data_provider: Optional[HybridDataProvider] = None,
-        benchmark_symbol: str = '^NSEI'  # NIFTY 50
+        benchmark_symbol: str = '^NSEI',  # NIFTY 50
+        transaction_cost_pct: float = DEFAULT_TRANSACTION_COST_PCT
     ):
         """
         Initialize backtester
@@ -124,41 +135,73 @@ class Backtester:
             scorer: StockScorer instance (creates new if None)
             data_provider: Data provider (creates new if None)
             benchmark_symbol: Benchmark index symbol (default: NIFTY 50)
+            transaction_cost_pct: One-way transaction cost as a fraction (default 0.25%).
+                Applied twice (entry + exit) when computing net alpha.
         """
         self.scorer = scorer or StockScorer()
         self.data_provider = data_provider or HybridDataProvider()
         self.benchmark_symbol = benchmark_symbol
+        self.transaction_cost_pct = transaction_cost_pct
 
         # Cache for benchmark data
         self.benchmark_data: Optional[pd.DataFrame] = None
 
-        logger.info(f"Backtester initialized with benchmark: {benchmark_symbol}")
+        logger.info(
+            f"Backtester initialized with benchmark: {benchmark_symbol}, "
+            f"transaction cost: {transaction_cost_pct*100:.3f}% per leg "
+            f"({transaction_cost_pct*2*100:.3f}% round-trip)"
+        )
+
+    def get_universe_at_date(self, as_of_date: datetime, symbols: Optional[List[str]] = None) -> List[str]:
+        """
+        Return point-in-time universe for a given date.
+
+        If symbols is provided it is used directly (caller already supplies
+        a fixed universe — useful for single-stock or custom lists).
+        If symbols is None, returns the NIFTY 50 constituents valid on that
+        date from the historical constituency file (eliminates survivorship bias).
+        """
+        if symbols is not None:
+            return symbols
+        return get_nifty50_at_date(as_of_date)
 
     def run_backtest(
         self,
-        symbols: List[str],
+        symbols: Optional[List[str]],
         start_date: datetime,
         end_date: datetime,
         rebalance_frequency: str = 'monthly',  # 'daily', 'weekly', 'monthly', 'quarterly'
         forward_periods: List[int] = [20, 60, 120],  # Trading days for 1M, 3M, 6M
-        parallel: bool = True
+        parallel: bool = True,
+        use_point_in_time_universe: bool = True,
     ) -> List[BacktestResult]:
         """
-        Run backtest across multiple stocks and dates
+        Run backtest across multiple stocks and dates.
 
         Args:
-            symbols: List of stock symbols to backtest
+            symbols: List of stock symbols to backtest, or None to use point-in-time
+                     NIFTY 50 constituency for each rebalance date (recommended).
             start_date: Start date for backtest
             end_date: End date for backtest
             rebalance_frequency: How often to generate signals
             forward_periods: Forward periods to measure returns (in trading days)
             parallel: Run backtests in parallel
+            use_point_in_time_universe: When symbols=None, use historical NIFTY 50
+                constituency snapshots instead of today's list (eliminates
+                survivorship bias). Default True.
 
         Returns:
             List of BacktestResult objects
         """
-        logger.info(f"Starting backtest: {len(symbols)} stocks, {start_date.date()} to {end_date.date()}")
-        logger.info(f"Rebalance frequency: {rebalance_frequency}")
+        logger.info(f"Starting backtest: {start_date.date()} to {end_date.date()}")
+        if symbols is None and use_point_in_time_universe:
+            logger.info("Universe: point-in-time NIFTY 50 (survivorship-bias free)")
+        elif symbols is None:
+            from data.nifty_constituents import NIFTY_50
+            symbols = list(NIFTY_50.keys())
+            logger.warning("Universe: today's NIFTY 50 — survivorship bias present!")
+        else:
+            logger.info(f"Universe: {len(symbols)} custom symbols")
 
         # Generate backtest dates
         backtest_dates = self._generate_backtest_dates(start_date, end_date, rebalance_frequency)
@@ -167,67 +210,70 @@ class Backtester:
         # Load benchmark data once
         self._load_benchmark_data(start_date, end_date, max(forward_periods))
 
-        # Run backtest for each symbol and date
-        results = []
+        # Build per-date symbol lists (point-in-time or fixed)
+        # When symbols is None we resolved to use_point_in_time_universe above
+        date_symbol_pairs: List[Tuple[datetime, str]] = []
+        for date in backtest_dates:
+            universe = self.get_universe_at_date(date, symbols)
+            for sym in universe:
+                date_symbol_pairs.append((date, sym))
 
+        total_pairs = len(date_symbol_pairs)
+        unique_dates = len(set(d for d, _ in date_symbol_pairs))
+        unique_syms  = len(set(s for _, s in date_symbol_pairs))
+        logger.info(
+            f"Backtest tasks: {total_pairs} (dates={unique_dates}, "
+            f"unique_symbols={unique_syms})"
+        )
+
+        # Run backtest
+        results = []
         if parallel:
-            results = self._run_backtest_parallel(symbols, backtest_dates, forward_periods)
+            results = self._run_backtest_parallel_pairs(date_symbol_pairs, forward_periods)
         else:
-            results = self._run_backtest_sequential(symbols, backtest_dates, forward_periods)
+            results = self._run_backtest_sequential_pairs(date_symbol_pairs, forward_periods)
 
         logger.info(f"Backtest complete: {len(results)} signals generated")
         return results
 
-    def _run_backtest_sequential(
+    def _run_backtest_sequential_pairs(
         self,
-        symbols: List[str],
-        dates: List[datetime],
+        date_symbol_pairs: List[Tuple[datetime, str]],
         forward_periods: List[int]
     ) -> List[BacktestResult]:
-        """Run backtest sequentially"""
+        """Run backtest sequentially over (date, symbol) pairs"""
         results = []
-        total = len(symbols) * len(dates)
-        count = 0
-
-        for symbol in symbols:
-            for date in dates:
-                count += 1
-                if count % 10 == 0:
-                    logger.info(f"Progress: {count}/{total} ({count/total*100:.1f}%)")
-
-                try:
-                    result = self._backtest_single_point(symbol, date, forward_periods)
-                    if result:
-                        results.append(result)
-                except Exception as e:
-                    logger.warning(f"Failed to backtest {symbol} on {date.date()}: {e}")
-
+        total = len(date_symbol_pairs)
+        for count, (date, symbol) in enumerate(date_symbol_pairs, 1):
+            if count % 20 == 0:
+                logger.info(f"Progress: {count}/{total} ({count/total*100:.1f}%)")
+            try:
+                result = self._backtest_single_point(symbol, date, forward_periods)
+                if result:
+                    results.append(result)
+            except Exception as e:
+                logger.warning(f"Failed to backtest {symbol} on {date.date()}: {e}")
         return results
 
-    def _run_backtest_parallel(
+    def _run_backtest_parallel_pairs(
         self,
-        symbols: List[str],
-        dates: List[datetime],
+        date_symbol_pairs: List[Tuple[datetime, str]],
         forward_periods: List[int]
     ) -> List[BacktestResult]:
-        """Run backtest in parallel"""
+        """Run backtest in parallel over (date, symbol) pairs"""
         results = []
-        tasks = [(symbol, date) for symbol in symbols for date in dates]
+        total = len(date_symbol_pairs)
 
         with ThreadPoolExecutor(max_workers=4) as executor:
             future_to_task = {
                 executor.submit(self._backtest_single_point, symbol, date, forward_periods): (symbol, date)
-                for symbol, date in tasks
+                for date, symbol in date_symbol_pairs
             }
-
             completed = 0
-            total = len(tasks)
-
             for future in as_completed(future_to_task):
                 completed += 1
-                if completed % 10 == 0:
+                if completed % 20 == 0:
                     logger.info(f"Progress: {completed}/{total} ({completed/total*100:.1f}%)")
-
                 try:
                     result = future.result()
                     if result:
@@ -237,6 +283,15 @@ class Backtester:
                     logger.warning(f"Failed to backtest {symbol} on {date.date()}: {e}")
 
         return results
+
+    # Keep old methods as thin wrappers for backward compatibility
+    def _run_backtest_sequential(self, symbols, dates, forward_periods):
+        pairs = [(date, sym) for sym in symbols for date in dates]
+        return self._run_backtest_sequential_pairs(pairs, forward_periods)
+
+    def _run_backtest_parallel(self, symbols, dates, forward_periods):
+        pairs = [(date, sym) for sym in symbols for date in dates]
+        return self._run_backtest_parallel_pairs(pairs, forward_periods)
 
     def _backtest_single_point(
         self,
@@ -289,8 +344,17 @@ class Backtester:
                 # Note: We don't have historical fundamentals, so agents will work with price data only
             }
 
+            # Prevent look-ahead bias: only pass NIFTY data available as of entry_date.
+            # self.benchmark_data spans the full backtest window (including future dates for
+            # forward-return calculation), so we slice it here before scoring.
+            nifty_slice = pd.DataFrame()
+            if self.benchmark_data is not None and not self.benchmark_data.empty:
+                nifty_slice = self.benchmark_data[self.benchmark_data.index <= entry_date]
+                if nifty_slice.empty:
+                    logger.warning(f"No NIFTY data available on or before {entry_date.date()}")
+
             # Score the stock as of this date (using only data available then)
-            analysis = self.scorer.score_stock(symbol, nifty_data=self.benchmark_data, cached_data=cached_data)
+            analysis = self.scorer.score_stock(symbol, nifty_data=nifty_slice, cached_data=cached_data)
 
             if 'error' in analysis:
                 logger.warning(f"Skipping {symbol} on {date.date()}: Analysis error: {analysis.get('error')}")
@@ -313,10 +377,19 @@ class Backtester:
             # Calculate benchmark returns (use entry_date, not original date)
             benchmark_returns = self._calculate_benchmark_returns(entry_date, forward_periods)
 
-            # Calculate alpha (excess return vs benchmark)
-            alpha_1m = forward_returns.get(forward_periods[0], 0) - benchmark_returns.get(forward_periods[0], 0) if forward_returns.get(forward_periods[0]) and benchmark_returns.get(forward_periods[0]) else None
-            alpha_3m = forward_returns.get(forward_periods[1], 0) - benchmark_returns.get(forward_periods[1], 0) if forward_returns.get(forward_periods[1]) and benchmark_returns.get(forward_periods[1]) else None
-            alpha_6m = forward_returns.get(forward_periods[2], 0) - benchmark_returns.get(forward_periods[2], 0) if forward_returns.get(forward_periods[2]) and benchmark_returns.get(forward_periods[2]) else None
+            # Round-trip transaction cost in percentage points (entry leg + exit leg)
+            round_trip_cost_pct = self.transaction_cost_pct * 2 * 100
+
+            # Calculate net alpha = (stock return - benchmark return) - round-trip costs
+            # Both stock and benchmark returns are gross; costs apply once per round-trip.
+            def _net_alpha(stock_ret, bench_ret):
+                if stock_ret is None or bench_ret is None:
+                    return None
+                return (stock_ret - bench_ret) - round_trip_cost_pct
+
+            alpha_1m = _net_alpha(forward_returns.get(forward_periods[0]), benchmark_returns.get(forward_periods[0]))
+            alpha_3m = _net_alpha(forward_returns.get(forward_periods[1]), benchmark_returns.get(forward_periods[1]))
+            alpha_6m = _net_alpha(forward_returns.get(forward_periods[2]), benchmark_returns.get(forward_periods[2]))
 
             # Extract agent scores
             agent_scores = {
@@ -345,7 +418,7 @@ class Backtester:
                 alpha_3m=alpha_3m,
                 alpha_6m=alpha_6m,
                 agent_scores=agent_scores,
-                market_regime=None  # TODO: Add regime detection
+                market_regime=analysis.get('regime_info', {}).get('regime') if analysis.get('regime_info') else None
             )
 
         except Exception as e:

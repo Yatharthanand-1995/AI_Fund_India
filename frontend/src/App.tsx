@@ -3,7 +3,6 @@ import { useEffect, useState, lazy, Suspense } from 'react';
 import Header from './components/layout/Header';
 import { logger } from './lib/logger';
 import Dashboard from './pages/Dashboard';
-import Ideas from './pages/Ideas';
 import About from './pages/About';
 import NotFound from './pages/NotFound';
 import Toast from './components/ui/Toast';
@@ -12,22 +11,31 @@ import Loading from './components/ui/Loading';
 import { useStore } from './store/useStore';
 import api from './lib/api';
 
-// Lazy load heavy/less frequently accessed pages
+// Lazy load pages
+const Research = lazy(() => import('./pages/Research'));
 const StockDetails = lazy(() => import('./pages/StockDetails'));
 const Analytics = lazy(() => import('./pages/Analytics'));
-const SectorAnalysis = lazy(() => import('./pages/SectorAnalysis'));
 const WatchlistEnhanced = lazy(() => import('./pages/WatchlistEnhanced'));
-const Comparison = lazy(() => import('./pages/Comparison'));
 const Backtest = lazy(() => import('./pages/Backtest'));
-const SystemHealth = lazy(() => import('./pages/SystemHealth'));
-const Screener = lazy(() => import('./pages/Screener'));
-const Suggestions = lazy(() => import('./pages/Suggestions'));
 const Portfolio = lazy(() => import('./pages/Portfolio'));
 
 function App() {
-  const { setMarketRegime, setStockUniverse, cacheTopPicks } = useStore();
+  const { setMarketRegime, setStockUniverse, cacheTopPicks, setAlerts } = useStore();
   const [backendOnline, setBackendOnline] = useState<boolean | null>(null);
   const [bannerDismissed, setBannerDismissed] = useState(false);
+
+  // Singleton alerts polling — lives here so only one interval ever exists.
+  // Header reads alerts from the Zustand store instead of polling itself.
+  useEffect(() => {
+    const pollAlerts = () => {
+      api.getAlerts(false, 50)
+        .then(data => setAlerts(data.alerts ?? []))
+        .catch(() => {});
+    };
+    pollAlerts();
+    const timer = setInterval(pollAlerts, 60_000);
+    return () => clearInterval(timer);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load initial data — defined inside useEffect to avoid exhaustive-deps warning
   useEffect(() => {
@@ -105,17 +113,19 @@ function App() {
             <Suspense fallback={<div className="py-20"><Loading size="lg" text="Loading page..." /></div>}>
               <Routes>
                 <Route path="/" element={<ErrorBoundary><Dashboard /></ErrorBoundary>} />
-                <Route path="/ideas" element={<ErrorBoundary><Ideas /></ErrorBoundary>} />
-                <Route path="/top-picks" element={<ErrorBoundary><Ideas /></ErrorBoundary>} /> {/* Legacy redirect */}
-                <Route path="/screener" element={<ErrorBoundary><Screener /></ErrorBoundary>} />
-                <Route path="/suggestions" element={<ErrorBoundary><Suggestions /></ErrorBoundary>} />
+                {/* Research hub — Ideas, Screener, Suggestions */}
+                <Route path="/research" element={<ErrorBoundary><Research /></ErrorBoundary>} />
+                {/* Legacy redirects */}
+                <Route path="/ideas" element={<ErrorBoundary><Research /></ErrorBoundary>} />
+                <Route path="/top-picks" element={<ErrorBoundary><Research /></ErrorBoundary>} />
+                <Route path="/screener" element={<ErrorBoundary><Research /></ErrorBoundary>} />
+                <Route path="/suggestions" element={<ErrorBoundary><Research /></ErrorBoundary>} />
+                <Route path="/sectors" element={<ErrorBoundary><Analytics /></ErrorBoundary>} />
+                <Route path="/system" element={<ErrorBoundary><Analytics /></ErrorBoundary>} />
                 <Route path="/stock/:symbol" element={<ErrorBoundary><StockDetails /></ErrorBoundary>} />
                 <Route path="/analytics" element={<ErrorBoundary><Analytics /></ErrorBoundary>} />
-                <Route path="/sectors" element={<ErrorBoundary><SectorAnalysis /></ErrorBoundary>} />
                 <Route path="/watchlist" element={<ErrorBoundary><WatchlistEnhanced /></ErrorBoundary>} />
-                <Route path="/compare" element={<ErrorBoundary><Comparison /></ErrorBoundary>} />
                 <Route path="/backtest" element={<ErrorBoundary><Backtest /></ErrorBoundary>} />
-                <Route path="/system" element={<ErrorBoundary><SystemHealth /></ErrorBoundary>} />
                 <Route path="/portfolio" element={<ErrorBoundary><Portfolio /></ErrorBoundary>} />
                 <Route path="/about" element={<ErrorBoundary><About /></ErrorBoundary>} />
                 <Route path="*" element={<NotFound />} />

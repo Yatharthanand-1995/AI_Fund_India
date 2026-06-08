@@ -70,7 +70,7 @@ class TestAnalyzeEndpoint:
              patch('api.main.narrative_engine') as mock_narrative:
 
             mock_scorer.score_stock.return_value = {
-                'symbol': 'TCS',
+                'symbol': 'NARRATIVE_TEST_SYM',
                 'composite_score': 78.5,
                 'recommendation': 'BUY',
                 'confidence': 0.82,
@@ -89,7 +89,7 @@ class TestAnalyzeEndpoint:
 
             response = api_client.post(
                 '/analyze',
-                json={'symbol': 'TCS', 'include_narrative': True}
+                json={'symbol': 'NARRATIVE_TEST_SYM', 'include_narrative': True}
             )
 
             assert response.status_code == 200

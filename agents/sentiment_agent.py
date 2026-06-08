@@ -187,9 +187,26 @@ class SentimentAgent:
                     f"→ {revision_adj:+.1f} pts"
                 )
 
+            # Earnings surprise adjustment (±12 pts, 90-day decay)
+            # Actual EPS vs analyst consensus — post-earnings drift in Indian markets
+            # lasts 6-8 weeks. Strong beats add up to +12 pts; misses subtract up to -12.
+            surprise_data = self._fetch_earnings_surprise(cached_data)
+            earnings_surprise_adj = self._score_earnings_surprise(surprise_data)
+            metrics['earnings_surprise_pct']   = surprise_data.get('surprise_pct')
+            metrics['earnings_surprise_date']  = surprise_data.get('announcement_date')
+            metrics['earnings_actual_eps']     = surprise_data.get('actual_eps')
+            metrics['earnings_estimated_eps']  = surprise_data.get('estimated_eps')
+            if earnings_surprise_adj != 0.0:
+                logger.debug(
+                    f"Earnings surprise for {symbol}: {surprise_data.get('surprise_pct'):+.1f}% "
+                    f"({surprise_data.get('months_since', 0):.1f}mo ago) "
+                    f"→ {earnings_surprise_adj:+.1f} pts"
+                )
+
             # Calculate total score (clamped to 0–100)
             total_score = max(0.0, min(100.0,
-                diffusion_score + target_price_score + coverage_score + news_adjustment + revision_adj
+                diffusion_score + target_price_score + coverage_score
+                + news_adjustment + revision_adj + earnings_surprise_adj
             ))
 
             # Calculate confidence
@@ -210,11 +227,12 @@ class SentimentAgent:
                 'reasoning': reasoning,
                 'metrics': metrics,
                 'breakdown': {
-                    'diffusion_score': round(diffusion_score, 2),
-                    'target_price_score': round(target_price_score, 2),
-                    'coverage_score': round(coverage_score, 2),
-                    'news_adjustment': round(news_adjustment, 2),
-                    'revision_adjustment': round(revision_adj, 2),
+                    'diffusion_score':        round(diffusion_score, 2),
+                    'target_price_score':     round(target_price_score, 2),
+                    'coverage_score':         round(coverage_score, 2),
+                    'news_adjustment':        round(news_adjustment, 2),
+                    'revision_adjustment':    round(revision_adj, 2),
+                    'earnings_surprise_adj':  round(earnings_surprise_adj, 2),
                 },
                 'status': 'success',
                 'agent': self.agent_name
@@ -493,6 +511,124 @@ class SentimentAgent:
         score = revision_data.get('revision_score', 0.0)  # -1 to +1
         return round(float(np.clip(score * 10.0, -10.0, 10.0)), 2)
 
+    def _fetch_earnings_surprise(self, cached_data: Optional[Dict]) -> Dict:
+        """
+        Extract the most recent quarterly earnings surprise from cached_data.
+
+        Returns:
+          {
+            'surprise_pct': float | None,   # (actual - estimate) / |estimate| × 100
+            'quarters_ago': float | None,   # how many months since the announcement
+            'announcement_date': str | None,
+            'actual_eps': float | None,
+            'estimated_eps': float | None,
+          }
+
+        Data source: yahoo_provider fetches ticker.earnings_dates which has
+        'Reported EPS', 'EPS Estimate', 'Surprise(%)' columns indexed by date.
+        Only uses results announced in the past 90 days (signal decays after that).
+        """
+        empty = {'surprise_pct': None, 'quarters_ago': None,
+                 'announcement_date': None, 'actual_eps': None, 'estimated_eps': None}
+
+        if not cached_data:
+            return empty
+
+        earnings_dates = cached_data.get('earnings_dates')
+        if earnings_dates is None or (hasattr(earnings_dates, 'empty') and earnings_dates.empty):
+            return empty
+
+        try:
+            now_utc = pd.Timestamp.now(tz='UTC')
+            # Filter to past announcements only (no future estimates)
+            past = earnings_dates[earnings_dates.index <= now_utc].copy()
+            past = past.dropna(subset=['Reported EPS', 'EPS Estimate'])
+            if past.empty:
+                return empty
+
+            # Most recent past quarter
+            latest = past.sort_index(ascending=False).iloc[0]
+            ann_date = latest.name
+            if hasattr(ann_date, 'tz_convert'):
+                ann_date_utc = ann_date.tz_convert('UTC')
+            else:
+                ann_date_utc = ann_date
+
+            days_since = (now_utc - ann_date_utc).days
+            months_since = days_since / 30.5
+
+            # Only use if announced within 90 days — beyond that the signal has faded
+            if days_since > 90:
+                return empty
+
+            actual_eps = float(latest['Reported EPS'])
+            est_eps = float(latest['EPS Estimate'])
+
+            # Use yfinance pre-computed Surprise(%) if available, else compute
+            if 'Surprise(%)' in latest.index and pd.notna(latest['Surprise(%)']):
+                surprise_pct = float(latest['Surprise(%)'])
+            elif abs(est_eps) > 0.001:
+                surprise_pct = (actual_eps - est_eps) / abs(est_eps) * 100
+            else:
+                return empty
+
+            return {
+                'surprise_pct':       round(surprise_pct, 2),
+                'quarters_ago':       round(months_since / 3, 1),
+                'months_since':       round(months_since, 1),
+                'announcement_date':  ann_date_utc.strftime('%Y-%m-%d'),
+                'actual_eps':         round(actual_eps, 2),
+                'estimated_eps':      round(est_eps, 2),
+            }
+        except Exception as e:
+            logger.debug(f"Earnings surprise fetch failed: {e}")
+            return empty
+
+    def _score_earnings_surprise(self, surprise_data: Dict) -> float:
+        """
+        Score adjustment for earnings surprise (±12 pts, decaying with time).
+
+        Logic:
+          - Strong beat (>10%):  +12 pts at announcement → decays to 0 at 90 days
+          - Moderate beat (3-10%): +7 pts decayed
+          - Small beat (1-3%):    +3 pts decayed
+          - In-line (-1 to 1%):    0 pts
+          - Miss (-1 to -5%):    -5 pts decayed
+          - Big miss (>5%):      -10 pts decayed
+
+        Decay: linear from full score at day 0 to 0 at day 90.
+        Rationale: Indian large-caps show post-earnings drift for ~6-8 weeks
+        (price discovery is slower than US markets due to lower institutional HFT).
+        """
+        surprise_pct = surprise_data.get('surprise_pct')
+        months_since = surprise_data.get('months_since')
+
+        if surprise_pct is None or months_since is None:
+            return 0.0
+
+        days_since = months_since * 30.5
+        if days_since > 90:
+            return 0.0
+
+        # Decay factor: 1.0 at day 0 → 0.0 at day 90
+        decay = max(0.0, 1.0 - days_since / 90.0)
+
+        # Base score by surprise magnitude
+        if surprise_pct >= 10:
+            base = 12.0
+        elif surprise_pct >= 5:
+            base = 8.0
+        elif surprise_pct >= 2:
+            base = 4.0
+        elif surprise_pct >= -1:
+            base = 0.0    # in-line — no adjustment
+        elif surprise_pct >= -5:
+            base = -6.0
+        else:
+            base = -12.0  # big miss
+
+        return round(base * decay, 2)
+
     def _calculate_confidence(self, metrics: Dict) -> float:
         """
         Calculate confidence level (0-1)
@@ -572,6 +708,18 @@ class SentimentAgent:
                 reasons.append(f"Negative news flow ({bull}B/{bear}Be of {headline_count})")
             else:
                 reasons.append(f"Neutral news ({headline_count} headlines)")
+
+        # Earnings surprise
+        surprise_pct = metrics.get('earnings_surprise_pct')
+        surprise_date = metrics.get('earnings_surprise_date')
+        if surprise_pct is not None and surprise_date is not None:
+            label = (
+                f"Strong beat: +{surprise_pct:.1f}%" if surprise_pct >= 5 else
+                f"Beat: +{surprise_pct:.1f}%" if surprise_pct >= 2 else
+                f"Miss: {surprise_pct:.1f}%" if surprise_pct < -1 else
+                f"In-line: {surprise_pct:+.1f}%"
+            )
+            reasons.append(f"Q-EPS {label} ({surprise_date})")
 
         if not reasons:
             reasons.append("Limited analyst data")

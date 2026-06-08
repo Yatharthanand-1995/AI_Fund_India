@@ -300,6 +300,10 @@ class StockAnalysisResponse(BaseModel):
     # Market regime
     market_regime: Optional[Dict] = Field(None, description="Current market regime")
 
+    # Score breakdown — shows how composite was built so users can verify
+    # composite = weighted_sum + total_overlay_adj + regime_adj
+    score_breakdown: Optional[Dict] = Field(None, description="Overlay adjustments applied on top of weighted score")
+
     # Narrative (optional)
     narrative: Optional[NarrativeResponse] = None
 
@@ -563,6 +567,50 @@ def format_agent_scores(agent_results: Dict) -> Dict[str, AgentScore]:
     return formatted
 
 
+def _build_score_breakdown(result: Dict) -> Dict:
+    """
+    Build a verifiable score breakdown from scorer result.
+
+    Batch scoring has two stages:
+      Stage 1: raw_score = weighted_sum + total_overlay + regime_adj
+      Stage 2: percentile normalization across all NIFTY50 stocks (cross-sectional)
+               → composite_score (what is displayed)
+
+    raw_composite_score is preserved by the scorer before normalization.
+    """
+    weights = result.get('weights_used', {})
+    agent_scores = result.get('agent_scores', {})
+
+    # Identify successful agents (same rule as scorer) for weight renormalization
+    successful = {
+        k: ag for k, ag in agent_scores.items()
+        if isinstance(ag, dict) and ag.get('status') != 'error' and ag.get('score') is not None
+    }
+    raw_weight_sum = sum(weights.get(k, 0) for k in successful) or 1.0
+    normalized = {k: weights.get(k, 0) / raw_weight_sum for k in successful}
+    weighted_sum = sum(normalized[k] * successful[k]['score'] for k in successful)
+    failed_agents = [k for k in weights if k not in successful]
+
+    raw_score = result.get('raw_composite_score')  # pre-normalization score
+    final_score = result.get('composite_score', 0.0)
+    normalization_applied = raw_score is not None and abs(final_score - raw_score) > 0.05
+
+    return {
+        'weighted_sum': round(weighted_sum, 2),
+        'failed_agents': failed_agents,
+        'currency_adj': result.get('currency_adjustment', 0.0),
+        'rbi_adj': result.get('rbi_adjustment', 0.0),
+        'earnings_acc_adj': result.get('earnings_acceleration_adj', 0.0),
+        'rs_accel_adj': result.get('rs_acceleration_adj', 0.0),
+        'crude_adj': result.get('crude_adjustment', 0.0),
+        'total_overlay': result.get('total_overlay_adj', 0.0),
+        'regime_adj': result.get('regime_adjustment', 0.0),
+        'raw_score': round(raw_score, 2) if raw_score is not None else round(weighted_sum + result.get('total_overlay_adj', 0.0) + result.get('regime_adjustment', 0.0), 2),
+        'normalization_applied': normalization_applied,
+        'final': final_score,
+    }
+
+
 # ============================================================================
 # API Endpoints
 # ============================================================================
@@ -762,7 +810,8 @@ async def analyze_batch(body: BatchAnalyzeRequest, request: Request):
                     'weights': result.get('weights_used', {}),
                     'market_regime': regime,
                     'timestamp': datetime.now().isoformat(),
-                    'cached': False
+                    'cached': False,
+                    'score_breakdown': _build_score_breakdown(result),
                 }
 
                 # Generate narrative if requested
@@ -863,6 +912,10 @@ async def get_top_picks(
         logger.info(f"Scoring {len(nifty_50_symbols)} NIFTY 50 stocks...")
         batch_results = await run_in_thread(stock_scorer.score_stocks_batch, symbols=nifty_50_symbols)
 
+        # Filter out ERROR stocks before slicing — stale cache or data gaps
+        # can produce composite=50/recommendation=ERROR entries that pollute the table
+        batch_results = [r for r in batch_results if r.get('recommendation') != 'ERROR']
+
         # Format and sort by score
         formatted_results = []
         for result in batch_results[:limit]:  # Top N
@@ -884,7 +937,8 @@ async def get_top_picks(
                     'weights': result.get('weights_used', {}),
                     'market_regime': regime,
                     'timestamp': datetime.now().isoformat(),
-                    'cached': False
+                    'cached': False,
+                    'score_breakdown': _build_score_breakdown(result),
                 }
 
                 # Generate narrative if requested
@@ -1170,7 +1224,8 @@ async def get_stock_history(
         # Get historical data from database
         history = historical_db.get_stock_history(symbol=symbol, days=days)
 
-        if not history:
+        # None means a database/fetch error; empty list means no analyses yet (valid state)
+        if history is None:
             raise HTTPException(
                 status_code=404,
                 detail=f"No historical data found for {symbol}"
@@ -1184,24 +1239,36 @@ async def get_stock_history(
         scores = []
 
         for record in history:
+            score = record.get('composite_score')
+            if score is None:
+                continue  # skip malformed records
             point = HistoricalDataPoint(
                 timestamp=record['timestamp'],
-                composite_score=record['composite_score'],
-                recommendation=record['recommendation'],
-                confidence=record['confidence'],
-                price=record['price'] if include_price else None
+                composite_score=score,
+                recommendation=record.get('recommendation', 'UNKNOWN'),
+                confidence=record.get('confidence', 0.0),
+                price=record.get('price') if include_price else None
             )
             history_points.append(point)
-            scores.append(record['composite_score'])
+            scores.append(score)
 
-        # Calculate statistics
-        statistics = {
-            'avg_score': sum(scores) / len(scores),
-            'min_score': min(scores),
-            'max_score': max(scores),
-            'current_score': scores[0] if scores else 0,
-            'change': scores[0] - scores[-1] if len(scores) > 1 else 0
-        }
+        # Calculate statistics — guard against empty scores list
+        if scores:
+            statistics = {
+                'avg_score': round(sum(scores) / len(scores), 2),
+                'min_score': min(scores),
+                'max_score': max(scores),
+                'current_score': scores[0],
+                'change': round(scores[0] - scores[-1], 2) if len(scores) > 1 else 0
+            }
+        else:
+            statistics = {
+                'avg_score': 0,
+                'min_score': 0,
+                'max_score': 0,
+                'current_score': 0,
+                'change': 0
+            }
 
         return StockHistoryResponse(
             symbol=symbol,
@@ -1571,15 +1638,36 @@ async def update_portfolio_config(
     stop_loss_pct: Optional[float] = None,
     max_positions: Optional[int] = None,
     sector_cap_pct: Optional[float] = None,
+    # Config A — exit mechanism params
+    min_hold_months: Optional[int] = None,
+    profit_trigger_pct: Optional[float] = None,
+    profit_trail_pct: Optional[float] = None,
+    rs_exit_enabled: Optional[bool] = None,
+    rs_exit_percentile: Optional[float] = None,
+    rs_exit_strikes: Optional[int] = None,
+    m3_maxhold_enabled: Optional[bool] = None,
+    m3_12m_decay: Optional[float] = None,
+    m3_18m_decay: Optional[float] = None,
+    m3_cooldown_months: Optional[int] = None,
 ):
-    """Update signal thresholds and position limits."""
+    """Update signal thresholds and position limits (all Config A params supported)."""
     try:
         updates = {k: v for k, v in {
-            'buy_threshold': buy_threshold,
-            'sell_threshold': sell_threshold,
-            'stop_loss_pct': stop_loss_pct,
-            'max_positions': max_positions,
-            'sector_cap_pct': sector_cap_pct,
+            'buy_threshold':      buy_threshold,
+            'sell_threshold':     sell_threshold,
+            'stop_loss_pct':      stop_loss_pct,
+            'max_positions':      max_positions,
+            'sector_cap_pct':     sector_cap_pct,
+            'min_hold_months':    min_hold_months,
+            'profit_trigger_pct': profit_trigger_pct,
+            'profit_trail_pct':   profit_trail_pct,
+            'rs_exit_enabled':    rs_exit_enabled,
+            'rs_exit_percentile': rs_exit_percentile,
+            'rs_exit_strikes':    rs_exit_strikes,
+            'm3_maxhold_enabled': m3_maxhold_enabled,
+            'm3_12m_decay':       m3_12m_decay,
+            'm3_18m_decay':       m3_18m_decay,
+            'm3_cooldown_months': m3_cooldown_months,
         }.items() if v is not None}
         return portfolio_manager.update_config(**updates).to_dict()
     except Exception as e:
@@ -1642,6 +1730,23 @@ async def evaluate_portfolio_signals(symbols: Optional[List[str]] = None):
         # Get current regime
         regime_data = await run_in_thread(market_regime_service.get_current_regime)
         regime = regime_data.get('regime', 'UNKNOWN') if regime_data else 'UNKNOWN'
+
+        # Supply recent price history to enable correlation guard in evaluate()
+        try:
+            import yfinance as yf
+            price_map = {}
+            for sym in universe:
+                try:
+                    ticker = yf.Ticker(f"{sym}.NS")
+                    hist = ticker.history(period='4mo')
+                    if not hist.empty:
+                        price_map[sym] = hist['Close']
+                except Exception:
+                    pass
+            if price_map:
+                portfolio_manager.set_price_history(price_map)
+        except Exception:
+            pass  # correlation guard simply won't fire if data unavailable
 
         result = portfolio_manager.evaluate(valid, regime=regime)
         return result.to_dict()
@@ -1906,10 +2011,17 @@ async def compare_stocks(request: CompareRequest):
                     # Generate narrative if requested (but not for comparison by default)
                     narrative_data = None
 
-                    # Build agent scores
+                    # Build agent scores — guard against None scores from failed agents
                     agent_scores_dict = {}
                     for agent_name, score_data in result.get('agent_scores', {}).items():
-                        agent_scores_dict[agent_name] = AgentScore(**score_data)
+                        if score_data.get('score') is None:
+                            score_data = {**score_data, 'score': 0.0}
+                        if score_data.get('confidence') is None:
+                            score_data = {**score_data, 'confidence': 0.0}
+                        try:
+                            agent_scores_dict[agent_name] = AgentScore(**score_data)
+                        except Exception:
+                            pass  # skip malformed agent result rather than crashing compare
 
                     analysis = StockAnalysisResponse(
                         symbol=symbol,

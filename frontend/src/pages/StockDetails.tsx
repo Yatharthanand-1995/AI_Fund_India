@@ -16,7 +16,7 @@ import {
   Activity,
   BarChart3,
   GitCompare,
-  Calendar
+  Calendar,
 } from 'lucide-react';
 import { useStore } from '@/store/useStore';
 import { useWatchlist } from '@/hooks/useWatchlist';
@@ -232,6 +232,84 @@ export default function StockDetails() {
           {activeTab === 'overview' && (
             <div className="space-y-6">
               <StockCard analysis={analysis} detailed={false} />
+
+              {/* Entry / Exit Levels */}
+              {analysis.trading_levels && (
+                <div className="bg-gray-50 rounded-xl border border-gray-200 p-5">
+                  <h3 className="text-sm font-semibold text-gray-700 mb-4 flex items-center gap-2">
+                    <Activity className="w-4 h-4 text-blue-500" />
+                    Entry / Exit Levels
+                  </h3>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    {[
+                      { label: 'Stop Loss', value: analysis.trading_levels.stop_loss, prefix: '₹', color: 'text-red-600' },
+                      { label: 'Target Price', value: analysis.trading_levels.target_price, prefix: '₹', color: 'text-emerald-600' },
+                      { label: 'Risk / Reward', value: analysis.trading_levels.risk_reward_ratio, prefix: '', suffix: 'x', color: 'text-blue-600' },
+                      { label: 'ATR (14d)', value: analysis.trading_levels.atr, prefix: '₹', color: 'text-gray-700' },
+                    ].map(({ label, value, prefix, suffix, color }) => value != null && (
+                      <div key={label} className="bg-white rounded-lg p-4 border border-gray-200">
+                        <p className="text-xs text-gray-500 font-medium">{label}</p>
+                        <p className={`text-xl font-bold mt-1 ${color}`}>
+                          {prefix}{typeof value === 'number' ? value.toFixed(value < 10 ? 2 : 0) : value}{suffix || ''}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                  {analysis.week_52_high != null && analysis.week_52_low != null && (
+                    <div className="mt-4">
+                      <div className="flex justify-between text-xs text-gray-500 mb-1">
+                        <span>52W Low: ₹{analysis.week_52_low?.toFixed(0)}</span>
+                        <span>52W High: ₹{analysis.week_52_high?.toFixed(0)}</span>
+                      </div>
+                      <div className="relative h-2 bg-gray-200 rounded-full">
+                        {analysis.current_price != null && analysis.week_52_high != null && analysis.week_52_low != null && (
+                          <div
+                            className="absolute h-full w-2 bg-blue-500 rounded-full -ml-1"
+                            style={{
+                              left: `${Math.min(100, Math.max(0, ((analysis.current_price - analysis.week_52_low) / (analysis.week_52_high - analysis.week_52_low)) * 100))}%`
+                            }}
+                          />
+                        )}
+                      </div>
+                      <p className="text-xs text-gray-400 mt-1 text-center">Current price position on 52W range</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* News Sentiment */}
+              {(() => {
+                const s = analysis.agent_scores?.sentiment?.metrics;
+                const headlines = s?.news_headline_count;
+                if (!headlines || headlines === 0) return null;
+                const bullish = s?.news_bullish_count ?? 0;
+                const bearish = s?.news_bearish_count ?? 0;
+                const neutral = headlines - bullish - bearish;
+                const sentiment = s?.news_sentiment_score ?? 0;
+                return (
+                  <div className="bg-gray-50 rounded-xl border border-gray-200 p-5">
+                    <h3 className="text-sm font-semibold text-gray-700 mb-4">News Sentiment ({headlines} headlines)</h3>
+                    <div className="flex items-center gap-4 mb-3">
+                      <div className="flex-1 h-3 bg-gray-200 rounded-full overflow-hidden flex">
+                        <div className="bg-emerald-400 h-full" style={{ width: `${(bullish / headlines) * 100}%` }} />
+                        <div className="bg-red-400 h-full" style={{ width: `${(bearish / headlines) * 100}%` }} />
+                        <div className="bg-gray-300 h-full flex-1" />
+                      </div>
+                      <span className={`text-sm font-bold ${sentiment > 0 ? 'text-emerald-600' : sentiment < 0 ? 'text-red-600' : 'text-gray-500'}`}>
+                        {sentiment > 0 ? '+' : ''}{sentiment.toFixed(2)}
+                      </span>
+                    </div>
+                    <div className="flex gap-4 text-xs text-gray-500">
+                      <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-400 inline-block" />{bullish} bullish</span>
+                      <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-400 inline-block" />{bearish} bearish</span>
+                      <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-gray-300 inline-block" />{neutral} neutral</span>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Score Breakdown */}
+              <ScoreBreakdown analysis={analysis} />
             </div>
           )}
 

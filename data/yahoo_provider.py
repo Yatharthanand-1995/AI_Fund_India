@@ -137,21 +137,23 @@ class YahooFinanceProvider(BaseDataProvider):
 
             logger.info(f"Fetching historical data for {symbol_with_suffix} (period: {period})")
 
-            # Download data
+            # Use yf.Ticker().history() instead of yf.download() — the latter uses
+            # a shared internal session and is NOT safe to call from multiple threads
+            # concurrently (it can mix up OHLCV rows across simultaneous requests).
+            # Ticker().history() creates an isolated per-symbol session and is thread-safe.
+            ticker_obj = yf.Ticker(symbol_with_suffix)
             if start_date and end_date:
-                df = yf.download(
-                    symbol_with_suffix,
+                df = ticker_obj.history(
                     start=start_date,
                     end=end_date,
-                    progress=False,
-                    timeout=self.timeout
+                    timeout=self.timeout,
+                    auto_adjust=True,
                 )
             else:
-                df = yf.download(
-                    symbol_with_suffix,
+                df = ticker_obj.history(
                     period=period,
-                    progress=False,
-                    timeout=self.timeout
+                    timeout=self.timeout,
+                    auto_adjust=True,
                 )
 
             if df.empty:
@@ -357,6 +359,18 @@ class YahooFinanceProvider(BaseDataProvider):
                 week_52_high = week_52_high or float(last_year['High'].max())
                 week_52_low = week_52_low or float(last_year['Low'].min())
 
+            # Fetch earnings surprise data (actual EPS vs analyst estimate)
+            # Used by SentimentAgent for earnings surprise signal
+            earnings_dates = None
+            try:
+                earnings_dates = ticker.earnings_dates
+                # Normalize timezone so downstream code can compare with tz-naive dates
+                if earnings_dates is not None and not earnings_dates.empty:
+                    if earnings_dates.index.tz is not None:
+                        earnings_dates.index = earnings_dates.index.tz_convert('UTC')
+            except Exception:
+                pass
+
             # Assemble comprehensive data
             comprehensive_data = {
                 'symbol': symbol,
@@ -374,12 +388,14 @@ class YahooFinanceProvider(BaseDataProvider):
                 'info': info,
                 'financials': financials_data.get('financials', pd.DataFrame()),
                 'quarterly_financials': financials_data.get('quarterly_financials', pd.DataFrame()),
+                'earnings_dates': earnings_dates,   # NEW: EPS surprise history
                 'data_completeness': {
                     'has_historical': not historical_data.empty,
                     'has_financials': not financials_data.get('financials', pd.DataFrame()).empty,
                     'has_quarterly': not financials_data.get('quarterly_financials', pd.DataFrame()).empty,
                     'has_info': bool(info),
-                    'has_technical': bool(technical_data)
+                    'has_technical': bool(technical_data),
+                    'has_earnings_surprise': earnings_dates is not None and not earnings_dates.empty,
                 },
                 'timestamp': datetime.now().isoformat(),
                 'provider': self.provider_name

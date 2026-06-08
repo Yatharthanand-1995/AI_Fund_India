@@ -53,15 +53,17 @@ class TestSentimentScoreRange:
     def _run(self, info: dict) -> dict:
         return self.agent.analyze('TEST', {'info': info})
 
-    def test_all_none_returns_50(self):
+    def test_all_none_returns_none(self):
+        # No analyst data → thin-coverage / no-data guard → score=None so composite
+        # re-normalises weights rather than being anchored at a meaningless 50.
         result = self._run({})
-        assert result['score'] == pytest.approx(50.0, abs=0.01)
+        assert result['score'] is None
+        assert result['status'] == 'no_data'
 
-    def test_all_none_confidence_low(self):
+    def test_all_none_confidence_zero(self):
         result = self._run({})
-        # Base confidence only (no recommendation, target price, or analyst data)
-        # confidence = 0.3 (base) with no additions
-        assert result['confidence'] == pytest.approx(0.3, abs=0.01)
+        # No data → confidence = 0.0 (excluded from composite)
+        assert result['confidence'] == pytest.approx(0.0, abs=0.01)
 
     def test_perfect_data_reaches_100(self):
         """Strong Buy (rec=1.0), high upside (50%), and 30 analysts → score 100."""
@@ -146,7 +148,7 @@ class TestSentimentScoreRange:
         )
 
     def test_breakdown_sums_to_score_real_data(self):
-        """Live breakdown must sum to the returned score."""
+        """Live breakdown components (diffusion + target + coverage + adjustments) == score."""
         info = {
             'recommendationMean': 2.1,
             'targetMeanPrice': 3500.0,
@@ -154,8 +156,16 @@ class TestSentimentScoreRange:
             'numberOfAnalystOpinions': 15,
         }
         result = self._run(info)
+        assert result['score'] is not None, "Expected a score with adequate analyst coverage"
         bd = result['breakdown']
-        total = bd['recommendation_score'] + bd['target_price_score'] + bd['coverage_score']
+        # Current breakdown keys (AQR/FactSet standard):
+        total = (
+            bd.get('diffusion_score', 0)
+            + bd.get('target_price_score', 0)
+            + bd.get('coverage_score', 0)
+            + bd.get('news_adjustment', 0)
+            + bd.get('revision_adjustment', 0)
+        )
         assert total == pytest.approx(result['score'], abs=0.01)
 
 
@@ -172,27 +182,39 @@ class TestSentimentComponentMaxes:
     def test_recommendation_max_is_55(self):
         assert self.agent._score_recommendation({'recommendation_mean': 1.0}) == 55
 
-    def test_recommendation_none_is_neutral(self):
-        assert self.agent._score_recommendation({'recommendation_mean': None}) == 28
+    def test_recommendation_none_is_zero(self):
+        # No recommendation data → 0 contribution (not a neutral 28).
+        # Agent returns score=None for no-data; individual helper returns 0.
+        assert self.agent._score_recommendation({'recommendation_mean': None}) == 0
 
-    def test_target_price_max_is_33(self):
+    def test_target_price_max_is_30(self):
+        # Upside ≥ high threshold → 30 pts (updated from legacy 33)
         metrics = {'upside_percent': 50.0}
-        assert self.agent._score_target_price(metrics) == 33
+        assert self.agent._score_target_price(metrics) == 30
 
-    def test_target_price_none_is_neutral(self):
-        assert self.agent._score_target_price({'upside_percent': None}) == 17
+    def test_target_price_none_is_zero(self):
+        # No upside data → 0 contribution
+        assert self.agent._score_target_price({'upside_percent': None}) == 0
 
-    def test_coverage_max_is_12(self):
-        assert self.agent._score_analyst_coverage({'number_of_analyst_opinions': 25}) == 12
+    def test_coverage_max_is_20(self):
+        # ≥ 20 analysts → 20 pts (updated from legacy 12)
+        assert self.agent._score_analyst_coverage({'number_of_analyst_opinions': 25}) == 20
 
-    def test_coverage_none_is_five(self):
-        assert self.agent._score_analyst_coverage({'number_of_analyst_opinions': None}) == 5
+    def test_coverage_none_is_zero(self):
+        # No analyst count → 0 contribution
+        assert self.agent._score_analyst_coverage({'number_of_analyst_opinions': None}) == 0
 
-    def test_max_sum_is_100(self):
-        assert 55 + 33 + 12 == 100
+    def test_main_breakdown_sums_to_100(self):
+        # Main analyze() breakdown: diffusion(50) + target(30) + coverage(20) = 100
+        assert 50 + 30 + 20 == 100
 
-    def test_neutral_sum_is_50(self):
-        assert 28 + 17 + 5 == 50
+    def test_neutral_result_sum_is_50(self):
+        # _neutral_result() helper still returns score=50 with legacy breakdown for
+        # callers that need a neutral fallback (not the same path as no-data).
+        neutral = self.agent._neutral_result("test")
+        bd = neutral['breakdown']
+        total = bd['recommendation_score'] + bd['target_price_score'] + bd['coverage_score']
+        assert total == pytest.approx(neutral['score'], abs=0.01)
 
 
 # ===========================================================================
@@ -205,17 +227,22 @@ class TestFundamentalsNeutral:
     def setup_method(self):
         self.agent = FundamentalsAgent()
 
-    def test_no_data_returns_score_50(self):
+    def test_no_data_returns_none(self):
+        # Fundamentals agent returns score=None when no financial data is available
+        # so the composite re-normalises weights rather than anchoring at 50.
         result = self.agent.analyze('TEST', {'info': {}, 'historical_data': _make_price_df()})
-        assert result['score'] == pytest.approx(50.0, abs=0.1)
+        assert result['score'] is None
+        assert result['status'] == 'no_data'
 
-    def test_no_data_returns_low_confidence(self):
+    def test_no_data_returns_zero_confidence(self):
         result = self.agent.analyze('TEST', {'info': {}, 'historical_data': _make_price_df()})
-        assert result['confidence'] <= 0.5
+        assert result['confidence'] == pytest.approx(0.0, abs=0.01)
 
-    def test_no_data_note(self):
+    def test_no_data_excluded_from_composite(self):
+        # When score=None the composite scorer excludes this agent and
+        # re-normalises remaining agent weights.
         result = self.agent.analyze('TEST', {'info': {}, 'historical_data': _make_price_df()})
-        assert result.get('note') == 'no_fundamental_data'
+        assert result.get('status') == 'no_data'
 
 
 # ===========================================================================
@@ -273,29 +300,66 @@ class TestCompositeScoreFormula:
 # ===========================================================================
 
 class TestRecommendationMapping:
-    """Score thresholds must map to the correct recommendation strings."""
+    """Score thresholds must map to the correct recommendation strings.
+
+    Current NIFTY-50 percentile-based thresholds:
+      STRONG BUY  ≥ 90   (top ~10%, ≈5 stocks)
+      BUY         ≥ 70   (top ~30%, ≈15 stocks)
+      WEAK BUY    ≥ 55
+      HOLD+       ≥ 45   (HOLD_HIGH)
+      HOLD        ≥ 30   (HOLD_LOW)
+      WEAK SELL   ≥ 10
+      SELL        ≥  0   (bottom 10%)
+    """
 
     def setup_method(self):
         scorer = StockScorer.__new__(StockScorer)
         self.get_rec = scorer._get_recommendation
 
-    def test_score_55_is_strong_buy(self):
-        assert self.get_rec(55, 0.8) == 'STRONG BUY'
+    def test_score_92_is_strong_buy(self):
+        assert self.get_rec(92, 0.8) == 'STRONG BUY'
 
-    def test_score_50_is_buy(self):
-        assert self.get_rec(50, 0.8) == 'BUY'
+    def test_score_90_is_strong_buy(self):
+        assert self.get_rec(90, 0.8) == 'STRONG BUY'
 
-    def test_score_45_is_weak_buy(self):
-        assert self.get_rec(45, 0.8) == 'WEAK BUY'
+    def test_score_75_is_buy(self):
+        assert self.get_rec(75, 0.8) == 'BUY'
+
+    def test_score_70_is_buy(self):
+        assert self.get_rec(70, 0.8) == 'BUY'
+
+    def test_score_60_is_weak_buy(self):
+        assert self.get_rec(60, 0.8) == 'WEAK BUY'
+
+    def test_score_55_is_weak_buy(self):
+        # Updated: old threshold was 55 → STRONG BUY; new threshold is 90
+        assert self.get_rec(55, 0.8) == 'WEAK BUY'
+
+    def test_score_50_is_hold_plus(self):
+        # Updated: old threshold was 50 → BUY; new threshold is 70
+        assert self.get_rec(50, 0.8) == 'HOLD+'
+
+    def test_score_45_is_hold_plus(self):
+        # Updated: old threshold was 45 → WEAK BUY; now HOLD+ (HOLD_HIGH bucket)
+        assert self.get_rec(45, 0.8) == 'HOLD+'
 
     def test_score_40_is_hold(self):
+        # Unchanged
         assert self.get_rec(40, 0.8) == 'HOLD'
 
-    def test_score_35_is_weak_sell(self):
-        assert self.get_rec(35, 0.8) == 'WEAK SELL'
+    def test_score_35_is_hold(self):
+        # Updated: HOLD_LOW bucket is [30, 45) — not WEAK SELL
+        assert self.get_rec(35, 0.8) == 'HOLD'
 
-    def test_score_34_is_sell(self):
-        assert self.get_rec(34, 0.8) == 'SELL'
+    def test_score_34_is_hold(self):
+        # Updated: HOLD_LOW bucket is [30, 45) — not SELL
+        assert self.get_rec(34, 0.8) == 'HOLD'
+
+    def test_score_20_is_weak_sell(self):
+        assert self.get_rec(20, 0.8) == 'WEAK SELL'
+
+    def test_score_5_is_sell(self):
+        assert self.get_rec(5, 0.5) == 'SELL'
 
     def test_score_0_is_sell(self):
         assert self.get_rec(0, 0.0) == 'SELL'

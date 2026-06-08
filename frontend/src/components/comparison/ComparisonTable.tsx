@@ -54,6 +54,25 @@ export default function ComparisonTable({ stocks }: ComparisonTableProps) {
     );
   };
 
+  const renderAgentCell = (value: number | undefined, isBest: boolean) => {
+    if (value === undefined || value === null) return <span className="text-gray-400">N/A</span>;
+    const barColor = value >= 70 ? 'bg-emerald-500' : value >= 50 ? 'bg-amber-400' : 'bg-red-400';
+    const textColor = value >= 70 ? 'text-emerald-700' : value >= 50 ? 'text-amber-600' : 'text-red-600';
+    return (
+      <div className="space-y-1 min-w-[64px]">
+        <div className="flex items-center gap-1.5">
+          {isBest && <Crown className="h-3.5 w-3.5 text-yellow-500 shrink-0" />}
+          <span className={cn('text-sm font-semibold tabular-nums', isBest ? 'text-blue-700' : textColor)}>
+            {value.toFixed(1)}
+          </span>
+        </div>
+        <div className="h-1.5 bg-gray-200 rounded-full overflow-hidden">
+          <div className={cn('h-full rounded-full', barColor)} style={{ width: `${Math.min(value, 100)}%` }} />
+        </div>
+      </div>
+    );
+  };
+
   const renderReturnCell = (value: number | undefined, isBest: boolean) => {
     if (value === undefined) {
       return <span className="text-gray-400">N/A</span>;
@@ -179,7 +198,7 @@ export default function ComparisonTable({ stocks }: ComparisonTableProps) {
             </td>
             {stocks.map((stock, idx) => (
               <td key={stock.symbol} className="px-6 py-4">
-                {renderCell(stock.agent_scores.fundamentals?.score, idx === bestFundamentals, 'number')}
+                {renderAgentCell(stock.agent_scores.fundamentals?.score, idx === bestFundamentals)}
               </td>
             ))}
           </tr>
@@ -189,7 +208,7 @@ export default function ComparisonTable({ stocks }: ComparisonTableProps) {
             </td>
             {stocks.map((stock, idx) => (
               <td key={stock.symbol} className="px-6 py-4">
-                {renderCell(stock.agent_scores.momentum?.score, idx === bestMomentum, 'number')}
+                {renderAgentCell(stock.agent_scores.momentum?.score, idx === bestMomentum)}
               </td>
             ))}
           </tr>
@@ -199,7 +218,7 @@ export default function ComparisonTable({ stocks }: ComparisonTableProps) {
             </td>
             {stocks.map((stock, idx) => (
               <td key={stock.symbol} className="px-6 py-4">
-                {renderCell(stock.agent_scores.quality?.score, idx === bestQuality, 'number')}
+                {renderAgentCell(stock.agent_scores.quality?.score, idx === bestQuality)}
               </td>
             ))}
           </tr>
@@ -209,7 +228,7 @@ export default function ComparisonTable({ stocks }: ComparisonTableProps) {
             </td>
             {stocks.map((stock, idx) => (
               <td key={stock.symbol} className="px-6 py-4">
-                {renderCell(stock.agent_scores.sentiment?.score, idx === bestSentiment, 'number')}
+                {renderAgentCell(stock.agent_scores.sentiment?.score, idx === bestSentiment)}
               </td>
             ))}
           </tr>
@@ -219,7 +238,7 @@ export default function ComparisonTable({ stocks }: ComparisonTableProps) {
             </td>
             {stocks.map((stock, idx) => (
               <td key={stock.symbol} className="px-6 py-4">
-                {renderCell(stock.agent_scores.institutional_flow?.score, idx === bestInstitutional, 'number')}
+                {renderAgentCell(stock.agent_scores.institutional_flow?.score, idx === bestInstitutional)}
               </td>
             ))}
           </tr>

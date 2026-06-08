@@ -484,10 +484,13 @@ class StockScorer:
 
             # Step 3b: Detect market regime from NIFTY data (cached after first call)
             regime_trend = 'SIDEWAYS'
+            regime_confidence = 0.7  # safe default — used later in Step 5g
             try:
                 regime_info = self.get_market_regime()
-                regime_trend = regime_info.get('trend', 'SIDEWAYS') if regime_info else 'SIDEWAYS'
-                logger.info(f"Market regime for scoring: {regime_trend}")
+                if regime_info:
+                    regime_trend = regime_info.get('trend', 'SIDEWAYS')
+                    regime_confidence = regime_info.get('regime_confidence', 0.7)
+                logger.info(f"Market regime for scoring: {regime_trend} (confidence={regime_confidence:.2f})")
             except Exception as _re:
                 logger.warning(f"Could not detect regime before agents: {_re}. Using SIDEWAYS default.")
 
@@ -647,6 +650,9 @@ class StockScorer:
             # Replaces the old per-agent multiplier approach (which was invisible in the UI).
             # BULL + high confidence → +3 pts max; BEAR + high confidence → -3 pts max.
             # Scaled by regime confidence so weak signals barely move the needle.
+            # NOTE: Applied AFTER total_overlay so the combined cap (±10) already consumed
+            # the overlay budget; regime_adj is an additional signal capped at ±3 pts.
+            # The final score is clipped to [0,100] as the ultimate guard.
             _REGIME_COMPOSITE_ADJ = {'BULL': +3.0, 'BEAR': -3.0, 'SIDEWAYS': 0.0}
             regime_adj = _REGIME_COMPOSITE_ADJ.get(regime_trend, 0.0)
             # Scale by confidence: at 50% confidence the adjustment is halved
@@ -859,13 +865,27 @@ class StockScorer:
         ) / len(successful_agents)
 
         # Penalize confidence proportionally when agents have failed
-        if error_count >= 3:
+        if error_count >= 4:
+            composite_confidence *= 0.1   # only 1 agent: almost no coverage
+            logger.warning("  Confidence critically penalized — only 1 agent succeeded")
+        elif error_count >= 3:
             composite_confidence *= 0.3
             logger.warning("  Confidence heavily penalized — majority of agents failed")
         elif error_count == 2:
             composite_confidence *= 0.6
         elif error_count == 1:
             composite_confidence *= 0.85
+
+        # Extra penalty: if a single agent received >70% of the renormalized weight,
+        # the composite is effectively a single-factor signal — cap confidence further.
+        max_weight = max(normalized_weights.values())
+        if max_weight > 0.70:
+            cap_factor = 1.0 - (max_weight - 0.70) / 0.30 * 0.5  # linear 1.0 → 0.5
+            composite_confidence = min(composite_confidence, composite_confidence * cap_factor)
+            logger.warning(
+                f"  Single-agent dominance ({max_weight:.0%} weight) — "
+                f"confidence capped by factor {cap_factor:.2f}"
+            )
 
         logger.info(f"  Composite Score: {composite_score:.2f}/100")
         logger.info(f"  Composite Confidence: {composite_confidence:.2%}")
@@ -1009,9 +1029,11 @@ class StockScorer:
         atr = momentum_metrics.get('atr')
         if atr and atr > 0:
             levels['atr'] = round(float(atr), 2)
-            atr_stop = round(current_price - (1.5 * atr), 2)
-            # Ensure stop_loss is always positive and not greater than current price
-            levels['stop_loss'] = max(atr_stop, round(current_price * 0.85, 2))
+            atr_stop = current_price - (1.5 * atr)
+            # Clamp: stop must be (a) below current price, (b) no wider than 15% drawdown
+            atr_stop = max(atr_stop, current_price * 0.85)  # no wider than 15%
+            atr_stop = min(atr_stop, current_price * 0.999)  # must be strictly below entry
+            levels['stop_loss'] = round(max(0.01, atr_stop), 2)
         else:
             # Fallback: 7% trailing stop
             levels['stop_loss'] = round(current_price * 0.93, 2)

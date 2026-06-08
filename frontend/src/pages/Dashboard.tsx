@@ -1,496 +1,406 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { TrendingUp, BarChart3, Star, Activity, PieChart, ArrowRight } from 'lucide-react'; // PieChart used in market overview
+import {
+  TrendingUp, Activity, Star, ArrowRight,
+  BarChart3, RefreshCw, Search, Zap, PieChart, ChevronRight,
+} from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useStore } from '@/store/useStore';
 import api from '@/lib/api';
 import Loading from '@/components/ui/Loading';
-import { StockCardSkeleton, ChartSkeleton } from '@/components/ui/SkeletonLoader';
+import { StockCardSkeleton } from '@/components/ui/SkeletonLoader';
 import StockCard from '@/components/StockCard';
-import MarketRegimeCard from '@/components/MarketRegimeCard';
-import { StockPriceChart } from '@/components/charts/StockPriceChart';
-import { AgentScoresRadar } from '@/components/charts/AgentScoresRadar';
-import ChartErrorBoundary from '@/components/charts/ChartErrorBoundary';
 import { MarketRegimeTimeline } from '@/components/charts/MarketRegimeTimeline';
 import { useWatchlist } from '@/hooks/useWatchlist';
-import { useStockHistory } from '@/hooks/useStockHistory';
 import { useSectorAnalysis } from '@/hooks/useSectorAnalysis';
 import { SymbolInput } from '@/components/ui/SymbolInput';
 import { DEFAULT_STOCK_SYMBOLS } from '@/lib/constants';
+import { AgentScoresRadar } from '@/components/charts/AgentScoresRadar';
+import { StockPriceChart } from '@/components/charts/StockPriceChart';
+import ChartErrorBoundary from '@/components/charts/ChartErrorBoundary';
+import { useStockHistory } from '@/hooks/useStockHistory';
+import SignalFeed from '@/components/SignalFeed';
 import type { StockAnalysis } from '@/types';
+import { cn } from '@/lib/utils';
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+function pct(v: number | null | undefined) {
+  if (v == null) return '—';
+  const s = Math.abs(v).toFixed(1) + '%';
+  return v >= 0 ? '+' + s : '-' + s;
+}
+
+function scoreColor(s: number) {
+  if (s >= 70) return 'text-emerald-600';
+  if (s >= 50) return 'text-amber-600';
+  return 'text-red-500';
+}
+
+function SignalBadge({ signal }: { signal: string }) {
+  const map: Record<string, string> = {
+    BUY: 'bg-emerald-100 text-emerald-700',
+    STRONG_BUY: 'bg-emerald-200 text-emerald-800',
+    SELL: 'bg-red-100 text-red-700',
+    HOLD: 'bg-amber-100 text-amber-700',
+  };
+  return (
+    <span className={cn('text-xs font-semibold px-2 py-0.5 rounded', map[signal] || 'bg-gray-100 text-gray-600')}>
+      {signal.replace('_', ' ')}
+    </span>
+  );
+}
+
+// ── Main component ────────────────────────────────────────────────────────────
 
 export default function Dashboard() {
   const navigate = useNavigate();
-  const { addToast, setLoading, loading, marketRegime, recentSearches, addRecentSearch } = useStore();
+  const { addToast, setLoading, loading, marketRegime, recentSearches, addRecentSearch, getCachedTopPicks } = useStore();
   const { watchlist } = useWatchlist();
   const { getTopSectors } = useSectorAnalysis({ days: 7 });
 
   const [symbol, setSymbol] = useState('');
   const [analysis, setAnalysis] = useState<StockAnalysis | null>(null);
   const [regimeHistory, setRegimeHistory] = useState<any[]>([]);
-  const [systemStats, setSystemStats] = useState<any>(null);
+  const [portfolioPerf, setPortfolioPerf] = useState<any>(null);
+  const [topPicks, setTopPicks] = useState<StockAnalysis[]>([]);
+  const [topPicksLoading, setTopPicksLoading] = useState(false);
   const analyzeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Load initial data
   useEffect(() => {
     loadDashboardData();
+    return () => { if (analyzeDebounceRef.current) clearTimeout(analyzeDebounceRef.current); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Clean up pending debounce on unmount
-  useEffect(() => {
-    return () => {
-      if (analyzeDebounceRef.current) clearTimeout(analyzeDebounceRef.current);
-    };
-  }, []);
-
   const loadDashboardData = async () => {
+    // Regime history
     try {
-      // Load regime history
-      const regimeData = await api.getRegimeHistory(30);
-      setRegimeHistory(regimeData.history || []);
+      const d = await api.getRegimeHistory(30);
+      setRegimeHistory(d.history || []);
+    } catch { /* non-critical */ }
 
-      // Load system stats
-      const statsData = await api.getSystemAnalytics();
-      setSystemStats(statsData);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.warn('[Dashboard] loadDashboardData failed:', message);
-      addToast({
-        type: 'info',
-        message: 'Some dashboard metrics could not be loaded. The page will still function.',
-      });
+    // Portfolio P&L
+    try {
+      const perf = await api.getPortfolioPerformance();
+      setPortfolioPerf(perf);
+    } catch { /* no portfolio yet */ }
+
+    // Top 5 picks (use cache if available)
+    const cached = getCachedTopPicks('10:false');
+    if (cached) {
+      setTopPicks((cached as any).top_picks?.slice(0, 5) || []);
+    } else {
+      setTopPicksLoading(true);
+      try {
+        const picks = await api.getTopPicks(10, false);
+        setTopPicks(picks.top_picks?.slice(0, 5) || []);
+      } catch { /* skip */ } finally {
+        setTopPicksLoading(false);
+      }
     }
   };
 
-  const analyzeSymbol = useCallback((symbolToAnalyze: string) => {
-    if (analyzeDebounceRef.current) {
-      clearTimeout(analyzeDebounceRef.current);
-    }
-    analyzeDebounceRef.current = setTimeout(() => {
-      doAnalyze(symbolToAnalyze);
-    }, 300);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const doAnalyze = async (symbolToAnalyze: string) => {
-    if (!symbolToAnalyze.trim()) {
-      addToast({ type: 'warning', message: 'Please enter a stock symbol' });
-      return;
-    }
-
+  const doAnalyze = useCallback(async (sym: string) => {
+    const s = sym.trim();
+    if (!s) { addToast({ type: 'warning', message: 'Enter a stock symbol' }); return; }
     setLoading('analyze', true);
-
     try {
-      const result = await api.analyzeStock({
-        symbol: symbolToAnalyze.toUpperCase(),
-        include_narrative: true,
-      });
-
+      const result = await api.analyzeStock({ symbol: s.toUpperCase(), include_narrative: true });
       setAnalysis(result);
-      addRecentSearch(symbolToAnalyze.toUpperCase());
-      addToast({
-        type: 'success',
-        message: `Analysis complete for ${result.symbol}`,
-      });
-    } catch (error: any) {
-      addToast({
-        type: 'error',
-        message: error.message || 'Failed to analyze stock',
-      });
+      addRecentSearch(s.toUpperCase());
+      addToast({ type: 'success', message: `Analysis complete for ${result.symbol}` });
+    } catch (err: any) {
+      addToast({ type: 'error', message: err.message || 'Analysis failed' });
       setAnalysis(null);
     } finally {
       setLoading('analyze', false);
     }
-  };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleAnalyze = async (e: React.FormEvent) => {
-    e.preventDefault();
-    await analyzeSymbol(symbol);
-  };
+  const analyzeSymbol = useCallback((sym: string) => {
+    if (analyzeDebounceRef.current) clearTimeout(analyzeDebounceRef.current);
+    analyzeDebounceRef.current = setTimeout(() => doAnalyze(sym), 300);
+  }, [doAnalyze]);
 
-  const quickSymbols = recentSearches.length > 0
-    ? recentSearches.slice(0, 5)
-    : [...DEFAULT_STOCK_SYMBOLS];
+  const { data: historicalData, loading: historyLoading } = useStockHistory(
+    analysis?.symbol || '', { days: 180, enabled: !!analysis }
+  );
 
   const topSectors = getTopSectors(3);
+  const quickSymbols = recentSearches.length > 0 ? recentSearches.slice(0, 5) : [...DEFAULT_STOCK_SYMBOLS].slice(0, 5);
 
-  // Get historical data for analyzed stock
-  const { data: historicalData, loading: historyLoading } = useStockHistory(
-    analysis?.symbol || '',
-    { days: 180, enabled: !!analysis }
-  );
+  // Market regime display
+  const regimeTrend = marketRegime?.trend;
+  const regimeColor = regimeTrend === 'BULL' ? 'text-emerald-700' : regimeTrend === 'BEAR' ? 'text-red-700' : 'text-amber-700';
+  const regimeBg = regimeTrend === 'BULL' ? 'bg-emerald-50 border-emerald-200' : regimeTrend === 'BEAR' ? 'bg-red-50 border-red-200' : 'bg-amber-50 border-amber-200';
+
+  // Portfolio stats
+  const totalReturn = portfolioPerf?.total_return_pct;
+  const activeHoldings = portfolioPerf?.active_holdings ?? 0;
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="text-center space-y-2">
-        <h1 className="text-4xl font-bold text-gray-900">
-          AI-Powered Stock Analysis
-        </h1>
-        <p className="text-lg text-gray-600">
-          Comprehensive analysis using 5 specialized AI agents
-        </p>
+
+      {/* ── Row 1: KPI strip ─────────────────────────────────────────────────── */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {/* Market Regime */}
+        <div className={cn('rounded-xl border p-5 flex items-center justify-between', regimeBg)}>
+          <div>
+            <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Market Regime</p>
+            <p className={cn('text-2xl font-bold mt-1', regimeColor)}>{regimeTrend || '—'}</p>
+            <p className="text-xs text-gray-400 mt-0.5">{marketRegime?.volatility || ''} vol</p>
+          </div>
+          <Activity className="w-8 h-8 text-gray-300" />
+        </div>
+
+        {/* Portfolio P&L */}
+        <div className="bg-white rounded-xl border border-gray-200 p-5 flex items-center justify-between">
+          <div>
+            <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Portfolio P&L</p>
+            <p className={cn('text-2xl font-bold mt-1', totalReturn == null ? 'text-gray-400' : totalReturn >= 0 ? 'text-emerald-600' : 'text-red-600')}>
+              {totalReturn == null ? '—' : pct(totalReturn)}
+            </p>
+            <p className="text-xs text-gray-400 mt-0.5">{activeHoldings} active holdings</p>
+          </div>
+          <Zap className="w-8 h-8 text-gray-300" />
+        </div>
+
+        {/* Watchlist */}
+        <div className="bg-white rounded-xl border border-gray-200 p-5 flex items-center justify-between">
+          <div>
+            <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Watchlist</p>
+            <p className="text-2xl font-bold mt-1 text-gray-900">{watchlist.length}</p>
+            <p className="text-xs text-gray-400 mt-0.5">stocks tracked</p>
+          </div>
+          <Star className="w-8 h-8 text-gray-300" />
+        </div>
+
+        {/* Top Sector */}
+        <div className="bg-white rounded-xl border border-gray-200 p-5 flex items-center justify-between">
+          <div>
+            <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Top Sector</p>
+            <p className="text-lg font-bold mt-1 text-gray-900 leading-tight">{topSectors[0]?.sector || '—'}</p>
+            <p className="text-xs text-gray-400 mt-0.5">avg score {topSectors[0]?.avg_score?.toFixed(1) || '—'}</p>
+          </div>
+          <PieChart className="w-8 h-8 text-gray-300" />
+        </div>
       </div>
 
-      {/* Market Overview — always visible when regime is available */}
-      {marketRegime && (
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          {/* Current Market Regime */}
-          <div className={`rounded-lg shadow p-6 ${
-            marketRegime.trend === 'BULL' ? 'bg-green-50 border border-green-200' :
-            marketRegime.trend === 'BEAR' ? 'bg-red-50 border border-red-200' :
-            'bg-white'
-          }`}>
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-600">Market Regime</p>
-                <p className={`text-2xl font-bold mt-1 ${
-                  marketRegime.trend === 'BULL' ? 'text-green-700' :
-                  marketRegime.trend === 'BEAR' ? 'text-red-700' :
-                  'text-gray-900'
-                }`}>
-                  {marketRegime.trend || 'N/A'}
-                </p>
-                <p className="text-xs text-gray-500 mt-1">{marketRegime.volatility || ''} volatility</p>
-              </div>
-              <Activity className="w-8 h-8 text-blue-500" />
-            </div>
-          </div>
-
-          {/* Watchlist Count */}
-          <div className="bg-white rounded-lg shadow p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-600">Watchlist</p>
-                <p className="text-2xl font-bold text-gray-900 mt-1">{watchlist.length}</p>
-                <p className="text-xs text-gray-500 mt-1">stocks tracked</p>
-              </div>
-              <Star className="w-8 h-8 text-yellow-500" />
-            </div>
-          </div>
-
-          {/* Top Sectors */}
-          {topSectors.length > 0 ? (
-            <div className="bg-white rounded-lg shadow p-6">
-              <div className="flex items-center justify-between mb-2">
-                <p className="text-sm text-gray-600">Top Sector</p>
-                <PieChart className="w-6 h-6 text-indigo-500" />
-              </div>
-              <p className="text-lg font-bold text-gray-900">{topSectors[0]?.sector || 'N/A'}</p>
-              <p className="text-xs text-gray-500 mt-1">avg score {topSectors[0]?.avg_score?.toFixed(1) || '—'}</p>
-            </div>
-          ) : (
-            <div className="bg-white rounded-lg shadow p-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-gray-600">Total Analyses</p>
-                  <p className="text-2xl font-bold text-gray-900 mt-1">
-                    {systemStats?.total_requests?.toLocaleString() || '—'}
-                  </p>
-                </div>
-                <BarChart3 className="w-8 h-8 text-green-500" />
-              </div>
-            </div>
-          )}
-
-          {/* Cache Hit Rate */}
-          <div className="bg-white rounded-lg shadow p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-600">Cache Hit Rate</p>
-                <p className="text-2xl font-bold text-gray-900 mt-1">
-                  {systemStats?.cache_hit_rate?.toFixed(1) || '—'}%
-                </p>
-                <p className="text-xs text-gray-500 mt-1">API efficiency</p>
-              </div>
-              <TrendingUp className="w-8 h-8 text-purple-500" />
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Two Column Layout - Only show when no analysis */}
+      {/* ── Row 2: Top Picks + Watchlist + Sectors ───────────────────────────── */}
       {!analysis && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Watchlist Widget */}
-          <div className="bg-white rounded-lg shadow p-6">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+
+          {/* Top 5 Picks */}
+          <div className="bg-white rounded-xl border border-gray-200 p-5">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
-                <Star className="w-5 h-5 text-yellow-500" />
-                My Watchlist
+              <h3 className="font-semibold text-gray-900 flex items-center gap-2">
+                <TrendingUp className="w-4 h-4 text-blue-500" />
+                Top Picks
               </h3>
-              <button
-                onClick={() => navigate('/watchlist')}
-                className="text-sm text-blue-600 hover:text-blue-700 flex items-center gap-1"
-              >
-                View All
-                <ArrowRight className="w-4 h-4" />
+              <button onClick={() => navigate('/research')} className="text-xs text-blue-600 hover:text-blue-700 flex items-center gap-1">
+                All Ideas <ChevronRight className="w-3 h-3" />
               </button>
             </div>
-
-            {watchlist?.length > 0 ? (
+            {topPicksLoading ? (
+              <div className="flex justify-center py-6"><Loading size="sm" /></div>
+            ) : topPicks.length > 0 ? (
               <div className="space-y-2">
-                {watchlist.slice(0, 5).map((item) => (
+                {topPicks.map((s, i) => (
                   <button
-                    key={item?.symbol || Math.random()}
-                    onClick={() => {
-                      if (item?.symbol) {
-                        setSymbol(item.symbol);
-                        analyzeSymbol(item.symbol);
-                      }
-                    }}
-                    className="w-full flex items-center justify-between p-3 bg-gray-50 hover:bg-gray-100 rounded-lg transition-colors"
+                    key={s.symbol}
+                    onClick={() => { setSymbol(s.symbol); analyzeSymbol(s.symbol); }}
+                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-gray-50 transition-colors text-left"
                   >
-                    <span className="font-medium text-gray-900">{item?.symbol || 'Unknown'}</span>
-                    <div className="flex items-center gap-3">
-                      {item?.latest_score != null && (
-                        <span className="text-sm font-semibold text-gray-900">
-                          {item.latest_score.toFixed(1)}
-                        </span>
-                      )}
-                      {item?.latest_recommendation && (
-                        <span className="text-xs px-2 py-1 bg-blue-100 text-blue-800 rounded">
-                          {item.latest_recommendation}
-                        </span>
-                      )}
-                    </div>
+                    <span className="text-xs text-gray-400 w-4 font-mono">#{i + 1}</span>
+                    <span className="font-semibold text-gray-900 flex-1 text-sm">{s.symbol}</span>
+                    <span className={cn('text-sm font-bold', scoreColor(s.composite_score))}>
+                      {s.composite_score.toFixed(1)}
+                    </span>
+                    <SignalBadge signal={s.recommendation} />
                   </button>
                 ))}
               </div>
             ) : (
-              <p className="text-center text-gray-500 py-8">
-                No stocks in watchlist yet
-              </p>
+              <p className="text-sm text-gray-400 text-center py-6">No picks loaded</p>
             )}
           </div>
 
-          {/* Top Sectors Widget */}
-          <div className="bg-white rounded-lg shadow p-6">
+          {/* Watchlist */}
+          <div className="bg-white rounded-xl border border-gray-200 p-5">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
-                <PieChart className="w-5 h-5 text-blue-500" />
-                Top Sectors
+              <h3 className="font-semibold text-gray-900 flex items-center gap-2">
+                <Star className="w-4 h-4 text-yellow-500" />
+                My Watchlist
               </h3>
-              <button
-                onClick={() => navigate('/sectors')}
-                className="text-sm text-blue-600 hover:text-blue-700 flex items-center gap-1"
-              >
-                View All
-                <ArrowRight className="w-4 h-4" />
+              <button onClick={() => navigate('/watchlist')} className="text-xs text-blue-600 hover:text-blue-700 flex items-center gap-1">
+                Manage <ChevronRight className="w-3 h-3" />
               </button>
             </div>
+            {watchlist.length > 0 ? (
+              <div className="space-y-2">
+                {watchlist.slice(0, 5).map(item => (
+                  <button
+                    key={item?.symbol}
+                    onClick={() => { if (item?.symbol) { setSymbol(item.symbol); analyzeSymbol(item.symbol); } }}
+                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-gray-50 transition-colors text-left"
+                  >
+                    <span className="font-semibold text-gray-900 flex-1 text-sm">{item.symbol}</span>
+                    {item.latest_score != null && (
+                      <span className={cn('text-sm font-bold', scoreColor(item.latest_score))}>
+                        {item.latest_score.toFixed(1)}
+                      </span>
+                    )}
+                    {item.latest_recommendation && <SignalBadge signal={item.latest_recommendation} />}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="text-center py-6">
+                <p className="text-sm text-gray-400 mb-3">No stocks in watchlist</p>
+                <button
+                  onClick={() => navigate('/research')}
+                  className="text-xs text-blue-600 hover:text-blue-700 underline"
+                >
+                  Browse top picks →
+                </button>
+              </div>
+            )}
+          </div>
 
+          {/* Sectors */}
+          <div className="bg-white rounded-xl border border-gray-200 p-5">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-semibold text-gray-900 flex items-center gap-2">
+                <PieChart className="w-4 h-4 text-indigo-500" />
+                Sector Snapshot
+              </h3>
+              <button onClick={() => navigate('/analytics')} className="text-xs text-blue-600 hover:text-blue-700 flex items-center gap-1">
+                Deep Dive <ChevronRight className="w-3 h-3" />
+              </button>
+            </div>
             {topSectors.length > 0 ? (
               <div className="space-y-3">
-                {topSectors.map((sector, index) => (
-                  <div key={sector.sector} className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <span className="text-sm font-semibold text-gray-500 w-6">
-                        #{index + 1}
-                      </span>
-                      <div>
-                        <p className="font-medium text-gray-900">{sector.sector}</p>
-                        <p className="text-xs text-gray-500">{sector.stock_count} stocks</p>
+                {topSectors.map((sector, i) => (
+                  <div key={sector.sector} className="flex items-center gap-3">
+                    <span className="text-xs font-bold text-gray-400 w-5">#{i + 1}</span>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-semibold text-gray-900 truncate">{sector.sector}</p>
+                      <div className="mt-1 h-1.5 bg-gray-100 rounded-full">
+                        <div
+                          className="h-1.5 bg-blue-500 rounded-full"
+                          style={{ width: `${Math.min(100, sector.avg_score)}%` }}
+                        />
                       </div>
                     </div>
-                    <div className="text-right">
-                      <p className="text-lg font-bold text-gray-900">
-                        {sector.avg_score != null ? sector.avg_score.toFixed(1) : 'N/A'}
-                      </p>
-                      <p className="text-xs text-gray-500">{sector.top_pick}</p>
-                    </div>
+                    <span className="text-sm font-bold text-gray-900 tabular-nums">
+                      {sector.avg_score?.toFixed(1)}
+                    </span>
                   </div>
                 ))}
               </div>
             ) : (
-              <p className="text-center text-gray-500 py-8">
-                No sector data available yet
-              </p>
+              <p className="text-sm text-gray-400 text-center py-6">No sector data yet</p>
             )}
           </div>
         </div>
       )}
 
-      {/* Market Regime Timeline - Only show when no analysis */}
+      {/* ── Row 3: Signal Feed ──────────────────────────────────────────────── */}
+      {!analysis && watchlist.length > 0 && (
+        <div className="bg-white rounded-xl border border-gray-200 p-5">
+          <SignalFeed maxItems={5} compact />
+        </div>
+      )}
+
+      {/* ── Row 4: Regime Timeline ───────────────────────────────────────────── */}
       {!analysis && regimeHistory.length > 0 && (
-        <div className="bg-white rounded-lg shadow p-6">
-          <MarketRegimeTimeline
-            data={regimeHistory}
-            days={30}
-            height={250}
-            showWeights={false}
-          />
+        <div className="bg-white rounded-xl border border-gray-200 p-5">
+          <MarketRegimeTimeline data={regimeHistory} days={30} height={200} showWeights={false} />
         </div>
       )}
 
-      {/* Market Regime Card */}
-      {marketRegime && !analysis && (
-        <div className="max-w-4xl mx-auto">
-          <MarketRegimeCard regime={marketRegime} />
-        </div>
-      )}
-
-      {/* Search Form */}
-      <div className="max-w-2xl mx-auto">
-        <form onSubmit={handleAnalyze} className="space-y-4">
-          <SymbolInput
-            value={symbol}
-            onChange={setSymbol}
-            onSubmit={analyzeSymbol}
-            placeholder="Enter stock symbol (e.g., TCS, INFY, RELIANCE)"
-            className="w-full pr-4 py-4 text-lg border-2 border-gray-300 rounded-lg focus:border-primary-500 focus:ring-2 focus:ring-primary-200 outline-none transition-all"
-            disabled={loading.analyze}
-            showIcon={true}
-          />
-
+      {/* ── Row 4: Quick Analyze ─────────────────────────────────────────────── */}
+      <div className="bg-white rounded-xl border border-gray-200 p-6">
+        <h3 className="text-sm font-semibold text-gray-700 mb-3 flex items-center gap-2">
+          <Search className="w-4 h-4 text-gray-400" />
+          Quick Analyze
+        </h3>
+        <form
+          onSubmit={e => { e.preventDefault(); analyzeSymbol(symbol); }}
+          className="flex gap-3 max-w-xl"
+        >
+          <div className="flex-1">
+            <SymbolInput
+              value={symbol}
+              onChange={setSymbol}
+              onSubmit={analyzeSymbol}
+              placeholder="Symbol, e.g. TCS, INFY, RELIANCE"
+              disabled={loading.analyze}
+              showIcon={false}
+            />
+          </div>
           <button
             type="submit"
             disabled={loading.analyze}
-            className="w-full bg-primary-600 hover:bg-primary-700 disabled:bg-gray-400 text-white font-semibold py-4 px-6 rounded-lg transition-colors flex items-center justify-center space-x-2"
+            className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white text-sm font-semibold rounded-lg transition-colors"
           >
-            {loading.analyze ? (
-              <>
-                <Loading size="sm" />
-                <span>Analyzing...</span>
-              </>
-            ) : (
-              <>
-                <BarChart3 className="h-5 w-5" />
-                <span>Analyze Stock</span>
-              </>
-            )}
+            {loading.analyze ? <RefreshCw className="w-4 h-4 animate-spin" /> : <BarChart3 className="w-4 h-4" />}
+            Analyze
           </button>
         </form>
-
-        {/* Quick Symbols */}
-        <div className="mt-4">
-          <p className="text-sm text-gray-600 mb-2">
-            {recentSearches.length > 0 ? 'Recent searches:' : 'Quick analyze:'}
-          </p>
-          <div className="flex flex-wrap gap-2">
-            {quickSymbols.map((sym) => (
-              <button
-                key={sym}
-                onClick={() => setSymbol(sym)}
-                className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-md text-sm font-medium transition-colors"
-              >
-                {sym}
-              </button>
-            ))}
-          </div>
+        <div className="flex flex-wrap gap-2 mt-3">
+          {quickSymbols.map(s => (
+            <button
+              key={s}
+              onClick={() => { setSymbol(s); analyzeSymbol(s); }}
+              className="px-3 py-1 text-xs bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-md transition-colors"
+            >
+              {s}
+            </button>
+          ))}
         </div>
       </div>
 
-      {/* Loading State */}
+      {/* ── Analysis loading skeleton ────────────────────────────────────────── */}
       {loading.analyze && (
-        <div className="space-y-6 animate-fade-in">
-          {/* Stock Card Skeleton */}
-          <div className="max-w-6xl mx-auto">
-            <StockCardSkeleton />
-          </div>
-
-          {/* Charts Skeletons */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <ChartSkeleton />
-            <ChartSkeleton />
-          </div>
+        <div className="space-y-5 animate-fade-in">
+          <StockCardSkeleton />
         </div>
       )}
 
-      {/* Analysis Result with Charts */}
+      {/* ── Analysis result ──────────────────────────────────────────────────── */}
       {analysis && !loading.analyze && (
-        <div className="space-y-6 animate-fade-in">
-          {/* Stock Card */}
-          <div className="max-w-6xl mx-auto">
-            <StockCard analysis={analysis} detailed />
-          </div>
+        <div className="space-y-5 animate-fade-in">
+          <StockCard analysis={analysis} detailed />
 
-          {/* Charts Row */}
-          {historyLoading && (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              <ChartSkeleton />
-              <ChartSkeleton />
-            </div>
-          )}
           {!historyLoading && historicalData && historicalData.history.length > 0 && (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {/* Price & Score Chart */}
-              <div className="bg-white rounded-lg shadow p-6">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+              <div className="bg-white rounded-xl border border-gray-200 p-5">
                 <ChartErrorBoundary>
-                  <StockPriceChart
-                    symbol={analysis.symbol}
-                    data={historicalData.history}
-                    height={300}
-                    defaultTimeRange="6M"
-                  />
+                  <StockPriceChart symbol={analysis.symbol} data={historicalData.history} height={280} defaultTimeRange="6M" />
                 </ChartErrorBoundary>
               </div>
-
-              {/* Agent Scores Radar */}
-              <div className="bg-white rounded-lg shadow p-6">
+              <div className="bg-white rounded-xl border border-gray-200 p-5">
                 <ChartErrorBoundary>
-                  <AgentScoresRadar
-                    agentScores={analysis.agent_scores}
-                    height={300}
-                    showHistorical={false}
-                  />
+                  <AgentScoresRadar agentScores={analysis.agent_scores} height={280} showHistorical={false} />
                 </ChartErrorBoundary>
               </div>
             </div>
           )}
 
-          {/* Back to Search */}
-          <div className="text-center">
+          <div className="flex items-center gap-3">
             <button
               onClick={() => setAnalysis(null)}
-              className="px-6 py-3 bg-gray-200 hover:bg-gray-300 text-gray-700 font-medium rounded-lg transition-colors"
+              className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-medium rounded-lg transition-colors"
             >
-              Analyze Another Stock
+              ← Back to Dashboard
             </button>
-          </div>
-        </div>
-      )}
-
-      {/* Call to Action */}
-      {!analysis && !loading.analyze && (
-        <div className="max-w-3xl mx-auto text-center space-y-6 py-12">
-          <div className="bg-gradient-to-r from-primary-50 to-blue-50 rounded-xl p-8 border border-primary-100">
-            <TrendingUp className="h-12 w-12 text-primary-600 mx-auto mb-4" />
-            <h3 className="text-xl font-semibold text-gray-900 mb-2">
-              Get Started
-            </h3>
-            <p className="text-gray-600 mb-4">
-              Enter a stock symbol above to get comprehensive AI-powered analysis,
-              or check out our top picks from NIFTY 50
-            </p>
             <button
-              onClick={() => navigate('/top-picks')}
-              className="bg-primary-600 hover:bg-primary-700 text-white font-semibold py-3 px-6 rounded-lg transition-colors"
+              onClick={() => navigate(`/stock/${analysis.symbol}`)}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-1"
             >
-              View Top Picks
+              Full Analysis <ArrowRight className="w-3.5 h-3.5" />
             </button>
-          </div>
-
-          {/* Features */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 text-left">
-            {[
-              {
-                title: '5 AI Agents',
-                desc: 'Fundamentals, Momentum, Quality, Sentiment, Institutional Flow',
-              },
-              {
-                title: 'Adaptive Weights',
-                desc: 'Weights adjust based on market regime (Bull/Bear/Sideways)',
-              },
-              {
-                title: 'LLM Narratives',
-                desc: 'AI-generated investment thesis with strengths and risks',
-              },
-            ].map((feature, i) => (
-              <div key={i} className="bg-white p-6 rounded-lg border border-gray-200">
-                <h4 className="font-semibold text-gray-900 mb-2">{feature.title}</h4>
-                <p className="text-sm text-gray-600">{feature.desc}</p>
-              </div>
-            ))}
           </div>
         </div>
       )}

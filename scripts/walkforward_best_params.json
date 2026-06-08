@@ -1,0 +1,11 @@
+{
+  "params": {
+    "buy_threshold": 62.0,
+    "sell_threshold": 35.0,
+    "stop_loss": 0.12
+  },
+  "mechanisms": [
+    "M1",
+    "M3"
+  ]
+}
