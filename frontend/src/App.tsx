@@ -20,9 +20,22 @@ const Backtest = lazy(() => import('./pages/Backtest'));
 const Portfolio = lazy(() => import('./pages/Portfolio'));
 
 function App() {
-  const { setMarketRegime, setStockUniverse, cacheTopPicks } = useStore();
+  const { setMarketRegime, setStockUniverse, cacheTopPicks, setAlerts } = useStore();
   const [backendOnline, setBackendOnline] = useState<boolean | null>(null);
   const [bannerDismissed, setBannerDismissed] = useState(false);
+
+  // Singleton alerts polling — lives here so only one interval ever exists.
+  // Header reads alerts from the Zustand store instead of polling itself.
+  useEffect(() => {
+    const pollAlerts = () => {
+      api.getAlerts(false, 50)
+        .then(data => setAlerts(data.alerts ?? []))
+        .catch(() => {});
+    };
+    pollAlerts();
+    const timer = setInterval(pollAlerts, 60_000);
+    return () => clearInterval(timer);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load initial data — defined inside useEffect to avoid exhaustive-deps warning
   useEffect(() => {

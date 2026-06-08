@@ -137,21 +137,23 @@ class YahooFinanceProvider(BaseDataProvider):
 
             logger.info(f"Fetching historical data for {symbol_with_suffix} (period: {period})")
 
-            # Download data
+            # Use yf.Ticker().history() instead of yf.download() — the latter uses
+            # a shared internal session and is NOT safe to call from multiple threads
+            # concurrently (it can mix up OHLCV rows across simultaneous requests).
+            # Ticker().history() creates an isolated per-symbol session and is thread-safe.
+            ticker_obj = yf.Ticker(symbol_with_suffix)
             if start_date and end_date:
-                df = yf.download(
-                    symbol_with_suffix,
+                df = ticker_obj.history(
                     start=start_date,
                     end=end_date,
-                    progress=False,
-                    timeout=self.timeout
+                    timeout=self.timeout,
+                    auto_adjust=True,
                 )
             else:
-                df = yf.download(
-                    symbol_with_suffix,
+                df = ticker_obj.history(
                     period=period,
-                    progress=False,
-                    timeout=self.timeout
+                    timeout=self.timeout,
+                    auto_adjust=True,
                 )
 
             if df.empty:

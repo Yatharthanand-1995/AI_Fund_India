@@ -19,13 +19,18 @@ import { useWatchlist } from '@/hooks/useWatchlist';
 export default function Header() {
   const location = useLocation();
   const marketRegime = useStore((state) => state.marketRegime);
+  // Read alerts from the singleton store (polled once in App.tsx)
+  const storeAlerts = useStore((state) => state.alerts);
+  const unreadCount = useStore((state) => state.unreadAlertCount);
   const { watchlist } = useWatchlist();
   const watchlistCount = watchlist.length;
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [alertsOpen, setAlertsOpen] = useState(false);
   const alertPanelRef = useRef<HTMLDivElement>(null);
 
-  const { alerts, unreadCount, markRead, markAllRead } = useAlerts(60_000);
+  // markRead/markAllRead still needed — use the hook only for those actions (no polling)
+  const { alerts: _unused, markRead, markAllRead } = useAlerts(0);
+  const alerts = storeAlerts;
 
   // Close dropdown on outside click
   useEffect(() => {

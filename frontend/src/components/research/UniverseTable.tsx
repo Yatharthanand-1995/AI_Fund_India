@@ -4,16 +4,154 @@
  * Links to /stock/:symbol for full drill-down.
  */
 
-import { useState, useEffect, useMemo } from 'react';
-import { RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, ExternalLink, Search } from 'lucide-react';
+import { useState, useEffect, useMemo, useRef } from 'react';
+import { createPortal } from 'react-dom';
+import { RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, ExternalLink, Search, TrendingUp, TrendingDown, Minus, Activity } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import api from '@/lib/api';
 import { useStore } from '@/store/useStore';
 import { cn } from '@/lib/utils';
-import type { StockAnalysis } from '@/types';
+import type { StockAnalysis, MarketRegime } from '@/types';
+
+const AGENT_WEIGHT_KEYS: { key: string; label: string; short: string }[] = [
+  { key: 'fundamentals',       label: 'Fundamentals', short: 'F' },
+  { key: 'momentum',           label: 'Momentum',     short: 'M' },
+  { key: 'quality',            label: 'Quality',      short: 'Q' },
+  { key: 'sentiment',          label: 'Sentiment',    short: 'Sent' },
+  { key: 'institutional_flow', label: 'Inst. Flow',   short: 'Flow' },
+];
+
+const REGIME_IMPACTS: Record<string, { maxPos: number; buyBoost: string; color: string }> = {
+  BULL:     { maxPos: 10, buyBoost: 'no boost',  color: 'text-emerald-700 bg-emerald-50 border-emerald-200' },
+  SIDEWAYS: { maxPos: 7,  buyBoost: '+3 pts',    color: 'text-amber-700 bg-amber-50 border-amber-200' },
+  BEAR:     { maxPos: 4,  buyBoost: '+10 pts',   color: 'text-red-700 bg-red-50 border-red-200' },
+};
+
+function RegimeBanner({ regime }: { regime: MarketRegime }) {
+  const impact = REGIME_IMPACTS[regime.trend] ?? REGIME_IMPACTS.BULL;
+  const TrendIcon = regime.trend === 'BULL' ? TrendingUp : regime.trend === 'BEAR' ? TrendingDown : Minus;
+  const totalWeight = AGENT_WEIGHT_KEYS.reduce((s, k) => s + (regime.weights[k.key] || 0), 0);
+
+  return (
+    <div className={cn('rounded-xl border p-4 flex flex-col gap-3', impact.color)}>
+      {/* Top row: regime label + badges */}
+      <div className="flex flex-wrap items-center gap-2">
+        <Activity className="w-4 h-4 shrink-0" />
+        <span className="font-semibold text-sm tracking-wide">{regime.regime}</span>
+        <span className={cn('flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full border', impact.color)}>
+          <TrendIcon className="w-3 h-3" /> {regime.trend}
+        </span>
+        <span className="text-xs font-medium px-2 py-0.5 rounded-full border bg-white/60 border-current">
+          {regime.volatility} VOL
+        </span>
+        <span className="text-xs text-current/70 ml-auto">
+          Max positions: <strong>{impact.maxPos}</strong> · Buy threshold boost: <strong>{impact.buyBoost}</strong>
+        </span>
+      </div>
+
+      {/* Weight pills */}
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs font-medium opacity-70 mr-1">Agent weights:</span>
+        {AGENT_WEIGHT_KEYS.map(({ key, label, short }) => {
+          const w = regime.weights[key] || 0;
+          const pct = totalWeight > 0 ? w / totalWeight : 0;
+          const barW = Math.round(pct * 80); // px, max 80
+          return (
+            <span
+              key={key}
+              title={`${label}: ${(w * 100).toFixed(0)}%`}
+              className="flex items-center gap-1.5 bg-white/70 border border-current/20 rounded-lg px-2 py-1 text-xs font-medium"
+            >
+              <span className="opacity-80">{short}</span>
+              <div className="w-10 h-1.5 bg-current/10 rounded-full overflow-hidden">
+                <div className="h-full rounded-full bg-current/50" style={{ width: `${barW}px` }} />
+              </div>
+              <span className="font-bold">{(w * 100).toFixed(0)}%</span>
+            </span>
+          );
+        })}
+        {regime.cached && <span className="text-xs opacity-50 ml-auto">cached</span>}
+      </div>
+    </div>
+  );
+}
 
 type SortKey = 'composite' | 'fundamentals' | 'momentum' | 'quality' | 'sentiment' | 'institutional_flow' | 'symbol';
 type SortDir = 'asc' | 'desc';
+
+function ScoreBreakdownPopup({ s, anchorRect }: { s: StockAnalysis; anchorRect: DOMRect }) {
+  const bd = (s as any).score_breakdown;
+  if (!bd) return null;
+
+  type Row = { label: string; val: number; note?: string; bold?: boolean; sign?: boolean };
+  const rows: Row[] = [
+    { label: 'Weighted sum',     val: bd.weighted_sum,     note: 'agents × weights', sign: false },
+    { label: '+ Currency',       val: bd.currency_adj,     note: 'USD/INR sector', sign: true },
+    { label: '+ RBI rate',       val: bd.rbi_adj,          note: 'rate cycle', sign: true },
+    { label: '+ Earnings accel', val: bd.earnings_acc_adj, note: 'EPS momentum', sign: true },
+    { label: '+ RS accel',       val: bd.rs_accel_adj,     note: 'rel. strength trend', sign: true },
+    { label: '+ Crude',          val: bd.crude_adj,        note: 'Brent oil', sign: true },
+    { label: '= Raw score',      val: bd.raw_score,        note: 'overlay capped ±10', bold: true, sign: false },
+  ];
+  if (bd.regime_adj !== 0) rows.push({ label: '+ Regime adj', val: bd.regime_adj, note: 'BULL/BEAR scalar', sign: true });
+
+  const top = anchorRect.bottom + window.scrollY + 4;
+  const left = anchorRect.left + window.scrollX;
+
+  return createPortal(
+    <div
+      className="fixed w-72 bg-white border border-gray-200 rounded-xl shadow-xl p-3 text-xs pointer-events-none"
+      style={{ top, left, zIndex: 9999 }}
+    >
+      <div className="font-semibold text-gray-700 mb-2 border-b pb-1">How this score is built</div>
+      {rows.map(r => (
+        <div key={r.label} className={cn('flex justify-between py-0.5', r.bold && 'font-semibold border-t mt-1 pt-1')}>
+          <span className="text-gray-500">
+            {r.label}{r.note && <span className="text-gray-400 font-normal"> ({r.note})</span>}
+          </span>
+          <span className={cn('tabular-nums ml-2', r.sign ? (r.val > 0 ? 'text-emerald-600' : r.val < 0 ? 'text-red-500' : 'text-gray-400') : 'text-gray-800')}>
+            {r.sign && r.val > 0 ? '+' : ''}{r.val.toFixed(1)}
+          </span>
+        </div>
+      ))}
+      {bd.normalization_applied && (
+        <div className="mt-2 pt-2 border-t">
+          <div className="flex justify-between font-semibold">
+            <span className="text-gray-700">Final <span className="text-gray-400 font-normal">(percentile vs NIFTY50)</span></span>
+            <span className="text-blue-600">{bd.final.toFixed(1)}</span>
+          </div>
+          <p className="text-gray-400 mt-1 leading-tight" style={{fontSize:'10px'}}>
+            Cross-sectional normalization: raw {bd.raw_score} → percentile {bd.final}
+          </p>
+        </div>
+      )}
+      {bd.failed_agents?.length > 0 && (
+        <p className="text-amber-600 mt-2 pt-1 border-t leading-tight" style={{fontSize:'10px'}}>
+          ⚠ {bd.failed_agents.join(', ')} failed — weights renormalized
+        </p>
+      )}
+    </div>,
+    document.body
+  );
+}
+
+function CompositeScoreCell({ s }: { s: StockAnalysis }) {
+  const [rect, setRect] = useState<DOMRect | null>(null);
+  const ref = useRef<HTMLSpanElement>(null);
+  return (
+    <span
+      ref={ref}
+      className={cn('text-base font-bold tabular-nums cursor-help underline decoration-dotted decoration-gray-300',
+        s.composite_score >= 70 ? 'text-emerald-600' : s.composite_score >= 50 ? 'text-amber-600' : 'text-red-500'
+      )}
+      onMouseEnter={() => ref.current && setRect(ref.current.getBoundingClientRect())}
+      onMouseLeave={() => setRect(null)}
+    >
+      {s.composite_score.toFixed(1)}
+      {rect && <ScoreBreakdownPopup s={s} anchorRect={rect} />}
+    </span>
+  );
+}
 
 function ScoreCell({ v }: { v: number | null | undefined }) {
   if (v == null) return <span className="text-gray-300">—</span>;
@@ -48,7 +186,7 @@ function RecoBadge({ reco }: { reco: string }) {
 
 export default function UniverseTable() {
   const navigate = useNavigate();
-  const { getCachedTopPicks, cacheTopPicks } = useStore();
+  const { getCachedTopPicks, cacheTopPicks, marketRegime, setMarketRegime } = useStore();
   const [stocks, setStocks] = useState<StockAnalysis[]>([]);
   const [loading, setLoading] = useState(false);
   const [sortKey, setSortKey] = useState<SortKey>('composite');
@@ -71,7 +209,12 @@ export default function UniverseTable() {
     }
   };
 
-  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    load();
+    if (!marketRegime) {
+      api.getMarketRegime().then(setMarketRegime).catch(() => {});
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const agentScore = (s: StockAnalysis, key: string): number | null => {
     const a = (s.agent_scores as any)?.[key];
@@ -129,6 +272,9 @@ export default function UniverseTable() {
 
   return (
     <div className="space-y-4">
+      {/* Regime banner */}
+      {marketRegime && <RegimeBanner regime={marketRegime} />}
+
       {/* Controls */}
       <div className="flex items-center gap-3 flex-wrap">
         <div className="relative flex-1 max-w-xs">
@@ -200,12 +346,8 @@ export default function UniverseTable() {
                       </span>
                     )}
                   </td>
-                  <td className="px-4 py-3">
-                    <span className={cn('text-base font-bold tabular-nums',
-                      s.composite_score >= 70 ? 'text-emerald-600' : s.composite_score >= 50 ? 'text-amber-600' : 'text-red-500'
-                    )}>
-                      {s.composite_score.toFixed(1)}
-                    </span>
+                  <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
+                    <CompositeScoreCell s={s} />
                   </td>
                   <td className="px-4 py-3"><ScoreCell v={agentScore(s, 'fundamentals')} /></td>
                   <td className="px-4 py-3"><ScoreCell v={agentScore(s, 'momentum')} /></td>

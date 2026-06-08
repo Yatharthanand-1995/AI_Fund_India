@@ -29,8 +29,9 @@ export const useAlerts = (pollIntervalMs = 60_000): UseAlertsReturn => {
     }
   }, []);
 
-  // Initial fetch + polling
+  // Initial fetch + polling — skip if pollIntervalMs=0 (caller manages polling externally)
   useEffect(() => {
+    if (pollIntervalMs === 0) return;
     refresh();
     const timer = setInterval(refresh, pollIntervalMs);
     return () => clearInterval(timer);

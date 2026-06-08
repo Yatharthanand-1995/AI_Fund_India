@@ -300,6 +300,10 @@ class StockAnalysisResponse(BaseModel):
     # Market regime
     market_regime: Optional[Dict] = Field(None, description="Current market regime")
 
+    # Score breakdown — shows how composite was built so users can verify
+    # composite = weighted_sum + total_overlay_adj + regime_adj
+    score_breakdown: Optional[Dict] = Field(None, description="Overlay adjustments applied on top of weighted score")
+
     # Narrative (optional)
     narrative: Optional[NarrativeResponse] = None
 
@@ -563,6 +567,50 @@ def format_agent_scores(agent_results: Dict) -> Dict[str, AgentScore]:
     return formatted
 
 
+def _build_score_breakdown(result: Dict) -> Dict:
+    """
+    Build a verifiable score breakdown from scorer result.
+
+    Batch scoring has two stages:
+      Stage 1: raw_score = weighted_sum + total_overlay + regime_adj
+      Stage 2: percentile normalization across all NIFTY50 stocks (cross-sectional)
+               → composite_score (what is displayed)
+
+    raw_composite_score is preserved by the scorer before normalization.
+    """
+    weights = result.get('weights_used', {})
+    agent_scores = result.get('agent_scores', {})
+
+    # Identify successful agents (same rule as scorer) for weight renormalization
+    successful = {
+        k: ag for k, ag in agent_scores.items()
+        if isinstance(ag, dict) and ag.get('status') != 'error' and ag.get('score') is not None
+    }
+    raw_weight_sum = sum(weights.get(k, 0) for k in successful) or 1.0
+    normalized = {k: weights.get(k, 0) / raw_weight_sum for k in successful}
+    weighted_sum = sum(normalized[k] * successful[k]['score'] for k in successful)
+    failed_agents = [k for k in weights if k not in successful]
+
+    raw_score = result.get('raw_composite_score')  # pre-normalization score
+    final_score = result.get('composite_score', 0.0)
+    normalization_applied = raw_score is not None and abs(final_score - raw_score) > 0.05
+
+    return {
+        'weighted_sum': round(weighted_sum, 2),
+        'failed_agents': failed_agents,
+        'currency_adj': result.get('currency_adjustment', 0.0),
+        'rbi_adj': result.get('rbi_adjustment', 0.0),
+        'earnings_acc_adj': result.get('earnings_acceleration_adj', 0.0),
+        'rs_accel_adj': result.get('rs_acceleration_adj', 0.0),
+        'crude_adj': result.get('crude_adjustment', 0.0),
+        'total_overlay': result.get('total_overlay_adj', 0.0),
+        'regime_adj': result.get('regime_adjustment', 0.0),
+        'raw_score': round(raw_score, 2) if raw_score is not None else round(weighted_sum + result.get('total_overlay_adj', 0.0) + result.get('regime_adjustment', 0.0), 2),
+        'normalization_applied': normalization_applied,
+        'final': final_score,
+    }
+
+
 # ============================================================================
 # API Endpoints
 # ============================================================================
@@ -762,7 +810,8 @@ async def analyze_batch(body: BatchAnalyzeRequest, request: Request):
                     'weights': result.get('weights_used', {}),
                     'market_regime': regime,
                     'timestamp': datetime.now().isoformat(),
-                    'cached': False
+                    'cached': False,
+                    'score_breakdown': _build_score_breakdown(result),
                 }
 
                 # Generate narrative if requested
@@ -863,6 +912,10 @@ async def get_top_picks(
         logger.info(f"Scoring {len(nifty_50_symbols)} NIFTY 50 stocks...")
         batch_results = await run_in_thread(stock_scorer.score_stocks_batch, symbols=nifty_50_symbols)
 
+        # Filter out ERROR stocks before slicing — stale cache or data gaps
+        # can produce composite=50/recommendation=ERROR entries that pollute the table
+        batch_results = [r for r in batch_results if r.get('recommendation') != 'ERROR']
+
         # Format and sort by score
         formatted_results = []
         for result in batch_results[:limit]:  # Top N
@@ -884,7 +937,8 @@ async def get_top_picks(
                     'weights': result.get('weights_used', {}),
                     'market_regime': regime,
                     'timestamp': datetime.now().isoformat(),
-                    'cached': False
+                    'cached': False,
+                    'score_breakdown': _build_score_breakdown(result),
                 }
 
                 # Generate narrative if requested

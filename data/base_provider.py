@@ -8,6 +8,7 @@ from typing import Dict, Optional, List
 import pandas as pd
 from datetime import datetime
 import logging
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ class BaseDataProvider(ABC):
         self.cache: Dict = {}
         self.cache_expiry: Dict = {}
         self.provider_name = self.__class__.__name__
+        self._cache_lock = threading.Lock()
 
     @abstractmethod
     def get_stock_data(self, symbol: str) -> Dict:
@@ -131,7 +133,8 @@ class BaseDataProvider(ABC):
 
     def _is_cached_data_fresh(self, symbol: str) -> bool:
         """
-        Check if cached data is still fresh
+        Check if cached data is still fresh.
+        Must be called with _cache_lock held (or within _get_cached_data).
 
         Args:
             symbol: Stock symbol
@@ -145,20 +148,21 @@ class BaseDataProvider(ABC):
 
     def _cache_data(self, symbol: str, data: Dict):
         """
-        Cache data with expiry
+        Cache data with expiry (thread-safe).
 
         Args:
             symbol: Stock symbol
             data: Data to cache
         """
         from datetime import timedelta
-        self.cache[symbol] = data
-        self.cache_expiry[symbol] = datetime.now() + timedelta(seconds=self.cache_duration)
+        with self._cache_lock:
+            self.cache[symbol] = data
+            self.cache_expiry[symbol] = datetime.now() + timedelta(seconds=self.cache_duration)
         logger.debug(f"Cached data for {symbol} (TTL: {self.cache_duration}s)")
 
     def _get_cached_data(self, symbol: str) -> Optional[Dict]:
         """
-        Get cached data if fresh
+        Get cached data if fresh (thread-safe).
 
         Args:
             symbol: Stock symbol
@@ -166,27 +170,29 @@ class BaseDataProvider(ABC):
         Returns:
             Cached data or None
         """
-        if self._is_cached_data_fresh(symbol):
-            logger.debug(f"Cache HIT for {symbol} (provider: {self.provider_name})")
-            return self.cache[symbol]
+        with self._cache_lock:
+            if self._is_cached_data_fresh(symbol):
+                logger.debug(f"Cache HIT for {symbol} (provider: {self.provider_name})")
+                return self.cache[symbol]
         logger.debug(f"Cache MISS for {symbol} (provider: {self.provider_name})")
         return None
 
     def clear_cache(self, symbol: Optional[str] = None):
         """
-        Clear cache for a symbol or all symbols
+        Clear cache for a symbol or all symbols (thread-safe).
 
         Args:
             symbol: Stock symbol to clear, or None to clear all
         """
-        if symbol:
-            self.cache.pop(symbol, None)
-            self.cache_expiry.pop(symbol, None)
-            logger.info(f"Cleared cache for {symbol}")
-        else:
-            self.cache.clear()
-            self.cache_expiry.clear()
-            logger.info("Cleared all cache")
+        with self._cache_lock:
+            if symbol:
+                self.cache.pop(symbol, None)
+                self.cache_expiry.pop(symbol, None)
+                logger.info(f"Cleared cache for {symbol}")
+            else:
+                self.cache.clear()
+                self.cache_expiry.clear()
+                logger.info("Cleared all cache")
 
     def get_cache_stats(self) -> Dict:
         """
